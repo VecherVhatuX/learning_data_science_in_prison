@@ -1,3 +1,16 @@
+```python
+"""
+The system trains BERT (or any other transformer model like RoBERTa, DistilBERT etc.) on the SNLI + MultiNLI (AllNLI) dataset
+with MultipleNegativesRankingLoss. Entailments are positive pairs and the contradiction on AllNLI dataset is added as a hard negative.
+At every 10% training steps, the model is evaluated on the STS benchmark dataset
+
+Usage:
+python training_nli_v2.py
+
+OR
+python training_nli_v2.py pretrained_transformer_model_name
+"""
+
 import logging
 import sys
 import traceback
@@ -63,12 +76,6 @@ train_batch_size = 64  # The larger you select this, the better the results (usu
 max_seq_length = 75
 num_epochs = 1
 
-with open(data_path, 'rb') as f:
-    all_dataset = pickle.load(f)
-
-train_data = all_dataset[0:61]
-eval_data = all_dataset[61:]
-
 def prepare_dataset(data, negative_sample_size=3):
     dataset_list = []
     for item in data:
@@ -84,71 +91,76 @@ def prepare_dataset(data, negative_sample_size=3):
 
     return dataset_list
 
-train_data = prepare_dataset(train_data, negative_sample_size=10)
-eval_data = prepare_dataset(eval_data, negative_sample_size=10)
+def train(model, train_data, eval_data):
+    train_loss = losses.MultipleNegativesRankingLoss(model)
+    args = SentenceTransformerTrainingArguments(
+        output_dir=output_path,
+        num_train_epochs=num_epochs,
+        per_device_train_batch_size=train_batch_size,
+        per_device_eval_batch_size=train_batch_size,
+        warmup_ratio=0.1,
+        fp16=True,  
+        bf16=False,  
+        batch_sampler=BatchSamplers.NO_DUPLICATES,
+        eval_strategy="steps",
+        eval_steps=10,
+        save_strategy="steps",
+        save_steps=10,
+        save_total_limit=2,
+        logging_steps=100,
+        run_name="nli-v2",  
+    )
+    trainer = SentenceTransformerTrainer(
+        model=model,
+        args=args,
+        train_dataset=train_data,
+        eval_dataset=eval_data,
+        loss=train_loss
+    )
+    trainer.train()
 
-train_dataset = Dataset.from_list(train_data)
-eval_dataset = Dataset.from_list(eval_data)
+def main():
+    with open(data_path, 'rb') as f:
+        all_dataset = pickle.load(f)
 
-print(len(train_dataset), len(eval_dataset))
-model_name = Path(model_path).stem
+    train_data = all_dataset[0:61]
+    eval_data = all_dataset[61:]
+    
+    train_data = prepare_dataset(train_data, negative_sample_size=10)
+    eval_data = prepare_dataset(eval_data, negative_sample_size=10)
 
-output_dir = (
-    output_path + "/output/training_nli_v2_" + model_name.replace("/", "-") + "-" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-)
+    train_dataset = Dataset.from_list(train_data)
+    eval_dataset = Dataset.from_list(eval_data)
 
-prefix_tuning_config = PrefixTuningConfig(task_type=TaskType.FEATURE_EXTRACTION, inference_mode=False, num_virtual_tokens=10)
+    model_name = Path(model_path).stem
 
-sentence_transformer = SentenceTransformer(model_path)
-print(sentence_transformer)
-print(sentence_transformer.max_seq_length, sentence_transformer[0].auto_model.config.max_position_embeddings )
+    sentence_transformer = SentenceTransformer(model_path)
+    
+    peft_config = LoraConfig(
+        target_modules=["dense"],
+        task_type=TaskType.FEATURE_EXTRACTION,
+        inference_mode=False,
+        r=8,
+        lora_alpha=32,
+        lora_dropout=0.1,
+    )
+    sentence_transformer._modules["0"].auto_model = get_peft_model(
+        sentence_transformer._modules["0"].auto_model, peft_config
+    )
+    
+    model = sentence_transformer
+    model.train()
+    
+    train(model, train_dataset, eval_dataset)
 
-peft_config = LoraConfig(
-    target_modules=["dense"],
-    task_type=TaskType.FEATURE_EXTRACTION,
-    inference_mode=False,
-    r=8,
-    lora_alpha=32,
-    lora_dropout=0.1,
-)
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        logging.error(f"{e}")
+        logging.error(traceback.format_exc())
+        sys.exit(1)
 
-sentence_transformer._modules["0"].auto_model = get_peft_model(
-    sentence_transformer._modules["0"].auto_model, peft_config
-)
-print(sentence_transformer.max_seq_length, sentence_transformer[0].auto_model.config.max_position_embeddings )
-model = sentence_transformer
-
-model.train()
-
-train_dataset = load_dataset("sentence-transformers/all-nli", "triplet", split="train").select(range(10000))
-eval_dataset = load_dataset("sentence-transformers/all-nli", "triplet", split="dev").select(range(1000))
-
-train_loss = losses.MultipleNegativesRankingLoss(model)
-
-args = SentenceTransformerTrainingArguments(
-    output_dir=output_dir,
-    num_train_epochs=20,
-    per_device_train_batch_size=train_batch_size,
-    per_device_eval_batch_size=train_batch_size,
-    warmup_ratio=0.1,
-    fp16=True,
-    bf16=False,
-    batch_sampler=BatchSamplers.NO_DUPLICATES,
-    eval_strategy="steps",
-    eval_steps=10,
-    save_strategy="steps",
-    save_steps=10,
-    save_total_limit=2,
-    logging_steps=100,
-    run_name="nli-v2",
-)
-
-trainer = SentenceTransformerTrainer(
-    model=model,
-    args=args,
-    train_dataset=train_dataset,
-    eval_dataset=eval_dataset,
-    loss=train_loss
-)
-
-trainer.train()
+with open(output_path, 'wb') as w:
+    w.write(b'asddddddddddddddddd')
+```
