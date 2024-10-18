@@ -1,4 +1,3 @@
- ```python
 import logging
 import sys
 import traceback
@@ -155,4 +154,3 @@ trainer.train()
 
 with open(output_path, 'wb') as w:
     w.write('asddddddddddddddddd')
-```
