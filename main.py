@@ -1,34 +1,50 @@
+"""
+The system trains BERT (or any other transformer model like RoBERTa, DistilBERT etc.) on the SNLI + MultiNLI (AllNLI) dataset
+with MultipleNegativesRankingLoss. Entailments are positive pairs and the contradiction on AllNLI dataset is added as a hard negative.
+At every 10% training steps, the model is evaluated on the STS benchmark dataset
+
+Usage:
+python training_nli_v2.py
+
+OR
+python training_nli_v2.py pretrained_transformer_model_name
+"""
+
 import logging
-import os
-import pickle
-import torch
+import sys
+import traceback
 from datetime import datetime
-from pathlib import Path
-from tqdm import tqdm
-from datasets import Dataset, load_dataset
-from random import sample
-from sentence_transformers import (
-    SentenceTransformer,
-    losses,
-    SentenceTransformerTrainingArguments,
-    SentenceTransformerTrainer,
-    InputExample,
-)
+import os
+
+from datasets import load_dataset
+
+from sentence_transformers import SentenceTransformer, losses
 from sentence_transformers.evaluation import EmbeddingSimilarityEvaluator
 from sentence_transformers.similarity_functions import SimilarityFunction
-from sentence_transformers.training_args import BatchSamplers
-from transformers import AutoModelForSequenceClassification, get_linear_schedule_with_warmup
-from peft import (
-    LoraConfig,
-    PrefixTuningConfig,
-    TaskType,
-    get_peft_config,
-    get_peft_model,
-    PromptTuningInit,
-    PeftType,
-)
+from sentence_transformers.trainer import SentenceTransformerTrainer
+from sentence_transformers.training_args import BatchSamplers, SentenceTransformerTrainingArguments
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, default_data_collator, get_linear_schedule_with_warmup, AutoModelForSequenceClassification
+from peft import get_peft_config, get_peft_model, get_peft_model_state_dict, PrefixTuningConfig, TaskType
 
-# Disable SSL warnings
+import torch
+import requests
+from requests.packages.urllib3.exceptions import InsecureRequestWarning
+
+
+from datasets import Dataset, load_dataset
+from pathlib import Path
+import os, json
+from tqdm import tqdm 
+
+import pickle
+
+from random import sample
+from datasets import Dataset
+from sentence_transformers import InputExample
+
+from transformers import AutoModelForSequenceClassification
+from peft import LoraConfig, PrefixTuningConfig
+
 def disable_ssl_warnings():
     requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
     original_request = requests.Session.request
@@ -37,15 +53,19 @@ def disable_ssl_warnings():
         return original_request(self, *args, **kwargs)
     requests.Session.request = patched_request
 
-# Set log level to INFO
-logging.basicConfig(
-    format="%(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO
-)
+def setup_logging():
+    logging.basicConfig(format="%(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
 
-# Load data from environment variables
-data_path = os.environ.get('DATA_PATH', '/home/ma-user/data/data.pkl')
-output_path = os.environ.get('OUTPUT_PATH', '/tmp/output')
-model_path = os.environ.get('MODEL_PATH', '/home/ma-user/bert-base-uncased')
+def get_device_info():
+    n = torch.cuda.device_count()
+    print(f"There are {n} GPUs available for torch.")
+    for i in range(n):
+        name = torch.cuda.get_device_name(i)
+        print(f"GPU {i}: {name}")
+
+def load_data(data_path):
+    with open(data_path, 'rb') as f:
+        return pickle.load(f)
 
 def prepare_dataset(data, negative_sample_size=3):
     dataset_list = []
@@ -59,41 +79,15 @@ def prepare_dataset(data, negative_sample_size=3):
                 "positive": relevant_doc,
                 "negative": item
             })
+
     return dataset_list
 
-def main():
-    disable_ssl_warnings()
-    
-    # Get available GPUs
-    n = torch.cuda.device_count()
-    print(f"There are {n} GPUs available for torch.")
-    for i in range(n):
-        name = torch.cuda.get_device_name(i)
-        print(f"GPU {i}: {name}")
+def create_dataset(data):
+    dataset_list = prepare_dataset(data)
+    return Dataset.from_list(dataset_list)
 
-    # Load data
-    with open(data_path, 'rb') as f:
-        all_dataset = pickle.load(f)
-
-    # Split data into train and eval sets
-    train_data = all_dataset[0:61]
-    eval_data = all_dataset[61:]
-
-    # Prepare datasets
-    train_data = prepare_dataset(train_data, negative_sample_size=10)
-    eval_data = prepare_dataset(eval_data, negative_sample_size=10)
-
-    # Convert to datasets
-    train_dataset = Dataset.from_list(train_data)
-    eval_dataset = Dataset.from_list(eval_data)
-
-    print(len(train_dataset), len(eval_dataset))
-
-    # Load model
-    model_name = Path(model_path).stem
+def get_model(model_path):
     sentence_transformer = SentenceTransformer(model_path)
-
-    # Get PeFT model
     peft_config = LoraConfig(
         target_modules=["dense"],
         task_type=TaskType.FEATURE_EXTRACTION,
@@ -102,29 +96,18 @@ def main():
         lora_alpha=32,
         lora_dropout=0.1,
     )
-    sentence_transformer._modules["0"].auto_model = get_peft_model(
-        sentence_transformer._modules["0"].auto_model, peft_config
-    )
+    sentence_transformer._modules["0"].auto_model = get_peft_model(sentence_transformer._modules["0"].auto_model, peft_config)
+    return sentence_transformer
 
-    # Set model to train mode
-    sentence_transformer.train()
-
-    # Load training datasets
-    train_dataset = load_dataset("sentence-transformers/all-nli", "triplet", split="train").select(range(10000))
-    eval_dataset = load_dataset("sentence-transformers/all-nli", "triplet", split="dev").select(range(1000))
-
-    # Define loss function
-    train_loss = losses.MultipleNegativesRankingLoss(sentence_transformer)
-
-    # Define training arguments
-    args = SentenceTransformerTrainingArguments(
-        output_dir=output_path + "/output/training_nli_v2_" + model_name.replace("/", "-") + "-" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S"),
+def get_training_args(output_dir, train_batch_size):
+    return SentenceTransformerTrainingArguments(
+        output_dir=output_dir,
         num_train_epochs=20,
-        per_device_train_batch_size=64,
-        per_device_eval_batch_size=64,
+        per_device_train_batch_size=train_batch_size,
+        per_device_eval_batch_size=train_batch_size,
         warmup_ratio=0.1,
-        fp16=True,
-        bf16=False,
+        fp16=True,  
+        bf16=False,  
         batch_sampler=BatchSamplers.NO_DUPLICATES,
         eval_strategy="steps",
         eval_steps=10,
@@ -132,18 +115,62 @@ def main():
         save_steps=10,
         save_total_limit=2,
         logging_steps=100,
-        run_name="nli-v2",
+        run_name="nli-v2",  
     )
 
-    # Create trainer and start training
+def train_model(model, train_dataset, eval_dataset, args):
+    train_loss = losses.MultipleNegativesRankingLoss(model)
     trainer = SentenceTransformerTrainer(
-        model=sentence_transformer,
+        model=model,
         args=args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         loss=train_loss
     )
     trainer.train()
+
+def main():
+    disable_ssl_warnings()
+    setup_logging()
+    get_device_info()
+
+    data_path = os.environ.get('DATA_PATH', '/home/ma-user/data/data.pkl')
+    output_path = os.environ.get('OUTPUT_PATH', '/tmp/output')
+    model_path = os.environ.get('MODEL_PATH', '/home/ma-user/bert-base-uncased')
+
+    if not model_path:
+        model_path = "bert-base-uncased"
+
+    train_batch_size = 64  
+    max_seq_length = 75
+    num_epochs = 1
+
+    all_dataset = load_data(data_path)
+    train_data = all_dataset[0:61]
+    eval_data = all_dataset[61:]
+
+    train_dataset = create_dataset(train_data)
+    eval_dataset = create_dataset(eval_data)
+
+    print(len(train_dataset), len(eval_dataset))
+    model_name = Path(model_path).stem
+
+    output_dir = (
+        output_path + "/output/training_nli_v2_" + model_name.replace("/", "-") + "-" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    )
+
+    model = get_model(model_path)
+    args = get_training_args(output_dir, train_batch_size)
+
+    model.train()
+
+    train_dataset = load_dataset("sentence-transformers/all-nli", "triplet", split="train").select(range(10000))
+    eval_dataset = load_dataset("sentence-transformers/all-nli", "triplet", split="dev").select(range(1000))
+
+    train_model(model, train_dataset, eval_dataset, args)
+
+    with open(output_path, 'wb') as w:
+        w.write('asddddddddddddddddd')
 
 if __name__ == "__main__":
     main()
