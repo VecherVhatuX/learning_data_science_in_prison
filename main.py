@@ -4,27 +4,23 @@ import sys
 import traceback
 from datetime import datetime
 import os
-
 from datasets import load_dataset
-
+from sentence_transformers import SentenceTransformer, losses
+from sentence_transformers.evaluation import EmbeddingSimilarityEvaluator
+from sentence_transformers.trainer import SentenceTransformerTrainer
+from sentence_transformers.training_args import BatchSamplers, SentenceTransformerTrainingArguments
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, default_data_collator, get_linear_schedule_with_warmup, AutoModelForSequenceClassification
 from peft import get_peft_config, get_peft_model, get_peft_model_state_dict, PrefixTuningConfig, TaskType
-
 import torch
 import requests
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
-
 from datasets import Dataset, load_dataset
 from pathlib import Path
-import os, json
+import json
 from tqdm import tqdm 
-
 import pickle
-
 from random import sample
-from datasets import Dataset
-from transformers import InputExample
-
+from sentence_transformers import InputExample
 from transformers import AutoModelForSequenceClassification
 from peft import LoraConfig, PrefixTuningConfig
 
@@ -38,7 +34,6 @@ def disable_ssl_warnings():
     
 disable_ssl_warnings()
 
-# Set the log level to INFO to get more information
 logging.basicConfig(format="%(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
 
 data_path = os.environ.get('DATA_PATH', '/home/ma-user/data/data.pkl')
@@ -48,36 +43,31 @@ model_path = os.environ.get('MODEL_PATH', '/home/ma-user/bert-base-uncased')
 n = torch.cuda.device_count()
 print(f"There are {n} GPUs available for torch.")
 for i in range(n):
-  name = torch.cuda.get_device_name(i)
-  print(f"GPU {i}: {name}")
+    name = torch.cuda.get_device_name(i)
+    print(f"GPU {i}: {name}")
 
-if not model_path:
-    model_path =  "bert-base-uncased"#"google-t5/t5-small"
+model_path = model_path if model_path else "bert-base-uncased"
 
-train_batch_size = 64  # The larger you select this, the better the results (usually). But it requires more GPU memory
+train_batch_size = 64
 max_seq_length = 75
 num_epochs = 1
 
 with open(data_path, 'rb') as f:
     all_dataset = pickle.load(f)
 
-train_data = all_dataset[0:61]
+train_data = all_dataset[:61]
 eval_data = all_dataset[61:]
 
 def prepare_dataset(data, negative_sample_size=3):
-    dataset_list = []
-    for item in data:
-        query = item['query']
-        relevant_doc = item['relevant_doc']
-        non_relevant_docs = sample(item['irrelevant_docs'], min(len(item['irrelevant_docs']), negative_sample_size))
-        for item in non_relevant_docs:
-            dataset_list.append({
-                "anchor": query,
-                "positive": relevant_doc,
-                "negative": item
-            })
-
-    return dataset_list
+    return [
+        {
+            "anchor": item['query'],
+            "positive": item['relevant_doc'],
+            "negative": non_relevant_doc
+        }
+        for item in data
+        for non_relevant_doc in sample(item['irrelevant_docs'], min(len(item['irrelevant_docs']), negative_sample_size))
+    ]
 
 train_data = prepare_dataset(train_data, negative_sample_size=10)
 eval_data = prepare_dataset(eval_data, negative_sample_size=10)
@@ -88,13 +78,13 @@ eval_dataset = Dataset.from_list(eval_data)
 print(len(train_dataset), len(eval_dataset))
 model_name = Path(model_path).stem
 
-output_dir = (
-    output_path + "/output/training_nli_v2_" + model_name.replace("/", "-") + "-" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-)
+output_dir = f"{output_path}/output/training_nli_v2_{model_name.replace('/', '-')}-{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
 
 prefix_tuning_config = PrefixTuningConfig(task_type=TaskType.FEATURE_EXTRACTION, inference_mode=False, num_virtual_tokens=10)
 
-model = AutoModelForSequenceClassification.from_pretrained(model_path)
+sentence_transformer = SentenceTransformer(model_path)
+print(sentence_transformer)
+print(sentence_transformer.max_seq_length, sentence_transformer[0].auto_model.config.max_position_embeddings)
 
 peft_config = LoraConfig(
     target_modules=["dense"],
@@ -105,14 +95,18 @@ peft_config = LoraConfig(
     lora_dropout=0.1,
 )
 
-model = get_peft_model(model, peft_config)
+sentence_transformer[0].auto_model = get_peft_model(sentence_transformer[0].auto_model, peft_config)
+print(sentence_transformer.max_seq_length, sentence_transformer[0].auto_model.config.max_position_embeddings)
+model = sentence_transformer
+
+model.train()
 
 train_dataset = load_dataset("sentence-transformers/all-nli", "triplet", split="train").select(range(10000))
 eval_dataset = load_dataset("sentence-transformers/all-nli", "triplet", split="dev").select(range(1000))
 
-from transformers import Trainer, TrainingArguments
+train_loss = losses.MultipleNegativesRankingLoss(model)
 
-training_args = TrainingArguments(
+args = SentenceTransformerTrainingArguments(
     output_dir=output_dir,
     num_train_epochs=20,
     per_device_train_batch_size=train_batch_size,
@@ -120,7 +114,8 @@ training_args = TrainingArguments(
     warmup_ratio=0.1,
     fp16=True,
     bf16=False,
-    evaluation_strategy="steps",
+    batch_sampler=BatchSamplers.NO_DUPLICATES,
+    eval_strategy="steps",
     eval_steps=10,
     save_strategy="steps",
     save_steps=10,
@@ -129,11 +124,12 @@ training_args = TrainingArguments(
     run_name="nli-v2",
 )
 
-trainer = Trainer(
+trainer = SentenceTransformerTrainer(
     model=model,
-    args=training_args,
+    args=args,
     train_dataset=train_dataset,
     eval_dataset=eval_dataset,
+    loss=train_loss
 )
 
 trainer.train()
