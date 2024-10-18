@@ -1,4 +1,3 @@
-```python
 """
 The system trains BERT (or any other transformer model like RoBERTa, DistilBERT etc.) on the SNLI + MultiNLI (AllNLI) dataset
 with MultipleNegativesRankingLoss. Entailments are positive pairs and the contradiction on AllNLI dataset is added as a hard negative.
@@ -163,4 +162,3 @@ if __name__ == "__main__":
 
 with open(output_path, 'wb') as w:
     w.write(b'asddddddddddddddddd')
-```
