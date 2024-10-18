@@ -7,18 +7,12 @@ import os
 
 from datasets import load_dataset
 
-from sentence_transformers import SentenceTransformer, losses
-from sentence_transformers.evaluation import EmbeddingSimilarityEvaluator
-from sentence_transformers.similarity_functions import SimilarityFunction
-from sentence_transformers.trainer import SentenceTransformerTrainer
-from sentence_transformers.training_args import BatchSamplers, SentenceTransformerTrainingArguments
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, default_data_collator, get_linear_schedule_with_warmup, AutoModelForSequenceClassification
 from peft import get_peft_config, get_peft_model, get_peft_model_state_dict, PrefixTuningConfig, TaskType
 
 import torch
 import requests
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
-
 
 from datasets import Dataset, load_dataset
 from pathlib import Path
@@ -29,7 +23,7 @@ import pickle
 
 from random import sample
 from datasets import Dataset
-from sentence_transformers import InputExample
+from transformers import InputExample
 
 from transformers import AutoModelForSequenceClassification
 from peft import LoraConfig, PrefixTuningConfig
@@ -70,7 +64,6 @@ with open(data_path, 'rb') as f:
 train_data = all_dataset[0:61]
 eval_data = all_dataset[61:]
 
-
 def prepare_dataset(data, negative_sample_size=3):
     dataset_list = []
     for item in data:
@@ -101,9 +94,7 @@ output_dir = (
 
 prefix_tuning_config = PrefixTuningConfig(task_type=TaskType.FEATURE_EXTRACTION, inference_mode=False, num_virtual_tokens=10)
 
-sentence_transformer = SentenceTransformer(model_path)
-print(sentence_transformer)
-print(sentence_transformer.max_seq_length, sentence_transformer[0].auto_model.config.max_position_embeddings )
+model = AutoModelForSequenceClassification.from_pretrained(model_path)
 
 peft_config = LoraConfig(
     target_modules=["dense"],
@@ -114,20 +105,14 @@ peft_config = LoraConfig(
     lora_dropout=0.1,
 )
 
-sentence_transformer._modules["0"].auto_model = get_peft_model(
-    sentence_transformer._modules["0"].auto_model, peft_config
-)
-print(sentence_transformer.max_seq_length, sentence_transformer[0].auto_model.config.max_position_embeddings )
-model = sentence_transformer
-
-model.train()
+model = get_peft_model(model, peft_config)
 
 train_dataset = load_dataset("sentence-transformers/all-nli", "triplet", split="train").select(range(10000))
 eval_dataset = load_dataset("sentence-transformers/all-nli", "triplet", split="dev").select(range(1000))
 
-train_loss = losses.MultipleNegativesRankingLoss(model)
+from transformers import Trainer, TrainingArguments
 
-args = SentenceTransformerTrainingArguments(
+training_args = TrainingArguments(
     output_dir=output_dir,
     num_train_epochs=20,
     per_device_train_batch_size=train_batch_size,
@@ -135,8 +120,7 @@ args = SentenceTransformerTrainingArguments(
     warmup_ratio=0.1,
     fp16=True,
     bf16=False,
-    batch_sampler=BatchSamplers.NO_DUPLICATES,
-    eval_strategy="steps",
+    evaluation_strategy="steps",
     eval_steps=10,
     save_strategy="steps",
     save_steps=10,
@@ -145,13 +129,15 @@ args = SentenceTransformerTrainingArguments(
     run_name="nli-v2",
 )
 
-trainer = SentenceTransformerTrainer(
+trainer = Trainer(
     model=model,
-    args=args,
+    args=training_args,
     train_dataset=train_dataset,
     eval_dataset=eval_dataset,
-    loss=train_loss
 )
 
 trainer.train()
+
+with open(output_path, 'wb') as w:
+    w.write(b'asddddddddddddddddd')
 ```
