@@ -1,35 +1,26 @@
  ```python
 import logging
 import sys
-import traceback
 from datetime import datetime
 import os
-
 from datasets import load_dataset
-
 from sentence_transformers import SentenceTransformer, losses
 from sentence_transformers.evaluation import EmbeddingSimilarityEvaluator
-from sentence_transformers.similarity_functions import SimilarityFunction
 from sentence_transformers.trainer import SentenceTransformerTrainer
 from sentence_transformers.training_args import BatchSamplers, SentenceTransformerTrainingArguments
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, default_data_collator, get_linear_schedule_with_warmup, AutoModelForSequenceClassification
 from peft import get_peft_config, get_peft_model, get_peft_model_state_dict, PrefixTuningConfig, TaskType
-
 import torch
 import requests
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
-
 from datasets import Dataset, load_dataset
 from pathlib import Path
-import os, json
+import json
 from tqdm import tqdm 
-
 import pickle
-
 from random import sample
 from datasets import Dataset
 from sentence_transformers import InputExample
-
 from transformers import AutoModelForSequenceClassification
 from peft import LoraConfig, PrefixTuningConfig
 
@@ -47,13 +38,13 @@ logging.basicConfig(format="%(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:
 
 data_path = os.environ.get('DATA_PATH', '/home/ma-user/data/data.pkl')
 output_path = os.environ.get('OUTPUT_PATH', '/tmp/output')
-model_path = os.environ.get('MODEL_PATH', 'bert-base-uncased')
+model_path = os.environ.get('MODEL_PATH', '/home/ma-user/bert-base-uncased')
 
 n = torch.cuda.device_count()
 print(f"There are {n} GPUs available for torch.")
 for i in range(n):
-    name = torch.cuda.get_device_name(i)
-    print(f"GPU {i}: {name}")
+  name = torch.cuda.get_device_name(i)
+  print(f"GPU {i}: {name}")
 
 if not model_path:
     model_path = "bert-base-uncased"
@@ -80,6 +71,7 @@ def prepare_dataset(data, negative_sample_size=3):
                 "positive": relevant_doc,
                 "negative": item
             })
+
     return dataset_list
 
 train_data = prepare_dataset(train_data, negative_sample_size=10)
@@ -98,8 +90,6 @@ output_dir = (
 prefix_tuning_config = PrefixTuningConfig(task_type=TaskType.FEATURE_EXTRACTION, inference_mode=False, num_virtual_tokens=10)
 
 sentence_transformer = SentenceTransformer(model_path)
-print(sentence_transformer)
-print(sentence_transformer.max_seq_length, sentence_transformer[0].auto_model.config.max_position_embeddings)
 
 peft_config = LoraConfig(
     target_modules=["dense"],
@@ -113,7 +103,6 @@ peft_config = LoraConfig(
 sentence_transformer._modules["0"].auto_model = get_peft_model(
     sentence_transformer._modules["0"].auto_model, peft_config
 )
-print(sentence_transformer.max_seq_length, sentence_transformer[0].auto_model.config.max_position_embeddings)
 model = sentence_transformer
 
 model.train()
