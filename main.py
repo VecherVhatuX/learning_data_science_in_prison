@@ -1,4 +1,16 @@
  ```python
+"""
+The system trains BERT (or any other transformer model like RoBERTa, DistilBERT etc.) on the SNLI + MultiNLI (AllNLI) dataset
+using MultipleNegativesRankingLoss. Positive pairs are entailments, and contradictions from the AllNLI dataset serve as hard negatives.
+The model is evaluated on the STS benchmark dataset every 10% of training steps.
+
+Usage:
+python training_nli_v2.py
+
+OR
+python training_nli_v2.py pretrained_transformer_model_name
+"""
+
 import logging
 import sys
 import traceback
@@ -44,7 +56,7 @@ def disable_ssl_warnings():
     
 disable_ssl_warnings()
 
-# Set the log level to INFO to get more information
+# Set the log level to INFO for more detailed logging
 logging.basicConfig(format="%(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
 
 data_path = os.environ.get('DATA_PATH', '/home/ma-user/data/data.pkl')
@@ -60,7 +72,7 @@ for i in range(n):
 if not model_path:
     model_path =  "bert-base-uncased"#"google-t5/t5-small"
 
-train_batch_size = 64  # The larger you select this, the better the results (usually). But it requires more GPU memory
+train_batch_size = 64  # Increasing this usually improves results but requires more GPU memory
 max_seq_length = 75
 num_epochs = 1
 
@@ -79,7 +91,7 @@ def prepare_dataset(data, negative_sample_size=3):
     for item in data:
         query = item['query']
         relevant_doc = item['relevant_doc']
-        # Берем случайное количество нерелевантных документов
+        # Randomly select a subset of irrelevant documents
         non_relevant_docs = sample(item['irrelevant_docs'], min(len(item['irrelevant_docs']), negative_sample_size))
         for item in non_relevant_docs:
             dataset_list.append({
@@ -90,18 +102,18 @@ def prepare_dataset(data, negative_sample_size=3):
 
     return dataset_list
 
-# Готовим данные
+# Prepare the data
 train_data = prepare_dataset(train_data, negative_sample_size=10)
 eval_data = prepare_dataset(eval_data, negative_sample_size=10)
 
-# Преобразуем в Dataset
+# Convert to Dataset format
 train_dataset = Dataset.from_list(train_data)
 eval_dataset = Dataset.from_list(eval_data)
 
 print(len(train_dataset), len(eval_dataset))
 model_name = Path(model_path).stem
 
-# Save path of the model
+# Define the model save path
 output_dir = (
     output_path + "/output/training_nli_v2_" + model_name.replace("/", "-") + "-" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 )
@@ -139,29 +151,26 @@ train_loss = losses.MultipleNegativesRankingLoss(model)
 
     
 
-# 5. Define the training arguments
+# Define the training parameters
 args = SentenceTransformerTrainingArguments(
-    # Required parameter:
     output_dir=output_dir,
-    # Optional training parameters:
     num_train_epochs=20,
     per_device_train_batch_size=train_batch_size,
     per_device_eval_batch_size=train_batch_size,
     warmup_ratio=0.1,
-    fp16=True,  # Set to False if you get an error that your GPU can't run on FP16
-    bf16=False,  # Set to True if you have a GPU that supports BF16
+    fp16=True,  # Set to False if FP16 is not supported
+    bf16=False,  # Set to True if BF16 is supported
     batch_sampler=BatchSamplers.NO_DUPLICATES,
-    # Optional tracking/debugging parameters:
     eval_strategy="steps",
     eval_steps=10,
     save_strategy="steps",
     save_steps=10,
     save_total_limit=2,
     logging_steps=100,
-    run_name="nli-v2",  # Will be used in W&B if `wandb` is installed
+    run_name="nli-v2",  # Used in W&B if installed
 )
 
-# 6. Create the trainer & start training
+# Set up the trainer and start training
 trainer = SentenceTransformerTrainer(
     model=model,
     args=args,
