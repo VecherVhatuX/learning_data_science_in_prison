@@ -43,6 +43,7 @@ def disable_ssl_warnings():
     
 disable_ssl_warnings()
 
+# Set the log level to INFO to get more information
 logging.basicConfig(format="%(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
 
 data_path = os.environ.get('DATA_PATH', '/home/ma-user/data/data.pkl')
@@ -56,9 +57,9 @@ for i in range(n):
   print(f"GPU {i}: {name}")
 
 if not model_path:
-    model_path =  "bert-base-uncased"
+    model_path =  "bert-base-uncased"#"google-t5/t5-small"
 
-train_batch_size = 64
+train_batch_size = 64  # The larger you select this, the better the results (usually). But it requires more GPU memory
 max_seq_length = 75
 num_epochs = 1
 
@@ -151,6 +152,3 @@ trainer = SentenceTransformerTrainer(
 )
 
 trainer.train()
-
-with open(output_path, 'wb') as w:
-    w.write('asddddddddddddddddd')
