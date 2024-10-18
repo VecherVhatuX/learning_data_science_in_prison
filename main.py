@@ -1,26 +1,36 @@
  ```python
 import logging
 import sys
+import traceback
 from datetime import datetime
 import os
+
 from datasets import load_dataset
+
 from sentence_transformers import SentenceTransformer, losses
 from sentence_transformers.evaluation import EmbeddingSimilarityEvaluator
+from sentence_transformers.similarity_functions import SimilarityFunction
 from sentence_transformers.trainer import SentenceTransformerTrainer
 from sentence_transformers.training_args import BatchSamplers, SentenceTransformerTrainingArguments
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, default_data_collator, get_linear_schedule_with_warmup, AutoModelForSequenceClassification
 from peft import get_peft_config, get_peft_model, get_peft_model_state_dict, PrefixTuningConfig, TaskType
+
 import torch
 import requests
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
+
+
 from datasets import Dataset, load_dataset
 from pathlib import Path
-import json
+import os, json
 from tqdm import tqdm 
+
 import pickle
+
 from random import sample
 from datasets import Dataset
 from sentence_transformers import InputExample
+
 from transformers import AutoModelForSequenceClassification
 from peft import LoraConfig, PrefixTuningConfig
 
@@ -34,6 +44,7 @@ def disable_ssl_warnings():
     
 disable_ssl_warnings()
 
+# Set the log level to INFO to get more information
 logging.basicConfig(format="%(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
 
 data_path = os.environ.get('DATA_PATH', '/home/ma-user/data/data.pkl')
@@ -47,17 +58,18 @@ for i in range(n):
   print(f"GPU {i}: {name}")
 
 if not model_path:
-    model_path = "bert-base-uncased"
+    model_path =  "bert-base-uncased"#"google-t5/t5-small"
 
-train_batch_size = 64
+train_batch_size = 64  # The larger you select this, the better the results (usually). But it requires more GPU memory
 max_seq_length = 75
 num_epochs = 1
 
 with open(data_path, 'rb') as f:
     all_dataset = pickle.load(f)
 
-train_data = all_dataset[:61]
+train_data = all_dataset[0:61]
 eval_data = all_dataset[61:]
+
 
 def prepare_dataset(data, negative_sample_size=3):
     dataset_list = []
@@ -90,6 +102,8 @@ output_dir = (
 prefix_tuning_config = PrefixTuningConfig(task_type=TaskType.FEATURE_EXTRACTION, inference_mode=False, num_virtual_tokens=10)
 
 sentence_transformer = SentenceTransformer(model_path)
+print(sentence_transformer)
+print(sentence_transformer.max_seq_length, sentence_transformer[0].auto_model.config.max_position_embeddings )
 
 peft_config = LoraConfig(
     target_modules=["dense"],
@@ -103,6 +117,7 @@ peft_config = LoraConfig(
 sentence_transformer._modules["0"].auto_model = get_peft_model(
     sentence_transformer._modules["0"].auto_model, peft_config
 )
+print(sentence_transformer.max_seq_length, sentence_transformer[0].auto_model.config.max_position_embeddings )
 model = sentence_transformer
 
 model.train()
@@ -139,7 +154,4 @@ trainer = SentenceTransformerTrainer(
 )
 
 trainer.train()
-
-with open(output_path, 'wb') as w:
-    w.write(b'asddddddddddddddddd')
 ```
