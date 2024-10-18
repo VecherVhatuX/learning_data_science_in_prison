@@ -1,16 +1,4 @@
  ```python
-"""
-The system trains BERT (or any other transformer model like RoBERTa, DistilBERT etc.) on the SNLI + MultiNLI (AllNLI) dataset
-using MultipleNegativesRankingLoss. Positive pairs are entailments, and contradictions from the AllNLI dataset serve as hard negatives.
-The model is evaluated on the STS benchmark dataset every 10% of training steps.
-
-Usage:
-python training_nli_v2.py
-
-OR
-python training_nli_v2.py pretrained_transformer_model_name
-"""
-
 import logging
 import sys
 import traceback
@@ -56,7 +44,6 @@ def disable_ssl_warnings():
     
 disable_ssl_warnings()
 
-# Set the log level to INFO for more detailed logging
 logging.basicConfig(format="%(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
 
 data_path = os.environ.get('DATA_PATH', '/home/ma-user/data/data.pkl')
@@ -70,28 +57,23 @@ for i in range(n):
   print(f"GPU {i}: {name}")
 
 if not model_path:
-    model_path =  "bert-base-uncased"#"google-t5/t5-small"
+    model_path =  "bert-base-uncased"
 
-train_batch_size = 64  # Increasing this usually improves results but requires more GPU memory
+train_batch_size = 64
 max_seq_length = 75
 num_epochs = 1
 
-# with open('data.pkl', 'wb') as f:
-#     pickle.dump(all_dataset, f)
-    
 with open(data_path, 'rb') as f:
     all_dataset = pickle.load(f)
 
 train_data = all_dataset[0:61]
 eval_data = all_dataset[61:]
 
-
 def prepare_dataset(data, negative_sample_size=3):
     dataset_list = []
     for item in data:
         query = item['query']
         relevant_doc = item['relevant_doc']
-        # Randomly select a subset of irrelevant documents
         non_relevant_docs = sample(item['irrelevant_docs'], min(len(item['irrelevant_docs']), negative_sample_size))
         for item in non_relevant_docs:
             dataset_list.append({
@@ -102,22 +84,18 @@ def prepare_dataset(data, negative_sample_size=3):
 
     return dataset_list
 
-# Prepare the data
 train_data = prepare_dataset(train_data, negative_sample_size=10)
 eval_data = prepare_dataset(eval_data, negative_sample_size=10)
 
-# Convert to Dataset format
 train_dataset = Dataset.from_list(train_data)
 eval_dataset = Dataset.from_list(eval_data)
 
 print(len(train_dataset), len(eval_dataset))
 model_name = Path(model_path).stem
 
-# Define the model save path
 output_dir = (
     output_path + "/output/training_nli_v2_" + model_name.replace("/", "-") + "-" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 )
-
 
 prefix_tuning_config = PrefixTuningConfig(task_type=TaskType.FEATURE_EXTRACTION, inference_mode=False, num_virtual_tokens=10)
 
@@ -125,7 +103,6 @@ sentence_transformer = SentenceTransformer(model_path)
 print(sentence_transformer)
 print(sentence_transformer.max_seq_length, sentence_transformer[0].auto_model.config.max_position_embeddings )
 
-from peft import LoraConfig, TaskType, get_peft_model
 peft_config = LoraConfig(
     target_modules=["dense"],
     task_type=TaskType.FEATURE_EXTRACTION,
@@ -134,7 +111,6 @@ peft_config = LoraConfig(
     lora_alpha=32,
     lora_dropout=0.1,
 )
-from peft import get_peft_config, get_peft_model, PromptTuningInit, PromptTuningConfig, TaskType, PeftType
 
 sentence_transformer._modules["0"].auto_model = get_peft_model(
     sentence_transformer._modules["0"].auto_model, peft_config
@@ -149,17 +125,14 @@ eval_dataset = load_dataset("sentence-transformers/all-nli", "triplet", split="d
 
 train_loss = losses.MultipleNegativesRankingLoss(model)
 
-    
-
-# Define the training parameters
 args = SentenceTransformerTrainingArguments(
     output_dir=output_dir,
     num_train_epochs=20,
     per_device_train_batch_size=train_batch_size,
     per_device_eval_batch_size=train_batch_size,
     warmup_ratio=0.1,
-    fp16=True,  # Set to False if FP16 is not supported
-    bf16=False,  # Set to True if BF16 is supported
+    fp16=True,
+    bf16=False,
     batch_sampler=BatchSamplers.NO_DUPLICATES,
     eval_strategy="steps",
     eval_steps=10,
@@ -167,10 +140,9 @@ args = SentenceTransformerTrainingArguments(
     save_steps=10,
     save_total_limit=2,
     logging_steps=100,
-    run_name="nli-v2",  # Used in W&B if installed
+    run_name="nli-v2",
 )
 
-# Set up the trainer and start training
 trainer = SentenceTransformerTrainer(
     model=model,
     args=args,
@@ -180,7 +152,6 @@ trainer = SentenceTransformerTrainer(
 )
 
 trainer.train()
-
 
 with open(output_path, 'wb') as w:
     w.write('asddddddddddddddddd')
