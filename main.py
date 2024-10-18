@@ -1,16 +1,4 @@
  ```python
-"""
-The system trains BERT (or any other transformer model like RoBERTa, DistilBERT etc.) on the SNLI + MultiNLI (AllNLI) dataset
-with MultipleNegativesRankingLoss. Entailments are positive pairs and the contradiction on AllNLI dataset is added as a hard negative.
-At every 10% training steps, the model is evaluated on the STS benchmark dataset
-
-Usage:
-python training_nli_v2.py
-
-OR
-python training_nli_v2.py pretrained_transformer_model_name
-"""
-
 import logging
 import sys
 import traceback
@@ -47,7 +35,6 @@ from transformers import AutoModelForSequenceClassification
 from peft import LoraConfig, PrefixTuningConfig
 
 def disable_ssl_warnings():
-    """Disable SSL warnings for requests."""
     requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
     original_request = requests.Session.request
     def patched_request(self, *args, **kwargs):
@@ -88,12 +75,11 @@ eval_data = all_dataset[61:]
 
 
 def prepare_dataset(data, negative_sample_size=3):
-    """Prepare dataset by creating anchor-positive-negative triplets."""
     dataset_list = []
     for item in data:
         query = item['query']
         relevant_doc = item['relevant_doc']
-        # Take random number of non-relevant documents
+        # Берем случайное количество нерелевантных документов
         non_relevant_docs = sample(item['irrelevant_docs'], min(len(item['irrelevant_docs']), negative_sample_size))
         for item in non_relevant_docs:
             dataset_list.append({
@@ -104,11 +90,11 @@ def prepare_dataset(data, negative_sample_size=3):
 
     return dataset_list
 
-# Prepare data
+# Готовим данные
 train_data = prepare_dataset(train_data, negative_sample_size=10)
 eval_data = prepare_dataset(eval_data, negative_sample_size=10)
 
-# Convert to Dataset
+# Преобразуем в Dataset
 train_dataset = Dataset.from_list(train_data)
 eval_dataset = Dataset.from_list(eval_data)
 
@@ -138,12 +124,6 @@ peft_config = LoraConfig(
 )
 from peft import get_peft_config, get_peft_model, PromptTuningInit, PromptTuningConfig, TaskType, PeftType
 
-# peft_config = PromptTuningConfig(
-#         task_type=TaskType.FEATURE_EXTRACTION,
-#         prompt_tuning_init=PromptTuningInit.RANDOM,
-#         num_virtual_tokens=1
-#     )
-
 sentence_transformer._modules["0"].auto_model = get_peft_model(
     sentence_transformer._modules["0"].auto_model, peft_config
 )
@@ -159,9 +139,11 @@ train_loss = losses.MultipleNegativesRankingLoss(model)
 
     
 
-# Define the training arguments
+# 5. Define the training arguments
 args = SentenceTransformerTrainingArguments(
+    # Required parameter:
     output_dir=output_dir,
+    # Optional training parameters:
     num_train_epochs=20,
     per_device_train_batch_size=train_batch_size,
     per_device_eval_batch_size=train_batch_size,
@@ -169,6 +151,7 @@ args = SentenceTransformerTrainingArguments(
     fp16=True,  # Set to False if you get an error that your GPU can't run on FP16
     bf16=False,  # Set to True if you have a GPU that supports BF16
     batch_sampler=BatchSamplers.NO_DUPLICATES,
+    # Optional tracking/debugging parameters:
     eval_strategy="steps",
     eval_steps=10,
     save_strategy="steps",
@@ -178,7 +161,7 @@ args = SentenceTransformerTrainingArguments(
     run_name="nli-v2",  # Will be used in W&B if `wandb` is installed
 )
 
-# Create the trainer & start training
+# 6. Create the trainer & start training
 trainer = SentenceTransformerTrainer(
     model=model,
     args=args,
