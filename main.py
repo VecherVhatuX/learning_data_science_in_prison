@@ -23,20 +23,14 @@ from random import sample
 from sentence_transformers import InputExample
 
 class ModelTrainer:
-    """
-    A class to train a sentence transformer model.
-    """
+    """A class to train a sentence transformer model."""
 
     def __init__(self):
-        """
-        Initialize the model trainer.
-        """
+        """Initialize the model trainer."""
         self.device_info()
 
-    def disable_ssl_warnings(self):
-        """
-        Disable SSL warnings for requests.
-        """
+    def _disable_ssl_warnings(self):
+        """Disable SSL warnings for requests."""
         requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
         original_request = requests.Session.request
         def patched_request(self, *args, **kwargs):
@@ -44,25 +38,20 @@ class ModelTrainer:
             return original_request(self, *args, **kwargs)
         requests.Session.request = patched_request
 
-    def setup_logging(self):
-        """
-        Set up logging for the model trainer.
-        """
+    def _setup_logging(self):
+        """Set up logging for the model trainer."""
         logging.basicConfig(format="%(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
 
-    def device_info(self):
-        """
-        Print information about the available devices.
-        """
+    def _device_info(self):
+        """Print information about the available devices."""
         n = torch.cuda.device_count()
         print(f"There are {n} GPUs available for torch.")
         for i in range(n):
             name = torch.cuda.get_device_name(i)
             print(f"GPU {i}: {name}")
 
-    def load_model(self, model_path):
-        """
-        Load a sentence transformer model.
+    def _load_model(self, model_path):
+        """Load a sentence transformer model.
 
         Args:
             model_path (str): The path to the model.
@@ -72,9 +61,8 @@ class ModelTrainer:
         """
         return SentenceTransformer(model_path)
 
-    def get_peft_model_instance(self, model):
-        """
-        Get a PEFT model instance.
+    def _get_peft_model_instance(self, model):
+        """Get a PEFT model instance.
 
         Args:
             model (SentenceTransformer): The model to convert.
@@ -94,8 +82,7 @@ class ModelTrainer:
         return model
 
     def load_pretrained_model(self, model_path):
-        """
-        Load a pretrained sentence transformer model and convert it to a PEFT model.
+        """Load a pretrained sentence transformer model and convert it to a PEFT model.
 
         Args:
             model_path (str): The path to the model.
@@ -103,12 +90,11 @@ class ModelTrainer:
         Returns:
             SentenceTransformer: The loaded PEFT model.
         """
-        model = self.load_model(model_path)
-        return self.get_peft_model_instance(model)
+        model = self._load_model(model_path)
+        return self._get_peft_model_instance(model)
 
-    def load_data(self, data_path):
-        """
-        Load data from a file.
+    def _load_data(self, data_path):
+        """Load data from a file.
 
         Args:
             data_path (str): The path to the data file.
@@ -119,9 +105,8 @@ class ModelTrainer:
         with open(data_path, 'rb') as f:
             return pickle.load(f)
 
-    def prepare_dataset(self, data, negative_sample_size=3):
-        """
-        Prepare a dataset for training.
+    def _prepare_dataset(self, data, negative_sample_size=3):
+        """Prepare a dataset for training.
 
         Args:
             data (list): The data to prepare.
@@ -143,9 +128,8 @@ class ModelTrainer:
                 })
         return dataset_list
 
-    def create_dataset(self, data):
-        """
-        Create a dataset from a list of data.
+    def _create_dataset(self, data):
+        """Create a dataset from a list of data.
 
         Args:
             data (list): The data to create a dataset from.
@@ -153,12 +137,11 @@ class ModelTrainer:
         Returns:
             Dataset: The created dataset.
         """
-        dataset_list = self.prepare_dataset(data)
+        dataset_list = self._prepare_dataset(data)
         return Dataset.from_list(dataset_list)
 
-    def load_datasets(self):
-        """
-        Load the training and evaluation datasets.
+    def _load_datasets(self):
+        """Load the training and evaluation datasets.
 
         Returns:
             tuple: The training and evaluation datasets.
@@ -167,9 +150,8 @@ class ModelTrainer:
         eval_dataset = load_dataset("sentence-transformers/all-nli", "triplet", split="dev").select(range(1000))
         return train_dataset, eval_dataset
 
-    def get_training_args(self, output_dir, train_batch_size):
-        """
-        Get the training arguments.
+    def _get_training_args(self, output_dir, train_batch_size):
+        """Get the training arguments.
 
         Args:
             output_dir (str): The output directory.
@@ -197,8 +179,7 @@ class ModelTrainer:
         )
 
     def train_model(self, model, train_dataset, eval_dataset, args):
-        """
-        Train a sentence transformer model.
+        """Train a sentence transformer model.
 
         Args:
             model (SentenceTransformer): The model to train.
@@ -216,9 +197,8 @@ class ModelTrainer:
         )
         trainer.train()
 
-    def save_model(self, model, output_path):
-        """
-        Save a sentence transformer model.
+    def _save_model(self, model, output_path):
+        """Save a sentence transformer model.
 
         Args:
             model (SentenceTransformer): The model to save.
@@ -228,12 +208,10 @@ class ModelTrainer:
             pickle.dump(model, w)
 
     def run(self):
-        """
-        Run the model trainer.
-        """
-        self.disable_ssl_warnings()
-        self.setup_logging()
-        self.device_info()
+        """Run the model trainer."""
+        self._disable_ssl_warnings()
+        self._setup_logging()
+        self._device_info()
 
         data_path = os.environ.get('DATA_PATH', '/home/ma-user/data/data.pkl')
         output_path = os.environ.get('OUTPUT_PATH', '/tmp/output')
@@ -245,16 +223,16 @@ class ModelTrainer:
         num_epochs = 1
 
         model = self.load_pretrained_model(model_path)
-        train_dataset, eval_dataset = self.load_datasets()
+        train_dataset, eval_dataset = self._load_datasets()
 
         model_name = Path(model_path).stem
         output_dir = output_path + "/output/training_nli_v2_" + model_name.replace("/", "-") + "-" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-        args = self.get_training_args(output_dir, train_batch_size)
+        args = self._get_training_args(output_dir, train_batch_size)
 
         model.train()
         self.train_model(model, train_dataset, eval_dataset, args)
-        self.save_model(model, output_path)
+        self._save_model(model, output_path)
 
 if __name__ == "__main__":
     ModelTrainer().run()
