@@ -23,10 +23,20 @@ from random import sample
 from sentence_transformers import InputExample
 
 class ModelTrainer:
+    """
+    A class to train a sentence transformer model.
+    """
+
     def __init__(self):
+        """
+        Initialize the model trainer.
+        """
         self.device_info()
 
     def disable_ssl_warnings(self):
+        """
+        Disable SSL warnings for requests.
+        """
         requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
         original_request = requests.Session.request
         def patched_request(self, *args, **kwargs):
@@ -35,9 +45,15 @@ class ModelTrainer:
         requests.Session.request = patched_request
 
     def setup_logging(self):
+        """
+        Set up logging for the model trainer.
+        """
         logging.basicConfig(format="%(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
 
     def device_info(self):
+        """
+        Print information about the available devices.
+        """
         n = torch.cuda.device_count()
         print(f"There are {n} GPUs available for torch.")
         for i in range(n):
@@ -45,9 +61,27 @@ class ModelTrainer:
             print(f"GPU {i}: {name}")
 
     def load_model(self, model_path):
+        """
+        Load a sentence transformer model.
+
+        Args:
+            model_path (str): The path to the model.
+
+        Returns:
+            SentenceTransformer: The loaded model.
+        """
         return SentenceTransformer(model_path)
 
     def get_peft_model_instance(self, model):
+        """
+        Get a PEFT model instance.
+
+        Args:
+            model (SentenceTransformer): The model to convert.
+
+        Returns:
+            SentenceTransformer: The PEFT model instance.
+        """
         peft_config = LoraConfig(
             target_modules=["dense"],
             task_type=TaskType.FEATURE_EXTRACTION,
@@ -60,14 +94,42 @@ class ModelTrainer:
         return model
 
     def load_pretrained_model(self, model_path):
+        """
+        Load a pretrained sentence transformer model and convert it to a PEFT model.
+
+        Args:
+            model_path (str): The path to the model.
+
+        Returns:
+            SentenceTransformer: The loaded PEFT model.
+        """
         model = self.load_model(model_path)
         return self.get_peft_model_instance(model)
 
     def load_data(self, data_path):
+        """
+        Load data from a file.
+
+        Args:
+            data_path (str): The path to the data file.
+
+        Returns:
+            Any: The loaded data.
+        """
         with open(data_path, 'rb') as f:
             return pickle.load(f)
 
     def prepare_dataset(self, data, negative_sample_size=3):
+        """
+        Prepare a dataset for training.
+
+        Args:
+            data (list): The data to prepare.
+            negative_sample_size (int): The number of negative samples to use. Defaults to 3.
+
+        Returns:
+            list: The prepared dataset.
+        """
         dataset_list = []
         for item in data:
             query = item['query']
@@ -82,15 +144,40 @@ class ModelTrainer:
         return dataset_list
 
     def create_dataset(self, data):
+        """
+        Create a dataset from a list of data.
+
+        Args:
+            data (list): The data to create a dataset from.
+
+        Returns:
+            Dataset: The created dataset.
+        """
         dataset_list = self.prepare_dataset(data)
         return Dataset.from_list(dataset_list)
 
     def load_datasets(self):
+        """
+        Load the training and evaluation datasets.
+
+        Returns:
+            tuple: The training and evaluation datasets.
+        """
         train_dataset = load_dataset("sentence-transformers/all-nli", "triplet", split="train").select(range(10000))
         eval_dataset = load_dataset("sentence-transformers/all-nli", "triplet", split="dev").select(range(1000))
         return train_dataset, eval_dataset
 
     def get_training_args(self, output_dir, train_batch_size):
+        """
+        Get the training arguments.
+
+        Args:
+            output_dir (str): The output directory.
+            train_batch_size (int): The batch size for training.
+
+        Returns:
+            SentenceTransformerTrainingArguments: The training arguments.
+        """
         return SentenceTransformerTrainingArguments(
             output_dir=output_dir,
             num_train_epochs=20,
@@ -110,6 +197,15 @@ class ModelTrainer:
         )
 
     def train_model(self, model, train_dataset, eval_dataset, args):
+        """
+        Train a sentence transformer model.
+
+        Args:
+            model (SentenceTransformer): The model to train.
+            train_dataset (Dataset): The training dataset.
+            eval_dataset (Dataset): The evaluation dataset.
+            args (SentenceTransformerTrainingArguments): The training arguments.
+        """
         train_loss = losses.MultipleNegativesRankingLoss(model)
         trainer = SentenceTransformerTrainer(
             model=model,
@@ -121,10 +217,20 @@ class ModelTrainer:
         trainer.train()
 
     def save_model(self, model, output_path):
+        """
+        Save a sentence transformer model.
+
+        Args:
+            model (SentenceTransformer): The model to save.
+            output_path (str): The output path.
+        """
         with open(output_path + '/model.pkl', 'wb') as w:
             pickle.dump(model, w)
 
     def run(self):
+        """
+        Run the model trainer.
+        """
         self.disable_ssl_warnings()
         self.setup_logging()
         self.device_info()
