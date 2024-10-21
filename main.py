@@ -1,23 +1,9 @@
-"""
-The system trains BERT (or any other transformer model like RoBERTa, DistilBERT etc.) on the SNLI + MultiNLI (AllNLI) dataset
-with MultipleNegativesRankingLoss. Entailments are positive pairs and the contradiction on AllNLI dataset is added as a hard negative.
-At every 10% training steps, the model is evaluated on the STS benchmark dataset
-
-Usage:
-python training_nli_v2.py
-
-OR
-python training_nli_v2.py pretrained_transformer_model_name
-"""
-
 import logging
 import sys
 import traceback
 from datetime import datetime
 import os
-
 from datasets import load_dataset
-
 from sentence_transformers import SentenceTransformer, losses
 from sentence_transformers.evaluation import EmbeddingSimilarityEvaluator
 from sentence_transformers.similarity_functions import SimilarityFunction
@@ -25,18 +11,14 @@ from sentence_transformers.trainer import SentenceTransformerTrainer
 from sentence_transformers.training_args import BatchSamplers, SentenceTransformerTrainingArguments
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, default_data_collator, get_linear_schedule_with_warmup, AutoModelForSequenceClassification
 from peft import get_peft_config, get_peft_model, get_peft_model_state_dict, PrefixTuningConfig, TaskType, LoraConfig
-
 import torch
 import requests
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
-
 from datasets import Dataset, load_dataset
 from pathlib import Path
 import os, json
-from tqdm import tqdm 
-
+from tqdm import tqdm
 import pickle
-
 from random import sample
 from datasets import Dataset
 from sentence_transformers import InputExample
@@ -99,7 +81,6 @@ def prepare_dataset(data, negative_sample_size=3):
                 "positive": relevant_doc,
                 "negative": item
             })
-
     return dataset_list
 
 def create_dataset(data):
@@ -118,8 +99,8 @@ def get_training_args(output_dir, train_batch_size):
         per_device_train_batch_size=train_batch_size,
         per_device_eval_batch_size=train_batch_size,
         warmup_ratio=0.1,
-        fp16=True,  
-        bf16=False,  
+        fp16=True,
+        bf16=False,
         batch_sampler=BatchSamplers.NO_DUPLICATES,
         eval_strategy="steps",
         eval_steps=1000,
@@ -127,7 +108,7 @@ def get_training_args(output_dir, train_batch_size):
         save_steps=1000,
         save_total_limit=2,
         logging_steps=100,
-        run_name="nli-v2",  
+        run_name="nli-v2",
     )
 
 def train_model(model, train_dataset, eval_dataset, args):
@@ -147,7 +128,7 @@ def save_model(model, output_path):
 
 def main():
     setup_environment()
-    
+
     data_path = os.environ.get('DATA_PATH', '/home/ma-user/data/data.pkl')
     output_path = os.environ.get('OUTPUT_PATH', '/tmp/output')
     model_path = os.environ.get('MODEL_PATH', '/home/ma-user/bert-base-uncased')
@@ -155,16 +136,14 @@ def main():
     if not model_path:
         model_path = "bert-base-uncased"
 
-    train_batch_size = 64  
+    train_batch_size = 64
     max_seq_length = 75
     num_epochs = 1
 
     model = load_pretrained_model(model_path)
     train_dataset, eval_dataset = load_datasets()
     model_name = Path(model_path).stem
-    output_dir = (
-        output_path + "/output/training_nli_v2_" + model_name.replace("/", "-") + "-" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    )
+    output_dir = output_path + "/output/training_nli_v2_" + model_name.replace("/", "-") + "-" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     args = get_training_args(output_dir, train_batch_size)
     model.train()
     train_model(model, train_dataset, eval_dataset, args)
