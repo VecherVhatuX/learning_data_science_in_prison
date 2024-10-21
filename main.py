@@ -24,12 +24,11 @@ from sentence_transformers.similarity_functions import SimilarityFunction
 from sentence_transformers.trainer import SentenceTransformerTrainer
 from sentence_transformers.training_args import BatchSamplers, SentenceTransformerTrainingArguments
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, default_data_collator, get_linear_schedule_with_warmup, AutoModelForSequenceClassification
-from peft import get_peft_config, get_peft_model, get_peft_model_state_dict, PrefixTuningConfig, TaskType
+from peft import get_peft_config, get_peft_model, get_peft_model_state_dict, PrefixTuningConfig, TaskType, LoraConfig
 
 import torch
 import requests
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
-
 
 from datasets import Dataset, load_dataset
 from pathlib import Path
@@ -41,9 +40,6 @@ import pickle
 from random import sample
 from datasets import Dataset
 from sentence_transformers import InputExample
-
-from transformers import AutoModelForSequenceClassification
-from peft import LoraConfig, PrefixTuningConfig
 
 def disable_ssl_warnings():
     requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
@@ -110,9 +106,9 @@ def get_training_args(output_dir, train_batch_size):
         bf16=False,  
         batch_sampler=BatchSamplers.NO_DUPLICATES,
         eval_strategy="steps",
-        eval_steps=10,
+        eval_steps=1000,
         save_strategy="steps",
-        save_steps=10,
+        save_steps=1000,
         save_total_limit=2,
         logging_steps=100,
         run_name="nli-v2",  
@@ -145,16 +141,10 @@ def main():
     max_seq_length = 75
     num_epochs = 1
 
-    all_dataset = load_data(data_path)
-    train_data = all_dataset[0:61]
-    eval_data = all_dataset[61:]
+    train_dataset = load_dataset("sentence-transformers/all-nli", "triplet", split="train").select(range(10000))
+    eval_dataset = load_dataset("sentence-transformers/all-nli", "triplet", split="dev").select(range(1000))
 
-    train_dataset = create_dataset(train_data)
-    eval_dataset = create_dataset(eval_data)
-
-    print(len(train_dataset), len(eval_dataset))
     model_name = Path(model_path).stem
-
     output_dir = (
         output_path + "/output/training_nli_v2_" + model_name.replace("/", "-") + "-" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     )
@@ -164,13 +154,10 @@ def main():
 
     model.train()
 
-    train_dataset = load_dataset("sentence-transformers/all-nli", "triplet", split="train").select(range(10000))
-    eval_dataset = load_dataset("sentence-transformers/all-nli", "triplet", split="dev").select(range(1000))
-
     train_model(model, train_dataset, eval_dataset, args)
 
-    with open(output_path, 'wb') as w:
-        w.write('asddddddddddddddddd')
+    with open(output_path + '/model.pkl', 'wb') as w:
+        pickle.dump(model, w)
 
 if __name__ == "__main__":
     main()
