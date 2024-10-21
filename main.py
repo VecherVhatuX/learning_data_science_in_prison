@@ -17,30 +17,36 @@ import numpy as np
 import pickle
 from tqdm import tqdm
 from random import sample
+from pathlib import Path
 
 class ModelTrainer:
     """A class to train a sentence transformer model."""
 
     def __init__(self):
         """Initialize the model trainer."""
+        # Initialize the device info
         self.device_info()
 
     def _disable_ssl_warnings(self):
         """Disable SSL warnings for requests."""
+        # Disable SSL warnings
         import requests
         requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)
         original_request = requests.Session.request
         def patched_request(self, *args, **kwargs):
+            # Set verify to False
             kwargs['verify'] = False
             return original_request(self, *args, **kwargs)
         requests.Session.request = patched_request
 
     def _setup_logging(self):
         """Set up logging for the model trainer."""
+        # Set up logging
         logging.basicConfig(format="%(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
 
     def _device_info(self):
         """Print information about the available devices."""
+        # Print device info
         n = torch.cuda.device_count()
         print(f"There are {n} GPUs available for torch.")
         for i in range(n):
@@ -56,6 +62,7 @@ class ModelTrainer:
         Returns:
             AutoModel: The loaded model.
         """
+        # Load the model
         return AutoModel.from_pretrained(model_path)
 
     def load_pretrained_model(self, model_path):
@@ -67,6 +74,7 @@ class ModelTrainer:
         Returns:
             AutoModel: The loaded model.
         """
+        # Load the pretrained model
         model = self._load_model(model_path)
         return model
 
@@ -79,6 +87,7 @@ class ModelTrainer:
         Returns:
             Any: The loaded data.
         """
+        # Load the data
         with open(data_path, 'rb') as f:
             return pickle.load(f)
 
@@ -92,6 +101,7 @@ class ModelTrainer:
         Returns:
             list: The prepared dataset.
         """
+        # Prepare the dataset
         dataset_list = []
         for item in data:
             query = item['query']
@@ -114,6 +124,7 @@ class ModelTrainer:
         Returns:
             Dataset: The created dataset.
         """
+        # Create the dataset
         dataset_list = self._prepare_dataset(data)
         class CustomDataset(Dataset):
             def __init__(self, dataset_list, tokenizer):
@@ -144,6 +155,7 @@ class ModelTrainer:
         Returns:
             tuple: The training and evaluation datasets.
         """
+        # Load the datasets
         train_dataset = self._create_dataset(self._load_data('data.pkl'))
         eval_dataset = self._create_dataset(self._load_data('data.pkl'))
         return train_dataset, eval_dataset
@@ -158,6 +170,7 @@ class ModelTrainer:
         Returns:
             dict: The training arguments.
         """
+        # Get the training arguments
         return {
             'output_dir': output_dir,
             'num_train_epochs': 20,
@@ -185,6 +198,7 @@ class ModelTrainer:
             eval_dataset (Dataset): The evaluation dataset.
             args (dict): The training arguments.
         """
+        # Train the model
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model.to(device)
         train_dataloader = DataLoader(train_dataset, batch_size=args['per_device_train_batch_size'], shuffle=True)
@@ -248,10 +262,12 @@ class ModelTrainer:
             model (AutoModel): The model to save.
             output_path (str): The output path.
         """
+        # Save the model
         model.save_pretrained(output_path)
 
     def run(self):
         """Run the model trainer."""
+        # Run the model trainer
         self._disable_ssl_warnings()
         self._setup_logging()
         self._device_info()
