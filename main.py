@@ -3,24 +3,20 @@ import sys
 import traceback
 from datetime import datetime
 import os
-from datasets import load_dataset
-from sentence_transformers import SentenceTransformer, losses
-from sentence_transformers.evaluation import EmbeddingSimilarityEvaluator
-from sentence_transformers.similarity_functions import SimilarityFunction
-from sentence_transformers.trainer import SentenceTransformerTrainer
-from sentence_transformers.training_args import BatchSamplers, SentenceTransformerTrainingArguments
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, default_data_collator, get_linear_schedule_with_warmup, AutoModelForSequenceClassification
-from peft import get_peft_config, get_peft_model, get_peft_model_state_dict, PrefixTuningConfig, TaskType, LoraConfig
+from transformers import AutoModel, AutoTokenizer
+from huggingface_hub import Repository
+from torch.utils.data import Dataset, DataLoader
 import torch
-import requests
-from requests.packages.urllib3.exceptions import InsecureRequestWarning
-from datasets import Dataset, load_dataset
-from pathlib import Path
-import os, json
-from tqdm import tqdm
+import torch.nn as nn
+import torch.optim as optim
+from torch.optim import lr_scheduler
+from transformers import AdamW, get_linear_schedule_with_warmup
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.metrics import accuracy_score
+import numpy as np
 import pickle
+from tqdm import tqdm
 from random import sample
-from sentence_transformers import InputExample
 
 class ModelTrainer:
     """A class to train a sentence transformer model."""
@@ -31,7 +27,8 @@ class ModelTrainer:
 
     def _disable_ssl_warnings(self):
         """Disable SSL warnings for requests."""
-        requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+        import requests
+        requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)
         original_request = requests.Session.request
         def patched_request(self, *args, **kwargs):
             kwargs['verify'] = False
@@ -57,41 +54,21 @@ class ModelTrainer:
             model_path (str): The path to the model.
 
         Returns:
-            SentenceTransformer: The loaded model.
+            AutoModel: The loaded model.
         """
-        return SentenceTransformer(model_path)
-
-    def _get_peft_model_instance(self, model):
-        """Get a PEFT model instance.
-
-        Args:
-            model (SentenceTransformer): The model to convert.
-
-        Returns:
-            SentenceTransformer: The PEFT model instance.
-        """
-        peft_config = LoraConfig(
-            target_modules=["dense"],
-            task_type=TaskType.FEATURE_EXTRACTION,
-            inference_mode=False,
-            r=8,
-            lora_alpha=32,
-            lora_dropout=0.1,
-        )
-        model._modules["0"].auto_model = get_peft_model(model._modules["0"].auto_model, peft_config)
-        return model
+        return AutoModel.from_pretrained(model_path)
 
     def load_pretrained_model(self, model_path):
-        """Load a pretrained sentence transformer model and convert it to a PEFT model.
+        """Load a pretrained sentence transformer model.
 
         Args:
             model_path (str): The path to the model.
 
         Returns:
-            SentenceTransformer: The loaded PEFT model.
+            AutoModel: The loaded model.
         """
         model = self._load_model(model_path)
-        return self._get_peft_model_instance(model)
+        return model
 
     def _load_data(self, data_path):
         """Load data from a file.
@@ -138,7 +115,28 @@ class ModelTrainer:
             Dataset: The created dataset.
         """
         dataset_list = self._prepare_dataset(data)
-        return Dataset.from_list(dataset_list)
+        class CustomDataset(Dataset):
+            def __init__(self, dataset_list, tokenizer):
+                self.dataset_list = dataset_list
+                self.tokenizer = tokenizer
+            def __len__(self):
+                return len(self.dataset_list)
+            def __getitem__(self, idx):
+                anchor = self.dataset_list[idx]['anchor']
+                positive = self.dataset_list[idx]['positive']
+                negative = self.dataset_list[idx]['negative']
+                anchor_encoding = self.tokenizer(anchor, return_tensors='pt', max_length=75, truncation=True, padding='max_length')
+                positive_encoding = self.tokenizer(positive, return_tensors='pt', max_length=75, truncation=True, padding='max_length')
+                negative_encoding = self.tokenizer(negative, return_tensors='pt', max_length=75, truncation=True, padding='max_length')
+                return {
+                    'anchor_input_ids': anchor_encoding['input_ids'].flatten(),
+                    'anchor_attention_mask': anchor_encoding['attention_mask'].flatten(),
+                    'positive_input_ids': positive_encoding['input_ids'].flatten(),
+                    'positive_attention_mask': positive_encoding['attention_mask'].flatten(),
+                    'negative_input_ids': negative_encoding['input_ids'].flatten(),
+                    'negative_attention_mask': negative_encoding['attention_mask'].flatten(),
+                }
+        return CustomDataset(dataset_list, AutoTokenizer.from_pretrained('bert-base-uncased'))
 
     def _load_datasets(self):
         """Load the training and evaluation datasets.
@@ -146,8 +144,8 @@ class ModelTrainer:
         Returns:
             tuple: The training and evaluation datasets.
         """
-        train_dataset = load_dataset("sentence-transformers/all-nli", "triplet", split="train").select(range(10000))
-        eval_dataset = load_dataset("sentence-transformers/all-nli", "triplet", split="dev").select(range(1000))
+        train_dataset = self._create_dataset(self._load_data('data.pkl'))
+        eval_dataset = self._create_dataset(self._load_data('data.pkl'))
         return train_dataset, eval_dataset
 
     def _get_training_args(self, output_dir, train_batch_size):
@@ -158,54 +156,99 @@ class ModelTrainer:
             train_batch_size (int): The batch size for training.
 
         Returns:
-            SentenceTransformerTrainingArguments: The training arguments.
+            dict: The training arguments.
         """
-        return SentenceTransformerTrainingArguments(
-            output_dir=output_dir,
-            num_train_epochs=20,
-            per_device_train_batch_size=train_batch_size,
-            per_device_eval_batch_size=train_batch_size,
-            warmup_ratio=0.1,
-            fp16=True,
-            bf16=False,
-            batch_sampler=BatchSamplers.NO_DUPLICATES,
-            eval_strategy="steps",
-            eval_steps=1000,
-            save_strategy="steps",
-            save_steps=1000,
-            save_total_limit=2,
-            logging_steps=100,
-            run_name="nli-v2",
-        )
+        return {
+            'output_dir': output_dir,
+            'num_train_epochs': 20,
+            'per_device_train_batch_size': train_batch_size,
+            'per_device_eval_batch_size': train_batch_size,
+            'warmup_ratio': 0.1,
+            'fp16': True,
+            'bf16': False,
+            'batch_sampler': 'no_duplicates',
+            'eval_strategy': 'steps',
+            'eval_steps': 1000,
+            'save_strategy': 'steps',
+            'save_steps': 1000,
+            'save_total_limit': 2,
+            'logging_steps': 100,
+            'run_name': "nli-v2",
+        }
 
     def train_model(self, model, train_dataset, eval_dataset, args):
         """Train a sentence transformer model.
 
         Args:
-            model (SentenceTransformer): The model to train.
+            model (AutoModel): The model to train.
             train_dataset (Dataset): The training dataset.
             eval_dataset (Dataset): The evaluation dataset.
-            args (SentenceTransformerTrainingArguments): The training arguments.
+            args (dict): The training arguments.
         """
-        train_loss = losses.MultipleNegativesRankingLoss(model)
-        trainer = SentenceTransformerTrainer(
-            model=model,
-            args=args,
-            train_dataset=train_dataset,
-            eval_dataset=eval_dataset,
-            loss=train_loss
-        )
-        trainer.train()
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model.to(device)
+        train_dataloader = DataLoader(train_dataset, batch_size=args['per_device_train_batch_size'], shuffle=True)
+        eval_dataloader = DataLoader(eval_dataset, batch_size=args['per_device_eval_batch_size'], shuffle=False)
+        optimizer = AdamW(model.parameters(), lr=1e-5)
+        scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=len(train_dataloader) * args['num_train_epochs'] * args['warmup_ratio'], num_training_steps=len(train_dataloader) * args['num_train_epochs'])
+        for epoch in range(args['num_train_epochs']):
+            model.train()
+            total_loss = 0
+            for batch in train_dataloader:
+                input_ids = batch['anchor_input_ids'].to(device)
+                attention_mask = batch['anchor_attention_mask'].to(device)
+                positive_input_ids = batch['positive_input_ids'].to(device)
+                positive_attention_mask = batch['positive_attention_mask'].to(device)
+                negative_input_ids = batch['negative_input_ids'].to(device)
+                negative_attention_mask = batch['negative_attention_mask'].to(device)
+                optimizer.zero_grad()
+                anchor_outputs = model(input_ids, attention_mask=attention_mask)
+                positive_outputs = model(positive_input_ids, attention_mask=positive_attention_mask)
+                negative_outputs = model(negative_input_ids, attention_mask=negative_attention_mask)
+                anchor_embeddings = anchor_outputs.last_hidden_state[:, 0, :]
+                positive_embeddings = positive_outputs.last_hidden_state[:, 0, :]
+                negative_embeddings = negative_outputs.last_hidden_state[:, 0, :]
+                similarity = cosine_similarity(anchor_embeddings.detach().cpu().numpy(), positive_embeddings.detach().cpu().numpy())
+                similarity_negative = cosine_similarity(anchor_embeddings.detach().cpu().numpy(), negative_embeddings.detach().cpu().numpy())
+                labels = torch.ones(similarity.shape[0])
+                loss = nn.MSELoss()(similarity, labels) + nn.MSELoss()(similarity_negative, 1-labels)
+                loss.backward()
+                optimizer.step()
+                scheduler.step()
+                total_loss += loss.item()
+            print(f'Epoch {epoch+1}, Loss: {total_loss / len(train_dataloader)}')
+            model.eval()
+            with torch.no_grad():
+                total_correct = 0
+                for batch in eval_dataloader:
+                    input_ids = batch['anchor_input_ids'].to(device)
+                    attention_mask = batch['anchor_attention_mask'].to(device)
+                    positive_input_ids = batch['positive_input_ids'].to(device)
+                    positive_attention_mask = batch['positive_attention_mask'].to(device)
+                    negative_input_ids = batch['negative_input_ids'].to(device)
+                    negative_attention_mask = batch['negative_attention_mask'].to(device)
+                    anchor_outputs = model(input_ids, attention_mask=attention_mask)
+                    positive_outputs = model(positive_input_ids, attention_mask=positive_attention_mask)
+                    negative_outputs = model(negative_input_ids, attention_mask=negative_attention_mask)
+                    anchor_embeddings = anchor_outputs.last_hidden_state[:, 0, :]
+                    positive_embeddings = positive_outputs.last_hidden_state[:, 0, :]
+                    negative_embeddings = negative_outputs.last_hidden_state[:, 0, :]
+                    similarity = cosine_similarity(anchor_embeddings.detach().cpu().numpy(), positive_embeddings.detach().cpu().numpy())
+                    similarity_negative = cosine_similarity(anchor_embeddings.detach().cpu().numpy(), negative_embeddings.detach().cpu().numpy())
+                    labels = torch.ones(similarity.shape[0])
+                    predicted = torch.argmax(torch.cat((similarity.unsqueeze(1), similarity_negative.unsqueeze(1)), dim=1), dim=1)
+                    total_correct += (predicted == labels).sum().item()
+                accuracy = total_correct / len(eval_dataloader.dataset)
+                print(f'Epoch {epoch+1}, Accuracy: {accuracy}')
 
     def _save_model(self, model, output_path):
         """Save a sentence transformer model.
 
         Args:
-            model (SentenceTransformer): The model to save.
+            model (AutoModel): The model to save.
             output_path (str): The output path.
         """
-        with open(output_path + '/model.pkl', 'wb') as w:
-            pickle.dump(model, w)
+        model.save_pretrained(output_path)
 
     def run(self):
         """Run the model trainer."""
@@ -230,9 +273,8 @@ class ModelTrainer:
 
         args = self._get_training_args(output_dir, train_batch_size)
 
-        model.train()
         self.train_model(model, train_dataset, eval_dataset, args)
-        self._save_model(model, output_path)
+        self._save_model(model, output_dir)
 
 if __name__ == "__main__":
     ModelTrainer().run()
