@@ -5,8 +5,11 @@ import sys
 import traceback
 from datetime import datetime
 
-def setup_logging():
-    logging.basicConfig(format="%(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
+LOGGING_FORMAT = "%(asctime)s - %(message)s"
+LOGGING_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+def setup_logging(level=logging.INFO):
+    logging.basicConfig(format=LOGGING_FORMAT, datefmt=LOGGING_DATE_FORMAT, level=level)
 
 def log_info(message):
     logging.getLogger().info(message)
@@ -18,6 +21,14 @@ from transformers import AutoModel, AutoTokenizer
 import torch
 import torch.nn as nn
 
+class BaseModel(nn.Module):
+    def __init__(self, model_path):
+        super().__init__()
+        self.model = AutoModel.from_pretrained(model_path)
+
+    def forward(self, input_ids, attention_mask):
+        return self.model(input_ids, attention_mask=attention_mask)
+
 def load_model(model_path):
     return AutoModel.from_pretrained(model_path)
 
@@ -25,7 +36,7 @@ def save_model(model, output_dir):
     model.save_pretrained(output_dir)
 
 def create_model(model_path):
-    return nn.Module(AutoModel.from_pretrained(model_path))
+    return BaseModel(model_path)
 ```
 
 **data.py**
@@ -33,6 +44,7 @@ def create_model(model_path):
 import pickle
 import os
 from pathlib import Path
+import random
 
 def load_data(data_path):
     with open(data_path, 'rb') as f:
@@ -43,7 +55,7 @@ def prepare_dataset(data, negative_sample_size):
     for item in data:
         query = item['query']
         relevant_doc = item['relevant_doc']
-        non_relevant_docs = sample(item['irrelevant_docs'], min(len(item['irrelevant_docs']), negative_sample_size))
+        non_relevant_docs = random.sample(item['irrelevant_docs'], min(len(item['irrelevant_docs']), negative_sample_size))
         for item in non_relevant_docs:
             dataset_list.append({
                 "anchor": query,
@@ -62,9 +74,10 @@ import random
 from tqdm import tqdm
 
 class CustomDataset(Dataset):
-    def __init__(self, dataset_list, tokenizer):
+    def __init__(self, dataset_list, tokenizer, max_length=75):
         self.dataset_list = dataset_list
         self.tokenizer = tokenizer
+        self.max_length = max_length
 
     def __len__(self):
         return len(self.dataset_list)
@@ -73,9 +86,11 @@ class CustomDataset(Dataset):
         anchor = self.dataset_list[idx]['anchor']
         positive = self.dataset_list[idx]['positive']
         negative = self.dataset_list[idx]['negative']
-        anchor_encoding = self.tokenizer(anchor, return_tensors='pt', max_length=75, truncation=True, padding='max_length')
-        positive_encoding = self.tokenizer(positive, return_tensors='pt', max_length=75, truncation=True, padding='max_length')
-        negative_encoding = self.tokenizer(negative, return_tensors='pt', max_length=75, truncation=True, padding='max_length')
+
+        anchor_encoding = self.tokenizer(anchor, return_tensors='pt', max_length=self.max_length, truncation=True, padding='max_length')
+        positive_encoding = self.tokenizer(positive, return_tensors='pt', max_length=self.max_length, truncation=True, padding='max_length')
+        negative_encoding = self.tokenizer(negative, return_tensors='pt', max_length=self.max_length, truncation=True, padding='max_length')
+
         return {
             'anchor_input_ids': anchor_encoding['input_ids'].flatten(),
             'anchor_attention_mask': anchor_encoding['attention_mask'].flatten(),
@@ -107,21 +122,29 @@ def train_model(model, device, train_dataloader, optimizer, scheduler):
         positive_attention_mask = batch['positive_attention_mask'].to(device)
         negative_input_ids = batch['negative_input_ids'].to(device)
         negative_attention_mask = batch['negative_attention_mask'].to(device)
+
         optimizer.zero_grad()
+
         anchor_outputs = model(input_ids, attention_mask=attention_mask)
         positive_outputs = model(positive_input_ids, attention_mask=positive_attention_mask)
         negative_outputs = model(negative_input_ids, attention_mask=negative_attention_mask)
+
         anchor_embeddings = anchor_outputs.last_hidden_state[:, 0, :]
         positive_embeddings = positive_outputs.last_hidden_state[:, 0, :]
         negative_embeddings = negative_outputs.last_hidden_state[:, 0, :]
+
         similarity = cosine_similarity(anchor_embeddings.detach().cpu().numpy(), positive_embeddings.detach().cpu().numpy())
         similarity_negative = cosine_similarity(anchor_embeddings.detach().cpu().numpy(), negative_embeddings.detach().cpu().numpy())
+
         labels = torch.ones(similarity.shape[0])
+
         loss = nn.MSELoss()(torch.tensor(similarity), labels) + nn.MSELoss()(torch.tensor(similarity_negative), 1-labels)
+
         loss.backward()
         optimizer.step()
         scheduler.step()
         total_loss += loss.item()
+
     return total_loss
 
 def evaluate_model(model, device, eval_dataloader):
@@ -135,17 +158,24 @@ def evaluate_model(model, device, eval_dataloader):
             positive_attention_mask = batch['positive_attention_mask'].to(device)
             negative_input_ids = batch['negative_input_ids'].to(device)
             negative_attention_mask = batch['negative_attention_mask'].to(device)
+
             anchor_outputs = model(input_ids, attention_mask=attention_mask)
             positive_outputs = model(positive_input_ids, attention_mask=positive_attention_mask)
             negative_outputs = model(negative_input_ids, attention_mask=negative_attention_mask)
+
             anchor_embeddings = anchor_outputs.last_hidden_state[:, 0, :]
             positive_embeddings = positive_outputs.last_hidden_state[:, 0, :]
             negative_embeddings = negative_outputs.last_hidden_state[:, 0, :]
+
             similarity = cosine_similarity(anchor_embeddings.detach().cpu().numpy(), positive_embeddings.detach().cpu().numpy())
             similarity_negative = cosine_similarity(anchor_embeddings.detach().cpu().numpy(), negative_embeddings.detach().cpu().numpy())
+
             labels = torch.ones(similarity.shape[0])
+
             predicted = torch.argmax(torch.cat((torch.tensor(similarity).unsqueeze(1), torch.tensor(similarity_negative).unsqueeze(1)), dim=1), dim=1)
+
             total_correct += (predicted == labels).sum().item()
+
         accuracy = total_correct / len(eval_dataloader.dataset)
         return accuracy
 
