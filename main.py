@@ -9,7 +9,10 @@ LOGGING_FORMAT = "%(asctime)s - %(message)s"
 LOGGING_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 def setup_logging(level=logging.INFO):
-    logging.basicConfig(format=LOGGING_FORMAT, datefmt=LOGGING_DATE_FORMAT, level=level)
+    logging.basicConfig(format=LOGGING_FORMAT, datefmt=LOGGING_DATE_FORMAT, level=level, handlers=[
+        logging.FileHandler("log.log"),
+        logging.StreamHandler(sys.stdout)
+    ])
 
 def log_info(message):
     logging.getLogger().info(message)
@@ -138,7 +141,7 @@ def train_model(model, device, train_dataloader, optimizer, scheduler):
 
         labels = torch.ones(similarity.shape[0])
 
-        loss = nn.MSELoss()(torch.tensor(similarity), labels) + nn.MSELoss()(torch.tensor(similarity_negative), 1-labels)
+        loss = nn.MSELoss()(torch.tensor(similarity), labels) + nn.MSELoss()(torch.tensor(1-similarity_negative), labels)
 
         loss.backward()
         optimizer.step()
