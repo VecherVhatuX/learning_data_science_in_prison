@@ -23,6 +23,14 @@ from pathlib import Path
 def setup_logging():
     logging.basicConfig(format="%(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
 
+class LoggingHandler:
+    def __init__(self):
+        self.logger = logging.getLogger()
+        self.logger.setLevel(logging.INFO)
+
+    def log_info(self, message):
+        self.logger.info(message)
+
 # model.py
 class ModelHandler:
     def __init__(self, model_path):
@@ -30,6 +38,17 @@ class ModelHandler:
 
     def load_model(self):
         return AutoModel.from_pretrained(self.model_path)
+
+    def save_model(self, model, output_dir):
+        model.save_pretrained(output_dir)
+
+class Model(nn.Module):
+    def __init__(self, model_path):
+        super(Model, self).__init__()
+        self.model = AutoModel.from_pretrained(model_path)
+
+    def forward(self, input_ids, attention_mask):
+        return self.model(input_ids, attention_mask=attention_mask)
 
 # data.py
 class DataHandler:
@@ -92,18 +111,17 @@ class Training:
         self.output_dir = output_dir
         self.train_batch_size = train_batch_size
         self.negative_sample_size = negative_sample_size
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.logging_handler = LoggingHandler()
+        self.model_handler = ModelHandler(self.model_path)
+        self.model = Model(self.model_path)
+        self.model.to(self.device)
 
     def train(self):
-        setup_logging()
-        print(f"There are {torch.cuda.device_count()} GPUs available for torch.")
+        self.logging_handler.log_info(f"There are {torch.cuda.device_count()} GPUs available for torch.")
         for i in range(torch.cuda.device_count()):
             name = torch.cuda.get_device_name(i)
-            print(f"GPU {i}: {name}")
-
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        model_handler = ModelHandler(self.model_path)
-        model = model_handler.load_model()
-        model.to(device)
+            self.logging_handler.log_info(f"GPU {i}: {name}")
 
         data_path = os.environ.get('DATA_PATH', '/home/ma-user/data/data.pkl')
         data_handler = DataHandler(data_path)
@@ -116,24 +134,24 @@ class Training:
         train_dataloader = DataLoader(dataset, batch_size=self.train_batch_size, shuffle=True)
         eval_dataloader = DataLoader(dataset, batch_size=self.train_batch_size, shuffle=False)
 
-        optimizer = AdamW(model.parameters(), lr=1e-5)
+        optimizer = AdamW(self.model.parameters(), lr=1e-5)
         scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=len(train_dataloader) * 20 * 0.1, num_training_steps=len(train_dataloader) * 20)
 
         args = self.get_training_args()
         for epoch in range(args['num_train_epochs']):
-            model.train()
+            self.model.train()
             total_loss = 0
             for batch in train_dataloader:
-                input_ids = batch['anchor_input_ids'].to(device)
-                attention_mask = batch['anchor_attention_mask'].to(device)
-                positive_input_ids = batch['positive_input_ids'].to(device)
-                positive_attention_mask = batch['positive_attention_mask'].to(device)
-                negative_input_ids = batch['negative_input_ids'].to(device)
-                negative_attention_mask = batch['negative_attention_mask'].to(device)
+                input_ids = batch['anchor_input_ids'].to(self.device)
+                attention_mask = batch['anchor_attention_mask'].to(self.device)
+                positive_input_ids = batch['positive_input_ids'].to(self.device)
+                positive_attention_mask = batch['positive_attention_mask'].to(self.device)
+                negative_input_ids = batch['negative_input_ids'].to(self.device)
+                negative_attention_mask = batch['negative_attention_mask'].to(self.device)
                 optimizer.zero_grad()
-                anchor_outputs = model(input_ids, attention_mask=attention_mask)
-                positive_outputs = model(positive_input_ids, attention_mask=positive_attention_mask)
-                negative_outputs = model(negative_input_ids, attention_mask=negative_attention_mask)
+                anchor_outputs = self.model(input_ids, attention_mask=attention_mask)
+                positive_outputs = self.model(positive_input_ids, attention_mask=positive_attention_mask)
+                negative_outputs = self.model(negative_input_ids, attention_mask=negative_attention_mask)
                 anchor_embeddings = anchor_outputs.last_hidden_state[:, 0, :]
                 positive_embeddings = positive_outputs.last_hidden_state[:, 0, :]
                 negative_embeddings = negative_outputs.last_hidden_state[:, 0, :]
@@ -145,20 +163,20 @@ class Training:
                 optimizer.step()
                 scheduler.step()
                 total_loss += loss.item()
-            print(f'Epoch {epoch+1}, Loss: {total_loss / len(train_dataloader)}')
-            model.eval()
+            self.logging_handler.log_info(f'Epoch {epoch+1}, Loss: {total_loss / len(train_dataloader)}')
+            self.model.eval()
             with torch.no_grad():
                 total_correct = 0
                 for batch in eval_dataloader:
-                    input_ids = batch['anchor_input_ids'].to(device)
-                    attention_mask = batch['anchor_attention_mask'].to(device)
-                    positive_input_ids = batch['positive_input_ids'].to(device)
-                    positive_attention_mask = batch['positive_attention_mask'].to(device)
-                    negative_input_ids = batch['negative_input_ids'].to(device)
-                    negative_attention_mask = batch['negative_attention_mask'].to(device)
-                    anchor_outputs = model(input_ids, attention_mask=attention_mask)
-                    positive_outputs = model(positive_input_ids, attention_mask=positive_attention_mask)
-                    negative_outputs = model(negative_input_ids, attention_mask=negative_attention_mask)
+                    input_ids = batch['anchor_input_ids'].to(self.device)
+                    attention_mask = batch['anchor_attention_mask'].to(self.device)
+                    positive_input_ids = batch['positive_input_ids'].to(self.device)
+                    positive_attention_mask = batch['positive_attention_mask'].to(self.device)
+                    negative_input_ids = batch['negative_input_ids'].to(self.device)
+                    negative_attention_mask = batch['negative_attention_mask'].to(self.device)
+                    anchor_outputs = self.model(input_ids, attention_mask=attention_mask)
+                    positive_outputs = self.model(positive_input_ids, attention_mask=positive_attention_mask)
+                    negative_outputs = self.model(negative_input_ids, attention_mask=negative_attention_mask)
                     anchor_embeddings = anchor_outputs.last_hidden_state[:, 0, :]
                     positive_embeddings = positive_outputs.last_hidden_state[:, 0, :]
                     negative_embeddings = negative_outputs.last_hidden_state[:, 0, :]
@@ -168,8 +186,8 @@ class Training:
                     predicted = torch.argmax(torch.cat((torch.tensor(similarity).unsqueeze(1), torch.tensor(similarity_negative).unsqueeze(1)), dim=1), dim=1)
                     total_correct += (predicted == labels).sum().item()
                 accuracy = total_correct / len(eval_dataloader.dataset)
-                print(f'Epoch {epoch+1}, Accuracy: {accuracy}')
-        model.save_pretrained(self.output_dir)
+                self.logging_handler.log_info(f'Epoch {epoch+1}, Accuracy: {accuracy}')
+        self.model_handler.save_model(self.model, self.output_dir)
 
     def get_training_args(self):
         return {
