@@ -19,12 +19,14 @@ from tqdm import tqdm
 from random import sample
 from pathlib import Path
 
+# Logging
 def setup_logging():
     logging.basicConfig(format="%(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
 
 def log_info(message):
     logging.getLogger().info(message)
 
+# Model
 def load_model(model_path):
     return AutoModel.from_pretrained(model_path)
 
@@ -34,6 +36,7 @@ def save_model(model, output_dir):
 def create_model(model_path):
     return nn.Module(AutoModel.from_pretrained(model_path))
 
+# Data
 def load_data(data_path):
     with open(data_path, 'rb') as f:
         return pickle.load(f)
@@ -52,6 +55,7 @@ def prepare_dataset(data, negative_sample_size):
             })
     return dataset_list
 
+# Dataset
 class CustomDataset(Dataset):
     def __init__(self, dataset_list, tokenizer):
         self.dataset_list = dataset_list
@@ -76,7 +80,61 @@ class CustomDataset(Dataset):
             'negative_attention_mask': negative_encoding['attention_mask'].flatten(),
         }
 
+# Training
+def train_model(model, device, train_dataloader, optimizer, scheduler):
+    model.train()
+    total_loss = 0
+    for batch in train_dataloader:
+        input_ids = batch['anchor_input_ids'].to(device)
+        attention_mask = batch['anchor_attention_mask'].to(device)
+        positive_input_ids = batch['positive_input_ids'].to(device)
+        positive_attention_mask = batch['positive_attention_mask'].to(device)
+        negative_input_ids = batch['negative_input_ids'].to(device)
+        negative_attention_mask = batch['negative_attention_mask'].to(device)
+        optimizer.zero_grad()
+        anchor_outputs = model(input_ids, attention_mask=attention_mask)
+        positive_outputs = model(positive_input_ids, attention_mask=positive_attention_mask)
+        negative_outputs = model(negative_input_ids, attention_mask=negative_attention_mask)
+        anchor_embeddings = anchor_outputs.last_hidden_state[:, 0, :]
+        positive_embeddings = positive_outputs.last_hidden_state[:, 0, :]
+        negative_embeddings = negative_outputs.last_hidden_state[:, 0, :]
+        similarity = cosine_similarity(anchor_embeddings.detach().cpu().numpy(), positive_embeddings.detach().cpu().numpy())
+        similarity_negative = cosine_similarity(anchor_embeddings.detach().cpu().numpy(), negative_embeddings.detach().cpu().numpy())
+        labels = torch.ones(similarity.shape[0])
+        loss = nn.MSELoss()(torch.tensor(similarity), labels) + nn.MSELoss()(torch.tensor(similarity_negative), 1-labels)
+        loss.backward()
+        optimizer.step()
+        scheduler.step()
+        total_loss += loss.item()
+    return total_loss
+
+def evaluate_model(model, device, eval_dataloader):
+    model.eval()
+    with torch.no_grad():
+        total_correct = 0
+        for batch in eval_dataloader:
+            input_ids = batch['anchor_input_ids'].to(device)
+            attention_mask = batch['anchor_attention_mask'].to(device)
+            positive_input_ids = batch['positive_input_ids'].to(device)
+            positive_attention_mask = batch['positive_attention_mask'].to(device)
+            negative_input_ids = batch['negative_input_ids'].to(device)
+            negative_attention_mask = batch['negative_attention_mask'].to(device)
+            anchor_outputs = model(input_ids, attention_mask=attention_mask)
+            positive_outputs = model(positive_input_ids, attention_mask=positive_attention_mask)
+            negative_outputs = model(negative_input_ids, attention_mask=negative_attention_mask)
+            anchor_embeddings = anchor_outputs.last_hidden_state[:, 0, :]
+            positive_embeddings = positive_outputs.last_hidden_state[:, 0, :]
+            negative_embeddings = negative_outputs.last_hidden_state[:, 0, :]
+            similarity = cosine_similarity(anchor_embeddings.detach().cpu().numpy(), positive_embeddings.detach().cpu().numpy())
+            similarity_negative = cosine_similarity(anchor_embeddings.detach().cpu().numpy(), negative_embeddings.detach().cpu().numpy())
+            labels = torch.ones(similarity.shape[0])
+            predicted = torch.argmax(torch.cat((torch.tensor(similarity).unsqueeze(1), torch.tensor(similarity_negative).unsqueeze(1)), dim=1), dim=1)
+            total_correct += (predicted == labels).sum().item()
+        accuracy = total_correct / len(eval_dataloader.dataset)
+        return accuracy
+
 def train(model_path, output_dir, train_batch_size, negative_sample_size):
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     log_info(f"There are {torch.cuda.device_count()} GPUs available for torch.")
     for i in range(torch.cuda.device_count()):
         name = torch.cuda.get_device_name(i)
@@ -84,15 +142,12 @@ def train(model_path, output_dir, train_batch_size, negative_sample_size):
 
     data_path = os.environ.get('DATA_PATH', '/home/ma-user/data/data.pkl')
     data = load_data(data_path)
-
     dataset_list = prepare_dataset(data, negative_sample_size)
-
     dataset = CustomDataset(dataset_list, AutoTokenizer.from_pretrained('bert-base-uncased'))
     train_dataloader = DataLoader(dataset, batch_size=train_batch_size, shuffle=True)
     eval_dataloader = DataLoader(dataset, batch_size=train_batch_size, shuffle=False)
 
     model = create_model(model_path)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(device)
 
     optimizer = AdamW(model.parameters(), lr=1e-5)
@@ -117,54 +172,10 @@ def train(model_path, output_dir, train_batch_size, negative_sample_size):
     }
 
     for epoch in range(training_args['num_train_epochs']):
-        model.train()
-        total_loss = 0
-        for batch in train_dataloader:
-            input_ids = batch['anchor_input_ids'].to(device)
-            attention_mask = batch['anchor_attention_mask'].to(device)
-            positive_input_ids = batch['positive_input_ids'].to(device)
-            positive_attention_mask = batch['positive_attention_mask'].to(device)
-            negative_input_ids = batch['negative_input_ids'].to(device)
-            negative_attention_mask = batch['negative_attention_mask'].to(device)
-            optimizer.zero_grad()
-            anchor_outputs = model(input_ids, attention_mask=attention_mask)
-            positive_outputs = model(positive_input_ids, attention_mask=positive_attention_mask)
-            negative_outputs = model(negative_input_ids, attention_mask=negative_attention_mask)
-            anchor_embeddings = anchor_outputs.last_hidden_state[:, 0, :]
-            positive_embeddings = positive_outputs.last_hidden_state[:, 0, :]
-            negative_embeddings = negative_outputs.last_hidden_state[:, 0, :]
-            similarity = cosine_similarity(anchor_embeddings.detach().cpu().numpy(), positive_embeddings.detach().cpu().numpy())
-            similarity_negative = cosine_similarity(anchor_embeddings.detach().cpu().numpy(), negative_embeddings.detach().cpu().numpy())
-            labels = torch.ones(similarity.shape[0])
-            loss = nn.MSELoss()(torch.tensor(similarity), labels) + nn.MSELoss()(torch.tensor(similarity_negative), 1-labels)
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
-            total_loss += loss.item()
+        total_loss = train_model(model, device, train_dataloader, optimizer, scheduler)
         log_info(f'Epoch {epoch+1}, Loss: {total_loss / len(train_dataloader)}')
-        model.eval()
-        with torch.no_grad():
-            total_correct = 0
-            for batch in eval_dataloader:
-                input_ids = batch['anchor_input_ids'].to(device)
-                attention_mask = batch['anchor_attention_mask'].to(device)
-                positive_input_ids = batch['positive_input_ids'].to(device)
-                positive_attention_mask = batch['positive_attention_mask'].to(device)
-                negative_input_ids = batch['negative_input_ids'].to(device)
-                negative_attention_mask = batch['negative_attention_mask'].to(device)
-                anchor_outputs = model(input_ids, attention_mask=attention_mask)
-                positive_outputs = model(positive_input_ids, attention_mask=positive_attention_mask)
-                negative_outputs = model(negative_input_ids, attention_mask=negative_attention_mask)
-                anchor_embeddings = anchor_outputs.last_hidden_state[:, 0, :]
-                positive_embeddings = positive_outputs.last_hidden_state[:, 0, :]
-                negative_embeddings = negative_outputs.last_hidden_state[:, 0, :]
-                similarity = cosine_similarity(anchor_embeddings.detach().cpu().numpy(), positive_embeddings.detach().cpu().numpy())
-                similarity_negative = cosine_similarity(anchor_embeddings.detach().cpu().numpy(), negative_embeddings.detach().cpu().numpy())
-                labels = torch.ones(similarity.shape[0])
-                predicted = torch.argmax(torch.cat((torch.tensor(similarity).unsqueeze(1), torch.tensor(similarity_negative).unsqueeze(1)), dim=1), dim=1)
-                total_correct += (predicted == labels).sum().item()
-            accuracy = total_correct / len(eval_dataloader.dataset)
-            log_info(f'Epoch {epoch+1}, Accuracy: {accuracy}')
+        accuracy = evaluate_model(model, device, eval_dataloader)
+        log_info(f'Epoch {epoch+1}, Accuracy: {accuracy}')
     save_model(model, output_dir)
 
 if __name__ == "__main__":
