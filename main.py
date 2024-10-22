@@ -19,47 +19,39 @@ from tqdm import tqdm
 from random import sample
 from pathlib import Path
 
-# logging.py
 def setup_logging():
     logging.basicConfig(format="%(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
 
-class LoggingHandler:
-    def __init__(self):
-        self.logger = logging.getLogger()
-        self.logger.setLevel(logging.INFO)
+def log_info(message):
+    logging.getLogger().info(message)
 
-    def log_info(self, message):
-        self.logger.info(message)
+def load_model(model_path):
+    return AutoModel.from_pretrained(model_path)
 
-# model.py
-class ModelHandler:
-    def __init__(self, model_path):
-        self.model_path = model_path
+def save_model(model, output_dir):
+    model.save_pretrained(output_dir)
 
-    def load_model(self):
-        return AutoModel.from_pretrained(self.model_path)
+def create_model(model_path):
+    return nn.Module(AutoModel.from_pretrained(model_path))
 
-    def save_model(self, model, output_dir):
-        model.save_pretrained(output_dir)
+def load_data(data_path):
+    with open(data_path, 'rb') as f:
+        return pickle.load(f)
 
-class Model(nn.Module):
-    def __init__(self, model_path):
-        super(Model, self).__init__()
-        self.model = AutoModel.from_pretrained(model_path)
+def prepare_dataset(data, negative_sample_size):
+    dataset_list = []
+    for item in data:
+        query = item['query']
+        relevant_doc = item['relevant_doc']
+        non_relevant_docs = sample(item['irrelevant_docs'], min(len(item['irrelevant_docs']), negative_sample_size))
+        for item in non_relevant_docs:
+            dataset_list.append({
+                "anchor": query,
+                "positive": relevant_doc,
+                "negative": item
+            })
+    return dataset_list
 
-    def forward(self, input_ids, attention_mask):
-        return self.model(input_ids, attention_mask=attention_mask)
-
-# data.py
-class DataHandler:
-    def __init__(self, data_path):
-        self.data_path = data_path
-
-    def load_data(self):
-        with open(self.data_path, 'rb') as f:
-            return pickle.load(f)
-
-# dataset.py
 class CustomDataset(Dataset):
     def __init__(self, dataset_list, tokenizer):
         self.dataset_list = dataset_list
@@ -84,131 +76,99 @@ class CustomDataset(Dataset):
             'negative_attention_mask': negative_encoding['attention_mask'].flatten(),
         }
 
-# dataset_preparation.py
-class DatasetPreparation:
-    def __init__(self, data, negative_sample_size):
-        self.data = data
-        self.negative_sample_size = negative_sample_size
+def train(model_path, output_dir, train_batch_size, negative_sample_size):
+    log_info(f"There are {torch.cuda.device_count()} GPUs available for torch.")
+    for i in range(torch.cuda.device_count()):
+        name = torch.cuda.get_device_name(i)
+        log_info(f"GPU {i}: {name}")
 
-    def prepare_dataset(self):
-        dataset_list = []
-        for item in self.data:
-            query = item['query']
-            relevant_doc = item['relevant_doc']
-            non_relevant_docs = sample(item['irrelevant_docs'], min(len(item['irrelevant_docs']), self.negative_sample_size))
-            for item in non_relevant_docs:
-                dataset_list.append({
-                    "anchor": query,
-                    "positive": relevant_doc,
-                    "negative": item
-                })
-        return dataset_list
+    data_path = os.environ.get('DATA_PATH', '/home/ma-user/data/data.pkl')
+    data = load_data(data_path)
 
-# training.py
-class Training:
-    def __init__(self, model_path, output_dir, train_batch_size, negative_sample_size):
-        self.model_path = model_path
-        self.output_dir = output_dir
-        self.train_batch_size = train_batch_size
-        self.negative_sample_size = negative_sample_size
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.logging_handler = LoggingHandler()
-        self.model_handler = ModelHandler(self.model_path)
-        self.model = Model(self.model_path)
-        self.model.to(self.device)
+    dataset_list = prepare_dataset(data, negative_sample_size)
 
-    def train(self):
-        self.logging_handler.log_info(f"There are {torch.cuda.device_count()} GPUs available for torch.")
-        for i in range(torch.cuda.device_count()):
-            name = torch.cuda.get_device_name(i)
-            self.logging_handler.log_info(f"GPU {i}: {name}")
+    dataset = CustomDataset(dataset_list, AutoTokenizer.from_pretrained('bert-base-uncased'))
+    train_dataloader = DataLoader(dataset, batch_size=train_batch_size, shuffle=True)
+    eval_dataloader = DataLoader(dataset, batch_size=train_batch_size, shuffle=False)
 
-        data_path = os.environ.get('DATA_PATH', '/home/ma-user/data/data.pkl')
-        data_handler = DataHandler(data_path)
-        data = data_handler.load_data()
+    model = create_model(model_path)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model.to(device)
 
-        dataset_preparation = DatasetPreparation(data, self.negative_sample_size)
-        dataset_list = dataset_preparation.prepare_dataset()
+    optimizer = AdamW(model.parameters(), lr=1e-5)
+    scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=len(train_dataloader) * 20 * 0.1, num_training_steps=len(train_dataloader) * 20)
 
-        dataset = CustomDataset(dataset_list, AutoTokenizer.from_pretrained('bert-base-uncased'))
-        train_dataloader = DataLoader(dataset, batch_size=self.train_batch_size, shuffle=True)
-        eval_dataloader = DataLoader(dataset, batch_size=self.train_batch_size, shuffle=False)
+    training_args = {
+        'output_dir': output_dir,
+        'num_train_epochs': 20,
+        'per_device_train_batch_size': train_batch_size,
+        'per_device_eval_batch_size': train_batch_size,
+        'warmup_ratio': 0.1,
+        'fp16': True,
+        'bf16': False,
+        'batch_sampler': 'no_duplicates',
+        'eval_strategy': 'steps',
+        'eval_steps': 1000,
+        'save_strategy': 'steps',
+        'save_steps': 1000,
+        'save_total_limit': 2,
+        'logging_steps': 100,
+        'run_name': "nli-v2",
+    }
 
-        optimizer = AdamW(self.model.parameters(), lr=1e-5)
-        scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=len(train_dataloader) * 20 * 0.1, num_training_steps=len(train_dataloader) * 20)
-
-        args = self.get_training_args()
-        for epoch in range(args['num_train_epochs']):
-            self.model.train()
-            total_loss = 0
-            for batch in train_dataloader:
-                input_ids = batch['anchor_input_ids'].to(self.device)
-                attention_mask = batch['anchor_attention_mask'].to(self.device)
-                positive_input_ids = batch['positive_input_ids'].to(self.device)
-                positive_attention_mask = batch['positive_attention_mask'].to(self.device)
-                negative_input_ids = batch['negative_input_ids'].to(self.device)
-                negative_attention_mask = batch['negative_attention_mask'].to(self.device)
-                optimizer.zero_grad()
-                anchor_outputs = self.model(input_ids, attention_mask=attention_mask)
-                positive_outputs = self.model(positive_input_ids, attention_mask=positive_attention_mask)
-                negative_outputs = self.model(negative_input_ids, attention_mask=negative_attention_mask)
+    for epoch in range(training_args['num_train_epochs']):
+        model.train()
+        total_loss = 0
+        for batch in train_dataloader:
+            input_ids = batch['anchor_input_ids'].to(device)
+            attention_mask = batch['anchor_attention_mask'].to(device)
+            positive_input_ids = batch['positive_input_ids'].to(device)
+            positive_attention_mask = batch['positive_attention_mask'].to(device)
+            negative_input_ids = batch['negative_input_ids'].to(device)
+            negative_attention_mask = batch['negative_attention_mask'].to(device)
+            optimizer.zero_grad()
+            anchor_outputs = model(input_ids, attention_mask=attention_mask)
+            positive_outputs = model(positive_input_ids, attention_mask=positive_attention_mask)
+            negative_outputs = model(negative_input_ids, attention_mask=negative_attention_mask)
+            anchor_embeddings = anchor_outputs.last_hidden_state[:, 0, :]
+            positive_embeddings = positive_outputs.last_hidden_state[:, 0, :]
+            negative_embeddings = negative_outputs.last_hidden_state[:, 0, :]
+            similarity = cosine_similarity(anchor_embeddings.detach().cpu().numpy(), positive_embeddings.detach().cpu().numpy())
+            similarity_negative = cosine_similarity(anchor_embeddings.detach().cpu().numpy(), negative_embeddings.detach().cpu().numpy())
+            labels = torch.ones(similarity.shape[0])
+            loss = nn.MSELoss()(torch.tensor(similarity), labels) + nn.MSELoss()(torch.tensor(similarity_negative), 1-labels)
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+            total_loss += loss.item()
+        log_info(f'Epoch {epoch+1}, Loss: {total_loss / len(train_dataloader)}')
+        model.eval()
+        with torch.no_grad():
+            total_correct = 0
+            for batch in eval_dataloader:
+                input_ids = batch['anchor_input_ids'].to(device)
+                attention_mask = batch['anchor_attention_mask'].to(device)
+                positive_input_ids = batch['positive_input_ids'].to(device)
+                positive_attention_mask = batch['positive_attention_mask'].to(device)
+                negative_input_ids = batch['negative_input_ids'].to(device)
+                negative_attention_mask = batch['negative_attention_mask'].to(device)
+                anchor_outputs = model(input_ids, attention_mask=attention_mask)
+                positive_outputs = model(positive_input_ids, attention_mask=positive_attention_mask)
+                negative_outputs = model(negative_input_ids, attention_mask=negative_attention_mask)
                 anchor_embeddings = anchor_outputs.last_hidden_state[:, 0, :]
                 positive_embeddings = positive_outputs.last_hidden_state[:, 0, :]
                 negative_embeddings = negative_outputs.last_hidden_state[:, 0, :]
                 similarity = cosine_similarity(anchor_embeddings.detach().cpu().numpy(), positive_embeddings.detach().cpu().numpy())
                 similarity_negative = cosine_similarity(anchor_embeddings.detach().cpu().numpy(), negative_embeddings.detach().cpu().numpy())
                 labels = torch.ones(similarity.shape[0])
-                loss = nn.MSELoss()(torch.tensor(similarity), labels) + nn.MSELoss()(torch.tensor(similarity_negative), 1-labels)
-                loss.backward()
-                optimizer.step()
-                scheduler.step()
-                total_loss += loss.item()
-            self.logging_handler.log_info(f'Epoch {epoch+1}, Loss: {total_loss / len(train_dataloader)}')
-            self.model.eval()
-            with torch.no_grad():
-                total_correct = 0
-                for batch in eval_dataloader:
-                    input_ids = batch['anchor_input_ids'].to(self.device)
-                    attention_mask = batch['anchor_attention_mask'].to(self.device)
-                    positive_input_ids = batch['positive_input_ids'].to(self.device)
-                    positive_attention_mask = batch['positive_attention_mask'].to(self.device)
-                    negative_input_ids = batch['negative_input_ids'].to(self.device)
-                    negative_attention_mask = batch['negative_attention_mask'].to(self.device)
-                    anchor_outputs = self.model(input_ids, attention_mask=attention_mask)
-                    positive_outputs = self.model(positive_input_ids, attention_mask=positive_attention_mask)
-                    negative_outputs = self.model(negative_input_ids, attention_mask=negative_attention_mask)
-                    anchor_embeddings = anchor_outputs.last_hidden_state[:, 0, :]
-                    positive_embeddings = positive_outputs.last_hidden_state[:, 0, :]
-                    negative_embeddings = negative_outputs.last_hidden_state[:, 0, :]
-                    similarity = cosine_similarity(anchor_embeddings.detach().cpu().numpy(), positive_embeddings.detach().cpu().numpy())
-                    similarity_negative = cosine_similarity(anchor_embeddings.detach().cpu().numpy(), negative_embeddings.detach().cpu().numpy())
-                    labels = torch.ones(similarity.shape[0])
-                    predicted = torch.argmax(torch.cat((torch.tensor(similarity).unsqueeze(1), torch.tensor(similarity_negative).unsqueeze(1)), dim=1), dim=1)
-                    total_correct += (predicted == labels).sum().item()
-                accuracy = total_correct / len(eval_dataloader.dataset)
-                self.logging_handler.log_info(f'Epoch {epoch+1}, Accuracy: {accuracy}')
-        self.model_handler.save_model(self.model, self.output_dir)
-
-    def get_training_args(self):
-        return {
-            'output_dir': self.output_dir,
-            'num_train_epochs': 20,
-            'per_device_train_batch_size': self.train_batch_size,
-            'per_device_eval_batch_size': self.train_batch_size,
-            'warmup_ratio': 0.1,
-            'fp16': True,
-            'bf16': False,
-            'batch_sampler': 'no_duplicates',
-            'eval_strategy': 'steps',
-            'eval_steps': 1000,
-            'save_strategy': 'steps',
-            'save_steps': 1000,
-            'save_total_limit': 2,
-            'logging_steps': 100,
-            'run_name': "nli-v2",
-        }
+                predicted = torch.argmax(torch.cat((torch.tensor(similarity).unsqueeze(1), torch.tensor(similarity_negative).unsqueeze(1)), dim=1), dim=1)
+                total_correct += (predicted == labels).sum().item()
+            accuracy = total_correct / len(eval_dataloader.dataset)
+            log_info(f'Epoch {epoch+1}, Accuracy: {accuracy}')
+    save_model(model, output_dir)
 
 if __name__ == "__main__":
+    setup_logging()
     model_path = os.environ.get('MODEL_PATH', '/home/ma-user/bert-base-uncased')
     model_path = "bert-base-uncased" if not model_path else model_path
     output_path = os.environ.get('OUTPUT_PATH', '/tmp/output')
@@ -216,5 +176,4 @@ if __name__ == "__main__":
     output_dir = output_path + "/output/training_nli_v2_" + model_name.replace("/", "-") + "-" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     train_batch_size = 64
     negative_sample_size = 3
-    training = Training(model_path, output_dir, train_batch_size, negative_sample_size)
-    training.train()
+    train(model_path, output_dir, train_batch_size, negative_sample_size)
