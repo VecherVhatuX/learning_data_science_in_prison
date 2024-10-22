@@ -1,32 +1,23 @@
+**logging.py**
+```python
 import logging
 import sys
 import traceback
 from datetime import datetime
-import os
-from transformers import AutoModel, AutoTokenizer
-from huggingface_hub import Repository
-from torch.utils.data import Dataset, DataLoader
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.optim import lr_scheduler
-from transformers import AdamW, get_linear_schedule_with_warmup
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.metrics import accuracy_score
-import numpy as np
-import pickle
-from tqdm import tqdm
-from random import sample
-from pathlib import Path
 
-# Logging
 def setup_logging():
     logging.basicConfig(format="%(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
 
 def log_info(message):
     logging.getLogger().info(message)
+```
 
-# Model
+**model.py**
+```python
+from transformers import AutoModel, AutoTokenizer
+import torch
+import torch.nn as nn
+
 def load_model(model_path):
     return AutoModel.from_pretrained(model_path)
 
@@ -35,8 +26,14 @@ def save_model(model, output_dir):
 
 def create_model(model_path):
     return nn.Module(AutoModel.from_pretrained(model_path))
+```
 
-# Data
+**data.py**
+```python
+import pickle
+import os
+from pathlib import Path
+
 def load_data(data_path):
     with open(data_path, 'rb') as f:
         return pickle.load(f)
@@ -54,8 +51,16 @@ def prepare_dataset(data, negative_sample_size):
                 "negative": item
             })
     return dataset_list
+```
 
-# Dataset
+**dataset.py**
+```python
+from torch.utils.data import Dataset, DataLoader
+from transformers import AutoTokenizer
+import torch
+import random
+from tqdm import tqdm
+
 class CustomDataset(Dataset):
     def __init__(self, dataset_list, tokenizer):
         self.dataset_list = dataset_list
@@ -79,8 +84,19 @@ class CustomDataset(Dataset):
             'negative_input_ids': negative_encoding['input_ids'].flatten(),
             'negative_attention_mask': negative_encoding['attention_mask'].flatten(),
         }
+```
 
-# Training
+**training.py**
+```python
+from model import create_model
+from dataset import CustomDataset
+from torch.utils.data import DataLoader
+from transformers import AdamW, get_linear_schedule_with_warmup
+import torch
+import torch.nn as nn
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.metrics import accuracy_score
+
 def train_model(model, device, train_dataloader, optimizer, scheduler):
     model.train()
     total_loss = 0
@@ -197,6 +213,13 @@ def train(model_path, output_dir, train_batch_size, negative_sample_size):
         accuracy = evaluate_model(model, device, eval_dataloader)
         log_info(f'Epoch {epoch+1}, Accuracy: {accuracy}')
     save_model(model, output_dir)
+```
+
+**main.py**
+```python
+from logging import setup_logging, log_info
+from model import save_model
+from training import train
 
 if __name__ == "__main__":
     setup_logging()
@@ -208,3 +231,4 @@ if __name__ == "__main__":
     train_batch_size = 64
     negative_sample_size = 3
     train(model_path, output_dir, train_batch_size, negative_sample_size)
+```
