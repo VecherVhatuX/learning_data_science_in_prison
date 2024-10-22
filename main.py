@@ -133,25 +133,45 @@ def evaluate_model(model, device, eval_dataloader):
         accuracy = total_correct / len(eval_dataloader.dataset)
         return accuracy
 
+def _get_device():
+    return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+def _get_optimizer(model, lr):
+    return AdamW(model.parameters(), lr=lr)
+
+def _get_scheduler(optimizer, num_warmup_steps, num_training_steps):
+    return get_linear_schedule_with_warmup(optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=num_training_steps)
+
+def _get_data(data_path):
+    return load_data(data_path)
+
+def _get_dataset(data, negative_sample_size, tokenizer):
+    dataset_list = prepare_dataset(data, negative_sample_size)
+    return CustomDataset(dataset_list, tokenizer)
+
+def _get_dataloaders(dataset, batch_size):
+    train_dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    eval_dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    return train_dataloader, eval_dataloader
+
 def train(model_path, output_dir, train_batch_size, negative_sample_size):
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = _get_device()
     log_info(f"There are {torch.cuda.device_count()} GPUs available for torch.")
     for i in range(torch.cuda.device_count()):
         name = torch.cuda.get_device_name(i)
         log_info(f"GPU {i}: {name}")
 
     data_path = os.environ.get('DATA_PATH', '/home/ma-user/data/data.pkl')
-    data = load_data(data_path)
-    dataset_list = prepare_dataset(data, negative_sample_size)
-    dataset = CustomDataset(dataset_list, AutoTokenizer.from_pretrained('bert-base-uncased'))
-    train_dataloader = DataLoader(dataset, batch_size=train_batch_size, shuffle=True)
-    eval_dataloader = DataLoader(dataset, batch_size=train_batch_size, shuffle=False)
+    data = _get_data(data_path)
+    tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
+    dataset = _get_dataset(data, negative_sample_size, tokenizer)
+    train_dataloader, eval_dataloader = _get_dataloaders(dataset, train_batch_size)
 
     model = create_model(model_path)
     model.to(device)
 
-    optimizer = AdamW(model.parameters(), lr=1e-5)
-    scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=len(train_dataloader) * 20 * 0.1, num_training_steps=len(train_dataloader) * 20)
+    optimizer = _get_optimizer(model, 1e-5)
+    scheduler = _get_scheduler(optimizer, num_warmup_steps=len(train_dataloader) * 20 * 0.1, num_training_steps=len(train_dataloader) * 20)
 
     training_args = {
         'output_dir': output_dir,
