@@ -102,58 +102,59 @@ class DataTrainingArguments:
     )
 
 
-def disable_ssl_warnings():
-    requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
-    original_request = requests.Session.request
+class TrainerPipeline:
+    def __init__(self, model_args, data_args, training_args):
+        self.model_args = model_args
+        self.data_args = data_args
+        self.training_args = training_args
 
-    def patched_request(self, *args, **kwargs):
-        kwargs['verify'] = False
-        return original_request(self, *args, **kwargs)
+    def disable_ssl_warnings(self):
+        requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+        original_request = requests.Session.request
 
-    requests.Session.request = patched_request
+        def patched_request(self, *args, **kwargs):
+            kwargs['verify'] = False
+            return original_request(self, *args, **kwargs)
 
+        requests.Session.request = patched_request
 
-def set_seed_func(seed):
-    return partial(set_seed, seed)
+    def set_seed(self):
+        set_seed(self.training_args.seed)
 
+    def prepare_model(self):
+        model, peft_config = create_and_prepare_model(self.model_args, self.data_args, self.training_args)
+        return model, peft_config
 
-def prepare_model_func(model_args, data_args, training_args):
-    return partial(create_and_prepare_model, model_args, data_args, training_args)
+    def create_datasets(self, tokenizer):
+        return create_datasets(tokenizer, self.data_args, self.training_args, apply_chat_template=self.data_args.chat_template_format != "none")
 
+    def get_trainer(self, model, peft_config, train_dataset, eval_dataset):
+        if self.model_args.use_triplet_loss_trainer:
+            model = get_peft_model(model, peft_config)
+            return TripletLossTrainer(
+                model=model,
+                args=self.training_args,
+                train_dataset=train_dataset,
+                eval_dataset=eval_dataset,
+                layer_index=-1,
+            )
+        else:
+            return SFTTrainer(
+                model=model,
+                tokenizer=None,
+                args=self.training_args,
+                train_dataset=train_dataset,
+                eval_dataset=eval_dataset,
+                peft_config=peft_config,
+            )
 
-def create_datasets_func(tokenizer, data_args, training_args):
-    return partial(create_datasets, tokenizer, data_args, training_args, apply_chat_template=data_args.chat_template_format != "none")
+    def train(self, trainer, checkpoint):
+        trainer.train(resume_from_checkpoint=checkpoint)
 
-
-def get_trainer_func(model, peft_config, train_dataset, eval_dataset, model_args, training_args):
-    if model_args.use_triplet_loss_trainer:
-        model = get_peft_model(model, peft_config)
-        return TripletLossTrainer(
-            model=model,
-            args=training_args,
-            train_dataset=train_dataset,
-            eval_dataset=eval_dataset,
-            layer_index=-1,
-        )
-    else:
-        return SFTTrainer(
-            model=model,
-            tokenizer=None,
-            args=training_args,
-            train_dataset=train_dataset,
-            eval_dataset=eval_dataset,
-            peft_config=peft_config,
-        )
-
-
-def train_func(trainer, checkpoint):
-    trainer.train(resume_from_checkpoint=checkpoint)
-
-
-def save_model_func(trainer):
-    if trainer.is_fsdp_enabled:
-        trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
-    trainer.save_model()
+    def save_model(self, trainer):
+        if trainer.is_fsdp_enabled:
+            trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
+        trainer.save_model()
 
 
 def main():
@@ -176,25 +177,18 @@ def main():
     os.environ["NCCL_P2P_DISABLE"] = "1"
     os.environ["NCCL_IB_DISABLE"] = "1"
     os.environ["ACCELERATE_USE_FSDP"] = "false"
-    disable_ssl_warnings()
 
-    pipeline = [
-        set_seed_func(training_args.seed),
-        prepare_model_func(model_args, data_args, training_args),
-        lambda x: x[0] if data_args.tokenized_dataset_path else create_datasets_func(x[2], data_args, training_args)(),
-        lambda x: get_trainer_func(x[0], x[1], x[2], x[3], model_args, training_args),
-        lambda x: train_func(x, training_args.resume_from_checkpoint),
-        lambda x: save_model_func(x),
-    ]
+    pipeline = TrainerPipeline(model_args, data_args, training_args)
+    pipeline.disable_ssl_warnings()
+    pipeline.set_seed()
 
-    result = None
-    for func in pipeline:
-        try:
-            result = func(result)
-        except TypeError:
-            result = func(*result)
-
-    return result
+    model, peft_config = pipeline.prepare_model()
+    tokenizer = model.tokenizer
+    datasets = pipeline.create_datasets(tokenizer) if not data_args.tokenized_dataset_path else None
+    train_dataset, eval_dataset = datasets["train"], datasets["test"]
+    trainer = pipeline.get_trainer(model, peft_config, train_dataset, eval_dataset)
+    pipeline.train(trainer, training_args.resume_from_checkpoint)
+    pipeline.save_model(trainer)
 
 
 if __name__ == "__main__":
