@@ -102,6 +102,47 @@ class DataTrainingArguments:
     )
 
 
+class DatasetEpoch:
+    def __init__(self, dataset, epoch, batch_size):
+        self.dataset = dataset
+        self.epoch = epoch
+        self.batch_size = batch_size
+
+    def __getitem__(self, idx):
+        self.dataset = self.dataset.shuffle(seed=self.epoch)
+        return self.dataset[idx * self.batch_size:(idx + 1) * self.batch_size]
+
+
+class TripletDataset(DatasetEpoch):
+    def __init__(self, dataset, epoch, batch_size):
+        super().__init__(dataset, epoch, batch_size)
+
+    def __getitem__(self, idx):
+        batch = super().__getitem__(idx)
+        positive_samples = [sample for sample in batch if sample["label"] == 1]
+        negative_samples = [sample for sample in batch if sample["label"] == 0]
+        return positive_samples, negative_samples
+
+
+class Dataset:
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+    def __getitem__(self, idx):
+        return self.dataset[idx]
+
+    def shuffle(self, seed):
+        self.dataset = self.dataset.shuffle(seed=seed)
+
+
+class DatasetDict:
+    def __init__(self, dataset_dict):
+        self.dataset_dict = dataset_dict
+
+    def __getitem__(self, key):
+        return Dataset(self.dataset_dict[key])
+
+
 class TrainerPipeline:
     def __init__(self, model_args, data_args, training_args):
         self.model_args = model_args
@@ -185,7 +226,8 @@ def main():
     model, peft_config = pipeline.prepare_model()
     tokenizer = model.tokenizer
     datasets = pipeline.create_datasets(tokenizer) if not data_args.tokenized_dataset_path else None
-    train_dataset, eval_dataset = datasets["train"], datasets["test"]
+    train_dataset = TripletDataset(datasets["train"], 0, training_args.per_device_train_batch_size)
+    eval_dataset = DatasetDict(datasets)["test"]
     trainer = pipeline.get_trainer(model, peft_config, train_dataset, eval_dataset)
     pipeline.train(trainer, training_args.resume_from_checkpoint)
     pipeline.save_model(trainer)
