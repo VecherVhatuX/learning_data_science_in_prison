@@ -3,7 +3,7 @@ import sys
 import yaml
 from dataclasses import dataclass, field
 from typing import Optional
-from transformers import HfArgumentParser, set_seed, trainer, TrainingArguments
+from transformers import HfArgumentParser, set_seed, TrainingArguments
 from trl import SFTConfig, SFTTrainer
 from utils import create_and_prepare_model, create_datasets
 from our_trainers import TripletLossTrainer
@@ -11,14 +11,10 @@ from datasets import Dataset, DatasetDict
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 import requests
+from functools import partial
 
-# Define and parse arguments.
 @dataclass
 class ModelArguments:
-    """
-    Arguments pertaining to which model/config/tokenizer we are going to fine-tune from.
-    """
-
     model_name_or_path: str = field(
         metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
     )
@@ -117,41 +113,22 @@ def disable_ssl_warnings():
     requests.Session.request = patched_request
 
 
-def main(model_args, data_args, training_args):
-    # Set seed for reproducibility
-    set_seed(training_args.seed)
+def set_seed_func(seed):
+    return partial(set_seed, seed)
 
-    # model
-    model, peft_config, tokenizer = create_and_prepare_model(model_args, data_args, training_args)
 
-    # gradient ckpt
-    model.config.use_cache = not training_args.gradient_checkpointing
-    training_args.gradient_checkpointing = training_args.gradient_checkpointing and not model_args.use_unsloth
-    if training_args.gradient_checkpointing:
-        training_args.gradient_checkpointing_kwargs = {"use_reentrant": model_args.use_reentrant}
+def prepare_model_func(model_args, data_args, training_args):
+    return partial(create_and_prepare_model, model_args, data_args, training_args)
 
-    training_args.dataset_kwargs = {
-        "append_concat_token": data_args.append_concat_token,
-        "add_special_tokens": data_args.add_special_tokens,
-    }
 
-    # datasets
-    if data_args.tokenized_dataset_path:
-        tokenized_dataset = DatasetDict.load_from_disk(data_args.tokenized_dataset_path)
-        train_dataset = tokenized_dataset['train']
-        eval_dataset = tokenized_dataset['test']
-    else:
-        train_dataset, eval_dataset = create_datasets(
-            tokenizer,
-            data_args,
-            training_args,
-            apply_chat_template=model_args.chat_template_format != "none",
-        )
+def create_datasets_func(tokenizer, data_args, training_args):
+    return partial(create_datasets, tokenizer, data_args, training_args, apply_chat_template=data_args.chat_template_format != "none")
 
-    # trainer
+
+def get_trainer_func(model, peft_config, train_dataset, eval_dataset, model_args, training_args):
     if model_args.use_triplet_loss_trainer:
         model = get_peft_model(model, peft_config)
-        trainer = TripletLossTrainer(
+        return TripletLossTrainer(
             model=model,
             args=training_args,
             train_dataset=train_dataset,
@@ -159,36 +136,52 @@ def main(model_args, data_args, training_args):
             layer_index=-1,
         )
     else:
-        trainer = SFTTrainer(
+        return SFTTrainer(
             model=model,
-            tokenizer=tokenizer,
+            tokenizer=None,
             args=training_args,
             train_dataset=train_dataset,
             eval_dataset=eval_dataset,
             peft_config=peft_config,
         )
-    trainer.accelerator.print(f"{trainer.model}")
-    if hasattr(trainer.model, "print_trainable_parameters"):
-        trainer.model.print_trainable_parameters()
 
-    # train
-    checkpoint = None
-    if training_args.resume_from_checkpoint is not None:
-        checkpoint = training_args.resume_from_checkpoint
+
+def train_func(trainer, checkpoint):
     trainer.train(resume_from_checkpoint=checkpoint)
 
-    # saving final model
+
+def save_model_func(trainer):
     if trainer.is_fsdp_enabled:
         trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
     trainer.save_model()
 
 
-if __name__ == "__main__":
+def main(model_args, data_args, training_args):
     os.environ["NCCL_P2P_DISABLE"] = "1"
     os.environ["NCCL_IB_DISABLE"] = "1"
     os.environ["ACCELERATE_USE_FSDP"] = "false"
     disable_ssl_warnings()
 
+    pipeline = [
+        set_seed_func(training_args.seed),
+        prepare_model_func(model_args, data_args, training_args),
+        lambda x: x[0] if data_args.tokenized_dataset_path else create_datasets_func(x[2], data_args, training_args)(),
+        lambda x: get_trainer_func(x[0], x[1], x[2], x[3], model_args, training_args),
+        lambda x: train_func(x, training_args.resume_from_checkpoint),
+        lambda x: save_model_func(x),
+    ]
+
+    result = None
+    for func in pipeline:
+        try:
+            result = func(result)
+        except TypeError:
+            result = func(*result)
+
+    return result
+
+
+if __name__ == "__main__":
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
     
     if len(sys.argv) == 2 and sys.argv[1].endswith((".json", ".yaml", ".yml")):
@@ -196,7 +189,6 @@ if __name__ == "__main__":
         if config_file.endswith(".json"):
             model_args, data_args, training_args = parser.parse_json_file(json_file=config_file)
         else:
-
             with open(config_file, "r") as f:
                 config = yaml.safe_load(f)
 
