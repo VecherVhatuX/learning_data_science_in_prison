@@ -3,14 +3,14 @@ import sys
 import yaml
 from dataclasses import dataclass, field
 from typing import Optional
-
 from transformers import HfArgumentParser, set_seed, trainer, TrainingArguments
 from trl import SFTConfig, SFTTrainer
 from utils import create_and_prepare_model, create_datasets
 from our_trainers import TripletLossTrainer
 from datasets import Dataset, DatasetDict
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
-
+from requests.packages.urllib3.exceptions import InsecureRequestWarning
+import requests
 
 # Define and parse arguments.
 @dataclass
@@ -104,6 +104,19 @@ class DataTrainingArguments:
         metadata={"help": "Path to the tokenized dataset on disk."},
     )
 
+
+def disable_ssl_warnings():
+    """Отключает предупреждения SSL."""
+    requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+    original_request = requests.Session.request
+
+    def patched_request(self, *args, **kwargs):
+        kwargs['verify'] = False
+        return original_request(self, *args, **kwargs)
+
+    requests.Session.request = patched_request
+
+
 def main(model_args, data_args, training_args):
     # Set seed for reproducibility
     set_seed(training_args.seed)
@@ -125,10 +138,8 @@ def main(model_args, data_args, training_args):
     # datasets
     if data_args.tokenized_dataset_path:
         tokenized_dataset = DatasetDict.load_from_disk(data_args.tokenized_dataset_path)
-        # tokenized_dataset = DatasetDict.load_from_disk('/media/rodion/project/llama_train/test_peft/datasets/tokenized_triplet_dataset_llama3.2_512')
-        train_dataset=tokenized_dataset['train']
-        eval_dataset=tokenized_dataset['test']
-
+        train_dataset = tokenized_dataset['train']
+        eval_dataset = tokenized_dataset['test']
     else:
         train_dataset, eval_dataset = create_datasets(
             tokenizer,
@@ -170,19 +181,6 @@ def main(model_args, data_args, training_args):
     if trainer.is_fsdp_enabled:
         trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
     trainer.save_model()
-
-from requests.packages.urllib3.exceptions import InsecureRequestWarning
-import requests
-def disable_ssl_warnings():
-    """Отключает предупреждения SSL."""
-    requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
-    original_request = requests.Session.request
-
-    def patched_request(self, *args, **kwargs):
-        kwargs['verify'] = False
-        return original_request(self, *args, **kwargs)
-
-    requests.Session.request = patched_request
 
 
 if __name__ == "__main__":
