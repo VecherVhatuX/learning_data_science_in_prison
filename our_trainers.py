@@ -1,13 +1,13 @@
-import torch
-import torch.nn as nn
-from transformers import Trainer
-from typing import Optional, Union, Dict, Any, Callable
-from trl import SFTTrainer
-from transformers.trainer_utils import PredictionOutput
-from torch.nn.functional import normalize
-import random
+import jax
+import jax.numpy as jnp
+from jax.experimental import jax2tf
+from flax import linen as nn
+from flax.training import train_state
+from flax.core import FrozenDict
+from jax.experimental.jax2tf import lower
+import numpy as np
 
-class Dataset(torch.utils.data.Dataset):
+class Dataset:
     def __init__(self, samples, labels, num_negatives, batch_size):
         self.samples = samples
         self.labels = labels
@@ -16,44 +16,50 @@ class Dataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         anchor_idx = idx
-        positive_idx = random.choice([i for i, label in enumerate(self.labels) if label == self.labels[anchor_idx]])
+        positive_idx = np.random.choice([i for i, label in enumerate(self.labels) if label == self.labels[anchor_idx]])
         while positive_idx == anchor_idx:
-            positive_idx = random.choice([i for i, label in enumerate(self.labels) if label == self.labels[anchor_idx]])
+            positive_idx = np.random.choice([i for i, label in enumerate(self.labels) if label == self.labels[anchor_idx]])
 
-        negative_indices = random.sample([i for i, label in enumerate(self.labels) if label != self.labels[anchor_idx]], self.num_negatives)
+        negative_indices = np.random.choice([i for i, label in enumerate(self.labels) if label != self.labels[anchor_idx]], self.num_negatives, replace=False)
         negative_indices = [i for i in negative_indices if i != anchor_idx]
 
         return {
             'anchor_input_ids': self.samples[anchor_idx],
-            'anchor_attention_mask': torch.ones_like(self.samples[anchor_idx], dtype=torch.long),
+            'anchor_attention_mask': np.ones_like(self.samples[anchor_idx], dtype=np.long),
             'positive_input_ids': self.samples[positive_idx],
-            'positive_attention_mask': torch.ones_like(self.samples[positive_idx], dtype=torch.long),
-            'negative_input_ids': torch.stack([self.samples[i] for i in negative_indices]),
-            'negative_attention_mask': torch.ones_like(torch.stack([self.samples[i] for i in negative_indices]), dtype=torch.long)
+            'positive_attention_mask': np.ones_like(self.samples[positive_idx], dtype=np.long),
+            'negative_input_ids': np.stack([self.samples[i] for i in negative_indices]),
+            'negative_attention_mask': np.ones_like(np.stack([self.samples[i] for i in negative_indices]), dtype=np.long)
         }
 
     def __len__(self):
         return len(self.samples)
 
-class TripletLossTrainer(Trainer):
+class TripletLossTrainer:
     def __init__(self, 
+                 model, 
                  triplet_margin: float = 1.0, 
-                 triplet_loss_fn: Optional[Callable] = None,
+                 triplet_loss_fn: Optional[callable] = None,
                  layer_index=-1,
-                 **kwargs):
-        super().__init__(**kwargs)
+                 learning_rate: float = 1e-4):
+        self.model = model
         self.triplet_margin = triplet_margin
-        self.triplet_loss_fn = triplet_loss_fn or nn.TripletMarginLoss(margin=triplet_margin)
+        self.triplet_loss_fn = triplet_loss_fn or self.triplet_margin_loss
         self.layer_index = layer_index
         
+        self.state = train_state.TrainState.create(
+            apply_fn=self.model.apply,
+            params=self.model.init(jax.random.PRNGKey(0), jnp.ones((1, 1)))['params'],
+            tx=self.sgd(learning_rate)
+        )
     
     def mean_pooling(self, hidden_state, attention_mask):
-        input_mask_expanded = attention_mask.unsqueeze(-1).expand(hidden_state.size()).float()
-        sum_embeddings = torch.sum(hidden_state * input_mask_expanded, dim=1)
-        sum_mask = torch.clamp(input_mask_expanded.sum(dim=1), min=1e-9)
+        input_mask_expanded = attention_mask[:, None].expand(hidden_state.shape).astype(jnp.float32)
+        sum_embeddings = jnp.sum(hidden_state * input_mask_expanded, axis=1)
+        sum_mask = jnp.clip(jnp.sum(input_mask_expanded, axis=1), a_min=1e-9)
         return sum_embeddings / sum_mask
     
-    def compute_loss(self, model, inputs, return_outputs=False):
+    def compute_loss(self, params, inputs):
         anchor_input_ids = inputs["anchor_input_ids"]
         anchor_attention_mask = inputs["anchor_attention_mask"]
         positive_input_ids = inputs["positive_input_ids"]
@@ -61,9 +67,9 @@ class TripletLossTrainer(Trainer):
         negative_input_ids = inputs["negative_input_ids"]
         negative_attention_mask = inputs["negative_attention_mask"]
         
-        anchor_outputs = model(input_ids=anchor_input_ids, attention_mask=anchor_attention_mask)
-        positive_outputs = model(input_ids=positive_input_ids, attention_mask=positive_attention_mask)
-        negative_outputs = model(input_ids=negative_input_ids, attention_mask=negative_attention_mask)
+        anchor_outputs = self.model.apply({'params': params}, input_ids=anchor_input_ids, attention_mask=anchor_attention_mask)
+        positive_outputs = self.model.apply({'params': params}, input_ids=positive_input_ids, attention_mask=positive_attention_mask)
+        negative_outputs = self.model.apply({'params': params}, input_ids=negative_input_ids, attention_mask=negative_attention_mask)
         
         anchor_hidden_state = anchor_outputs.hidden_states[self.layer_index]
         positive_hidden_state = positive_outputs.hidden_states[self.layer_index]
@@ -73,23 +79,28 @@ class TripletLossTrainer(Trainer):
         positive_embeddings = self.mean_pooling(positive_hidden_state, positive_attention_mask)
         negative_embeddings = self.mean_pooling(negative_hidden_state, negative_attention_mask)
         
-        anchor_embeddings = normalize(anchor_embeddings, p=2, dim=1)
-        positive_embeddings = normalize(positive_embeddings, p=2, dim=1)
-        negative_embeddings = normalize(negative_embeddings, p=2, dim=1)
+        anchor_embeddings = jax.nn.normalize(anchor_embeddings, axis=1)
+        positive_embeddings = jax.nn.normalize(positive_embeddings, axis=1)
+        negative_embeddings = jax.nn.normalize(negative_embeddings, axis=1)
         
         loss = self.triplet_loss_fn(anchor_embeddings, positive_embeddings, negative_embeddings)
         
-        if return_outputs:
-            return (loss, {
-                'anchor_embeddings': anchor_embeddings, 
-                'positive_embeddings': positive_embeddings, 
-                'negative_embeddings': negative_embeddings
-            })
-        else:
-            return loss
+        return loss
     
-    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
-        with torch.no_grad():
-            loss, predictions = self.compute_loss(model, inputs, return_outputs=True)
-        dummy_labels = torch.zeros(inputs["anchor_input_ids"].size(0), device=inputs["anchor_input_ids"].device)
-        return (loss, predictions, dummy_labels)
+    def triplet_margin_loss(self, anchor_embeddings, positive_embeddings, negative_embeddings):
+        return jnp.mean(jnp.maximum(self.triplet_margin + jnp.linalg.norm(anchor_embeddings - positive_embeddings, axis=1) - jnp.linalg.norm(anchor_embeddings - negative_embeddings, axis=1), 0))
+
+    def sgd(self, learning_rate):
+        return jax.experimental.optimizers.sgd(learning_rate)
+
+    def train_step(self, state, inputs):
+        grads = jax.grad(self.compute_loss)(state.params, inputs)
+        state = state.apply_gradients(grads=grads)
+        return state
+
+    def train(self, dataset, epochs):
+        for epoch in range(epochs):
+            for i in range(len(dataset)):
+                inputs = dataset[i]
+                self.state = self.train_step(self.state, inputs)
+            print(f'Epoch {epoch+1}, loss: {self.compute_loss(self.state.params, inputs)}')
