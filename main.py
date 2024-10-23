@@ -13,6 +13,7 @@ from requests.packages.urllib3.exceptions import InsecureRequestWarning
 import requests
 from functools import partial
 
+
 @dataclass
 class ModelArguments:
     model_name_or_path: str = field(
@@ -102,7 +103,6 @@ class DataTrainingArguments:
 
 
 def disable_ssl_warnings():
-    """Отключает предупреждения SSL."""
     requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
     original_request = requests.Session.request
 
@@ -156,7 +156,23 @@ def save_model_func(trainer):
     trainer.save_model()
 
 
-def main(model_args, data_args, training_args):
+def main():
+    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
+    
+    if len(sys.argv) == 2 and sys.argv[1].endswith((".json", ".yaml", ".yml")):
+        config_file = os.path.abspath(sys.argv[1])
+        if config_file.endswith(".json"):
+            model_args, data_args, training_args = parser.parse_json_file(json_file=config_file)
+        else:
+            with open(config_file, "r") as f:
+                config = yaml.safe_load(f)
+
+            model_args = ModelArguments(**config.get("ModelArguments", {}))
+            data_args = DataTrainingArguments(**config.get("DataTrainingArguments", {}))
+            training_args = TrainingArguments(**config.get("TrainingArguments", {}))
+    else:
+        model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+        
     os.environ["NCCL_P2P_DISABLE"] = "1"
     os.environ["NCCL_IB_DISABLE"] = "1"
     os.environ["ACCELERATE_USE_FSDP"] = "false"
@@ -182,19 +198,4 @@ def main(model_args, data_args, training_args):
 
 
 if __name__ == "__main__":
-    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
-    
-    if len(sys.argv) == 2 and sys.argv[1].endswith((".json", ".yaml", ".yml")):
-        config_file = os.path.abspath(sys.argv[1])
-        if config_file.endswith(".json"):
-            model_args, data_args, training_args = parser.parse_json_file(json_file=config_file)
-        else:
-            with open(config_file, "r") as f:
-                config = yaml.safe_load(f)
-
-            model_args = ModelArguments(**config.get("ModelArguments", {}))
-            data_args = DataTrainingArguments(**config.get("DataTrainingArguments", {}))
-            training_args = TrainingArguments(**config.get("TrainingArguments", {}))
-    else:
-        model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-    main(model_args, data_args, training_args)
+    main()
