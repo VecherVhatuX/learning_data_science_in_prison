@@ -13,7 +13,6 @@ from requests.packages.urllib3.exceptions import InsecureRequestWarning
 import requests
 from functools import partial
 
-
 @dataclass
 class ModelArguments:
     model_name_or_path: str = field(
@@ -77,7 +76,6 @@ class ModelArguments:
         metadata={"help": "Use our TripletLossTrainer(Trainer)"},
     )
 
-
 @dataclass
 class DataTrainingArguments:
     dataset_name: Optional[str] = field(
@@ -101,7 +99,6 @@ class DataTrainingArguments:
         metadata={"help": "Path to the tokenized dataset on disk."},
     )
 
-
 class DatasetEpoch:
     def __init__(self, dataset, epoch, batch_size):
         self.dataset = dataset
@@ -111,7 +108,6 @@ class DatasetEpoch:
     def __getitem__(self, idx):
         self.dataset = self.dataset.shuffle(seed=self.epoch)
         return self.dataset[idx * self.batch_size:(idx + 1) * self.batch_size]
-
 
 class TripletDataset(DatasetEpoch):
     def __init__(self, dataset, epoch, batch_size):
@@ -123,7 +119,6 @@ class TripletDataset(DatasetEpoch):
         negative_samples = [sample for sample in batch if sample["label"] == 0]
         return positive_samples, negative_samples
 
-
 class Dataset:
     def __init__(self, dataset):
         self.dataset = dataset
@@ -134,14 +129,12 @@ class Dataset:
     def shuffle(self, seed):
         self.dataset = self.dataset.shuffle(seed=seed)
 
-
 class DatasetDict:
     def __init__(self, dataset_dict):
         self.dataset_dict = dataset_dict
 
     def __getitem__(self, key):
         return Dataset(self.dataset_dict[key])
-
 
 class TrainerPipeline:
     def __init__(self, model_args, data_args, training_args):
@@ -197,7 +190,6 @@ class TrainerPipeline:
             trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
         trainer.save_model()
 
-
 def main():
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
     
@@ -231,7 +223,6 @@ def main():
     trainer = pipeline.get_trainer(model, peft_config, train_dataset, eval_dataset)
     pipeline.train(trainer, training_args.resume_from_checkpoint)
     pipeline.save_model(trainer)
-
 
 if __name__ == "__main__":
     main()
