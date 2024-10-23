@@ -2,7 +2,6 @@
 ```python
 import logging
 import sys
-import traceback
 from datetime import datetime
 
 LOGGING_FORMAT = "%(asctime)s - %(message)s"
@@ -42,7 +41,7 @@ def create_model(model_path):
     return BaseModel(model_path)
 ```
 
-**data.py**
+**data_loader.py**
 ```python
 import pickle
 import os
@@ -104,7 +103,7 @@ class CustomDataset(Dataset):
         }
 ```
 
-**training.py**
+**training_utils.py**
 ```python
 from model import create_model
 from dataset import CustomDataset
@@ -181,6 +180,17 @@ def evaluate_model(model, device, eval_dataloader):
 
         accuracy = total_correct / len(eval_dataloader.dataset)
         return accuracy
+```
+
+**training.py**
+```python
+from model import create_model
+from dataset import CustomDataset
+from data_loader import load_data, prepare_dataset
+from training_utils import train_model, evaluate_model
+import torch
+import os
+import datetime
 
 def _get_device():
     return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -205,11 +215,6 @@ def _get_dataloaders(dataset, batch_size):
 
 def train(model_path, output_dir, train_batch_size, negative_sample_size):
     device = _get_device()
-    log_info(f"There are {torch.cuda.device_count()} GPUs available for torch.")
-    for i in range(torch.cuda.device_count()):
-        name = torch.cuda.get_device_name(i)
-        log_info(f"GPU {i}: {name}")
-
     data_path = os.environ.get('DATA_PATH', '/home/ma-user/data/data.pkl')
     data = _get_data(data_path)
     tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
@@ -222,29 +227,10 @@ def train(model_path, output_dir, train_batch_size, negative_sample_size):
     optimizer = _get_optimizer(model, 1e-5)
     scheduler = _get_scheduler(optimizer, num_warmup_steps=len(train_dataloader) * 20 * 0.1, num_training_steps=len(train_dataloader) * 20)
 
-    training_args = {
-        'output_dir': output_dir,
-        'num_train_epochs': 20,
-        'per_device_train_batch_size': train_batch_size,
-        'per_device_eval_batch_size': train_batch_size,
-        'warmup_ratio': 0.1,
-        'fp16': True,
-        'bf16': False,
-        'batch_sampler': 'no_duplicates',
-        'eval_strategy': 'steps',
-        'eval_steps': 1000,
-        'save_strategy': 'steps',
-        'save_steps': 1000,
-        'save_total_limit': 2,
-        'logging_steps': 100,
-        'run_name': "nli-v2",
-    }
-
-    for epoch in range(training_args['num_train_epochs']):
+    for epoch in range(20):
         total_loss = train_model(model, device, train_dataloader, optimizer, scheduler)
-        log_info(f'Epoch {epoch+1}, Loss: {total_loss / len(train_dataloader)}')
         accuracy = evaluate_model(model, device, eval_dataloader)
-        log_info(f'Epoch {epoch+1}, Accuracy: {accuracy}')
+        print(f'Epoch {epoch+1}, Loss: {total_loss / len(train_dataloader)}, Accuracy: {accuracy}')
     save_model(model, output_dir)
 ```
 
