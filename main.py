@@ -12,6 +12,7 @@ from functools import partial
 
 @dataclass
 class ModelArguments:
+    """Model arguments data class."""
     model_name_or_path: str = field(metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"})
     chat_template_format: Optional[str] = field(default="none", metadata={"help": "chatml|zephyr|none. Pass `none` if the dataset is already formatted with the chat template."})
     lora_alpha: Optional[int] = field(default=16)
@@ -32,6 +33,7 @@ class ModelArguments:
 
 @dataclass
 class DataTrainingArguments:
+    """Data training arguments data class."""
     dataset_name: Optional[str] = field(default="timdettmers/openassistant-guanaco", metadata={"help": "The preference dataset to use."})
     append_concat_token: Optional[bool] = field(default=False, metadata={"help": "If True, appends `eos_token_id` at the end of each sample being packed."})
     add_special_tokens: Optional[bool] = field(default=False, metadata={"help": "If True, tokenizers adds special tokens to each sample being packed."})
@@ -39,6 +41,7 @@ class DataTrainingArguments:
     tokenized_dataset_path: Optional[str] = field(default=None, metadata={"help": "Path to the tokenized dataset on disk."})
 
 class DatasetEpoch:
+    """Dataset epoch class."""
     def __init__(self, dataset, epoch, batch_size):
         self.dataset = dataset
         self.epoch = epoch
@@ -49,6 +52,7 @@ class DatasetEpoch:
         return self.dataset[idx * self.batch_size:(idx + 1) * self.batch_size]
 
 class TripletDataset(DatasetEpoch):
+    """Triplet dataset class."""
     def __init__(self, dataset, epoch, batch_size):
         super().__init__(dataset, epoch, batch_size)
 
@@ -59,6 +63,7 @@ class TripletDataset(DatasetEpoch):
         return positive_samples, negative_samples
 
 class SFTTrainer:
+    """SFT trainer class."""
     def __init__(self, model, tokenizer, args, train_dataset, eval_dataset, peft_config):
         self.model = model
         self.tokenizer = tokenizer
@@ -80,6 +85,7 @@ class SFTTrainer:
         return None
 
 class TripletLossTrainer:
+    """Triplet loss trainer class."""
     def __init__(self, model, args, train_dataset, eval_dataset, layer_index):
         self.model = model
         self.args = args
@@ -100,6 +106,7 @@ class TripletLossTrainer:
         return None
 
 def create_and_prepare_model(model_args, data_args, training_args):
+    """Create and prepare model."""
     model = get_peft_model(model_args.model_name_or_path, LoraConfig(
         r=model_args.lora_r,
         lora_alpha=model_args.lora_alpha,
@@ -122,6 +129,7 @@ def create_and_prepare_model(model_args, data_args, training_args):
     return model, peft_config
 
 def create_datasets(tokenizer, data_args, training_args, apply_chat_template):
+    """Create datasets."""
     dataset = HFDataset.from_dataset(data_args.dataset_name, split=data_args.splits)
 
     def process_data(examples):
@@ -143,12 +151,14 @@ def create_datasets(tokenizer, data_args, training_args, apply_chat_template):
     return HF_DatasetDict(dataset)
 
 class TrainerPipeline:
+    """Trainer pipeline class."""
     def __init__(self, model_args, data_args, training_args):
         self.model_args = model_args
         self.data_args = data_args
         self.training_args = training_args
 
     def disable_ssl_warnings(self):
+        """Disable SSL warnings."""
         requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
         original_request = requests.Session.request
 
@@ -159,24 +169,30 @@ class TrainerPipeline:
         requests.Session.request = patched_request
 
     def set_seed(self):
+        """Set seed."""
         set_seed(self.training_args.seed)
 
     def prepare_model(self):
+        """Prepare model."""
         model, peft_config = create_and_prepare_model(self.model_args, self.data_args, self.training_args)
         return model, peft_config
 
     def create_datasets(self, tokenizer):
+        """Create datasets."""
         return create_datasets(tokenizer, self.data_args, self.training_args, apply_chat_template=self.data_args.chat_template_format != "none")
 
     def train(self, trainer, checkpoint):
+        """Train."""
         trainer.train(resume_from_checkpoint=checkpoint)
 
     def save_model(self, trainer):
+        """Save model."""
         if trainer.is_fsdp_enabled:
             trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
         trainer.save_model()
 
 def get_trainer(model, peft_config, train_dataset, eval_dataset, model_args, training_args):
+    """Get trainer."""
     if model_args.use_triplet_loss_trainer:
         model = get_peft_model(model, peft_config)
         return TripletLossTrainer(
