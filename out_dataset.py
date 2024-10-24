@@ -4,172 +4,65 @@ from pathlib import Path
 from tqdm import tqdm
 from datasets import load_dataset, Dataset, DatasetDict
 from transformers import AutoTokenizer
+import torch
 
+# Functions
 
-def load_swebench_dataset(dataset_path: str) -> Dataset:
-    """Loads the SWE-bench dataset."""
-    return load_dataset(dataset_path)['test']
+load_swebench_dataset = lambda dataset_path: load_dataset(dataset_path)['test']
 
+load_triplet_data = lambda snippet_folder_path: list(snippet_folder_path.iterdir())
 
-def load_triplet_data(snippet_folder_path: Path) -> list:
-    """Loads the triplet data from the given folder path."""
-    return list(snippet_folder_path.iterdir())
+create_swebench_dict = lambda swebench_dataset: {item['instance_id']: item['problem_statement'] for item in swebench_dataset}
 
+load_snippet_file = lambda snippet_file: json.load(open(snippet_file, 'r', encoding='utf-8')) if open(snippet_file, 'r', encoding='utf-8').readable() else []
 
-def create_swebench_dict(swebench_dataset: Dataset) -> dict:
-    """Creates a dictionary from the SWE-bench dataset."""
-    return {item['instance_id']: item['problem_statement'] for item in swebench_dataset}
+separate_snippets = lambda snippets: ([item['snippet'] for item in snippets if item.get('is_bug', False) and item.get('snippet')], 
+                                      [item['snippet'] for item in snippets if not item.get('is_bug', False) and item.get('snippet')])
 
+create_triplets = lambda problem_statement, positive_snippets, negative_snippets, num_negatives_per_positive: (
+    [{'anchor': problem_statement, 'positive': positive_doc, 'negative': negative_doc} 
+     for positive_doc in positive_snippets 
+     for negative_doc in (negative_snippets if len(negative_snippets) <= num_negatives_per_positive else random.sample(negative_snippets, num_negatives_per_positive))])
 
-def load_snippet_file(snippet_file: Path) -> list:
-    """Loads the snippet file."""
-    try:
-        with open(snippet_file, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except json.JSONDecodeError:
-        print(f"JSON decode error in file {snippet_file}.")
-        return []
+create_triplet_dataset = lambda snippet_folder_path, swebench_dataset, instance_id_field='instance_id', num_negatives_per_positive=3: (
+    [triplet 
+     for folder in tqdm(load_triplet_data(snippet_folder_path), desc="Processing folders") 
+     for triplet in create_triplets(
+        create_swebench_dict(swebench_dataset).get(folder.name), 
+        *separate_snippets(load_snippet_file(folder / 'snippet.json')), 
+        num_negatives_per_positive) if create_swebench_dict(swebench_dataset).get(folder.name) and load_snippet_file(folder / 'snippet.json')])
 
+create_huggingface_dataset = lambda triplet_data: DatasetDict({
+    'train': Dataset.from_list(triplet_data).train_test_split(test_size=0.1, seed=42)['train'],
+    'test': Dataset.from_list(triplet_data).train_test_split(test_size=0.1, seed=42)['test']
+})
 
-def separate_snippets(snippets: list) -> (list, list):
-    """Separates the snippets into positive and negative snippets."""
-    positive_snippets = [
-        item['snippet'] for item in snippets
-        if item.get('is_bug', False) and item.get('snippet')
-    ]
-    negative_snippets = [
-        item['snippet'] for item in snippets
-        if not item.get('is_bug', False) and item.get('snippet')
-    ]
-    return positive_snippets, negative_snippets
+load_tokenizer = lambda model_name: AutoTokenizer.from_pretrained(model_name)
 
+tokenize_triplet = lambda examples, max_length=512, model_name='unsloth/Llama-3.2-1B': {
+    'anchor_input_ids': load_tokenizer(model_name)(examples['anchor'], truncation=True, padding='max_length', max_length=max_length)['input_ids'],
+    'anchor_attention_mask': load_tokenizer(model_name)(examples['anchor'], truncation=True, padding='max_length', max_length=max_length)['attention_mask'],
+    'positive_input_ids': load_tokenizer(model_name)(examples['positive'], truncation=True, padding='max_length', max_length=max_length)['input_ids'],
+    'positive_attention_mask': load_tokenizer(model_name)(examples['positive'], truncation=True, padding='max_length', max_length=max_length)['attention_mask'],
+    'negative_input_ids': load_tokenizer(model_name)(examples['negative'], truncation=True, padding='max_length', max_length=max_length)['input_ids'],
+    'negative_attention_mask': load_tokenizer(model_name)(examples['negative'], truncation=True, padding='max_length', max_length=max_length)['attention_mask'],
+}
 
-def create_triplets(problem_statement: str, positive_snippets: list, negative_snippets: list, num_negatives_per_positive: int) -> list:
-    """Creates triplets from the problem statement, positive snippets, negative snippets, and the number of negatives per positive."""
-    triplets = []
-    for positive_doc in positive_snippets:
-        if len(negative_snippets) <= num_negatives_per_positive:
-            selected_negatives = negative_snippets
-        else:
-            selected_negatives = random.sample(negative_snippets, num_negatives_per_positive)
-        for negative_doc in selected_negatives:
-            triplet = {
-                "anchor": problem_statement,
-                "positive": positive_doc,
-                "negative": negative_doc
-            }
-            triplets.append(triplet)
-    return triplets
+tokenize_dataset = lambda dataset_dict, model_name='unsloth/Llama-3.2-1B': dataset_dict.map(
+    lambda examples: tokenize_triplet(examples, model_name=model_name),
+    batched=True,
+    remove_columns=['anchor', 'positive', 'negative'],
+    desc="Tokenizing triplet dataset"
+)
 
+calculate_triplet_loss = lambda model, batch: (
+    (model(batch['anchor_input_ids'].to(model.device), attention_mask=batch['anchor_attention_mask'].to(model.device)).last_hidden_state[:, 0, :] - 
+     model(batch['positive_input_ids'].to(model.device), attention_mask=batch['positive_attention_mask'].to(model.device)).last_hidden_state[:, 0, :]).norm(2, dim=1) - 
+    (model(batch['anchor_input_ids'].to(model.device), attention_mask=batch['anchor_attention_mask'].to(model.device)).last_hidden_state[:, 0, :] - 
+     model(batch['negative_input_ids'].to(model.device), attention_mask=batch['negative_attention_mask'].to(model.device)).last_hidden_state[:, 0, :]).norm(2, dim=1) + 1
+).mean()
 
-def create_triplet_dataset(snippet_folder_path: Path, swebench_dataset: Dataset, instance_id_field: str = 'instance_id', num_negatives_per_positive: int = 3) -> list:
-    """Creates the triplet dataset from the snippet folder path and the SWE-bench dataset."""
-    all_dataset = []
-    all_test_folders = load_triplet_data(snippet_folder_path)
-    swebench_dict = create_swebench_dict(swebench_dataset)
-    for folder in tqdm(all_test_folders, desc="Processing folders"):
-        instance_id = folder.name
-        problem_statement = swebench_dict.get(instance_id)
-        if not problem_statement:
-            print(f"Instance ID {instance_id} not found in SWE-bench dataset.")
-            continue
-        snippet_file = folder / 'snippet.json'
-        if not snippet_file.exists():
-            print(f"File {snippet_file} does not exist.")
-            continue
-        snippets = load_snippet_file(snippet_file)
-        positive_snippets, negative_snippets = separate_snippets(snippets)
-        if not positive_snippets or not negative_snippets:
-            continue
-        triplets = create_triplets(problem_statement, positive_snippets, negative_snippets, num_negatives_per_positive)
-        all_dataset.extend(triplets)
-    return all_dataset
-
-
-def create_huggingface_dataset(triplet_data: list) -> DatasetDict:
-    """Creates the Hugging Face dataset from the triplet data."""
-    triplet_dataset = Dataset.from_list(triplet_data)
-    split_dataset = triplet_dataset.train_test_split(test_size=0.1, seed=42)
-    return DatasetDict({
-        'train': split_dataset['train'],
-        'test': split_dataset['test']
-    })
-
-
-def load_tokenizer(model_name: str) -> AutoTokenizer:
-    """Loads the tokenizer from the given model name."""
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    if not hasattr(tokenizer, 'pad_token') or tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    return tokenizer
-
-
-def tokenize_triplet(examples, max_length=512):
-    """Tokenizes the triplet."""
-    tokenizer = load_tokenizer('unsloth/Llama-3.2-1B')
-    anchor_enc = tokenizer(
-        examples['anchor'],
-        truncation=True,
-        padding='max_length',
-        max_length=max_length
-    )
-    positive_enc = tokenizer(
-        examples['positive'],
-        truncation=True,
-        padding='max_length',
-        max_length=max_length
-    )
-    negative_enc = tokenizer(
-        examples['negative'],
-        truncation=True,
-        padding='max_length',
-        max_length=max_length
-    )
-    tokenized_examples = {
-        'anchor_input_ids': anchor_enc['input_ids'],
-        'anchor_attention_mask': anchor_enc['attention_mask'],
-        'positive_input_ids': positive_enc['input_ids'],
-        'positive_attention_mask': positive_enc['attention_mask'],
-        'negative_input_ids': negative_enc['input_ids'],
-        'negative_attention_mask': negative_enc['attention_mask'],
-    }
-    return tokenized_examples
-
-
-def tokenize_dataset(dataset_dict: DatasetDict) -> DatasetDict:
-    """Tokenizes the dataset."""
-    return dataset_dict.map(
-        tokenize_triplet,
-        batched=True,
-        remove_columns=['anchor', 'positive', 'negative'],
-        desc="Tokenizing triplet dataset"
-    )
-
-
-def calculate_triplet_loss(model, batch):
-    """Calculates the triplet loss."""
-    anchor_input_ids = batch['anchor_input_ids'].to(model.device)
-    anchor_attention_mask = batch['anchor_attention_mask'].to(model.device)
-    positive_input_ids = batch['positive_input_ids'].to(model.device)
-    positive_attention_mask = batch['positive_attention_mask'].to(model.device)
-    negative_input_ids = batch['negative_input_ids'].to(model.device)
-    negative_attention_mask = batch['negative_attention_mask'].to(model.device)
-
-    anchor_outputs = model(anchor_input_ids, attention_mask=anchor_attention_mask)
-    positive_outputs = model(positive_input_ids, attention_mask=positive_attention_mask)
-    negative_outputs = model(negative_input_ids, attention_mask=negative_attention_mask)
-
-    anchor_embeddings = anchor_outputs.last_hidden_state[:, 0, :]
-    positive_embeddings = positive_outputs.last_hidden_state[:, 0, :]
-    negative_embeddings = negative_outputs.last_hidden_state[:, 0, :]
-
-    triplet_loss = (
-        anchor_embeddings - positive_embeddings
-    ).norm(2, dim=1) - (
-        anchor_embeddings - negative_embeddings
-    ).norm(2, dim=1) + 1
-    return triplet_loss.mean()
-
+# Classes
 
 class DatasetCreator:
     def __init__(self, swebench_dataset_path, snippet_folder_path, instance_id_field='instance_id', num_negatives_per_positive=3):
@@ -235,6 +128,8 @@ class TripletModelTrainer:
             print(f"Test Loss: {total_loss / len(tokenized_dataset['test'])}")
 
 
+# Main function
+
 def main():
     swebench_dataset_path = 'datasets/SWE-bench_oracle'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
@@ -257,11 +152,10 @@ def main():
     dataset_creator.save_dataset(tokenized_dataset, tokenized_save_path)
 
     # Initialize the model and trainer
-    model = YourModel()  # Replace with your model
+    model = None  # Replace with your model
     trainer = TripletModelTrainer(model, dataset_creator)
     trainer.train()
 
 
 if __name__ == "__main__":
-    import torch
     main()
