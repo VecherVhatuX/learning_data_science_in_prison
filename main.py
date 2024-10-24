@@ -4,7 +4,7 @@ import yaml
 from dataclasses import dataclass, field
 from typing import Optional
 from transformers import HfArgumentParser, set_seed, TrainingArguments
-from datasets import Dataset, DatasetDict
+from datasets import Dataset as HFDataset, DatasetDict as HF DatasetDict
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 import requests
@@ -58,22 +58,33 @@ class TripletDataset(DatasetEpoch):
         negative_samples = [sample for sample in batch if sample["label"] == 0]
         return positive_samples, negative_samples
 
-class Dataset:
-    def __init__(self, dataset):
-        self.dataset = dataset
+def create_and_prepare_model(model_args, data_args, training_args):
+    # implement your model creation and preparation logic here
+    pass
 
-    def __getitem__(self, idx):
-        return self.dataset[idx]
+def create_datasets(tokenizer, data_args, training_args, apply_chat_template):
+    # implement your dataset creation logic here
+    pass
 
-    def shuffle(self, seed):
-        self.dataset = self.dataset.shuffle(seed=seed)
-
-class DatasetDict:
-    def __init__(self, dataset_dict):
-        self.dataset_dict = dataset_dict
-
-    def __getitem__(self, key):
-        return Dataset(self.dataset_dict[key])
+def get_trainer(model, peft_config, train_dataset, eval_dataset, model_args, training_args):
+    if model_args.use_triplet_loss_trainer:
+        model = get_peft_model(model, peft_config)
+        return TripletLossTrainer(
+            model=model,
+            args=training_args,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            layer_index=-1,
+        )
+    else:
+        return SFTTrainer(
+            model=model,
+            tokenizer=None,
+            args=training_args,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            peft_config=peft_config,
+        )
 
 class TrainerPipeline:
     def __init__(self, model_args, data_args, training_args):
@@ -100,26 +111,6 @@ class TrainerPipeline:
 
     def create_datasets(self, tokenizer):
         return create_datasets(tokenizer, self.data_args, self.training_args, apply_chat_template=self.data_args.chat_template_format != "none")
-
-    def get_trainer(self, model, peft_config, train_dataset, eval_dataset):
-        if self.model_args.use_triplet_loss_trainer:
-            model = get_peft_model(model, peft_config)
-            return TripletLossTrainer(
-                model=model,
-                args=self.training_args,
-                train_dataset=train_dataset,
-                eval_dataset=eval_dataset,
-                layer_index=-1,
-            )
-        else:
-            return SFTTrainer(
-                model=model,
-                tokenizer=None,
-                args=self.training_args,
-                train_dataset=train_dataset,
-                eval_dataset=eval_dataset,
-                peft_config=peft_config,
-            )
 
     def train(self, trainer, checkpoint):
         trainer.train(resume_from_checkpoint=checkpoint)
@@ -158,8 +149,8 @@ def main():
     tokenizer = model.tokenizer
     datasets = pipeline.create_datasets(tokenizer) if not data_args.tokenized_dataset_path else None
     train_dataset = TripletDataset(datasets["train"], 0, training_args.per_device_train_batch_size)
-    eval_dataset = DatasetDict(datasets)["test"]
-    trainer = pipeline.get_trainer(model, peft_config, train_dataset, eval_dataset)
+    eval_dataset = HF DatasetDict(datasets)["test"]
+    trainer = get_trainer(model, peft_config, train_dataset, eval_dataset, model_args, training_args)
     pipeline.train(trainer, training_args.resume_from_checkpoint)
     pipeline.save_model(trainer)
 
