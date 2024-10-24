@@ -4,9 +4,6 @@ import yaml
 from dataclasses import dataclass, field
 from typing import Optional
 from transformers import HfArgumentParser, set_seed, TrainingArguments
-from trl import SFTConfig, SFTTrainer
-from utils import create_and_prepare_model, create_datasets
-from our_trainers import TripletLossTrainer
 from datasets import Dataset, DatasetDict
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
