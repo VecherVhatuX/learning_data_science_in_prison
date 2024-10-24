@@ -6,15 +6,16 @@ from flax.training import train_state
 from flax.core import FrozenDict
 from jax.experimental.jax2tf import lower
 import numpy as np
+from typing import Optional, Callable
 
 class Dataset:
-    def __init__(self, samples, labels, num_negatives, batch_size):
+    def __init__(self, samples: np.ndarray, labels: np.ndarray, num_negatives: int, batch_size: int):
         self.samples = samples
         self.labels = labels
         self.num_negatives = num_negatives
         self.batch_size = batch_size
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int):
         anchor_idx = idx
         positive_idx = np.random.choice([i for i, label in enumerate(self.labels) if label == self.labels[anchor_idx]])
         while positive_idx == anchor_idx:
@@ -32,15 +33,16 @@ class Dataset:
             'negative_attention_mask': np.ones_like(np.stack([self.samples[i] for i in negative_indices]), dtype=np.long)
         }
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.samples)
+
 
 class TripletLossTrainer:
     def __init__(self, 
-                 model, 
+                 model: nn.Module, 
                  triplet_margin: float = 1.0, 
-                 triplet_loss_fn: Optional[callable] = None,
-                 layer_index=-1,
+                 triplet_loss_fn: Optional[Callable] = None,
+                 layer_index: int = -1,
                  learning_rate: float = 1e-4):
         self.model = model
         self.triplet_margin = triplet_margin
@@ -53,13 +55,13 @@ class TripletLossTrainer:
             tx=self.sgd(learning_rate)
         )
     
-    def mean_pooling(self, hidden_state, attention_mask):
+    def mean_pooling(self, hidden_state: jnp.ndarray, attention_mask: jnp.ndarray) -> jnp.ndarray:
         input_mask_expanded = attention_mask[:, None].expand(hidden_state.shape).astype(jnp.float32)
         sum_embeddings = jnp.sum(hidden_state * input_mask_expanded, axis=1)
         sum_mask = jnp.clip(jnp.sum(input_mask_expanded, axis=1), a_min=1e-9)
         return sum_embeddings / sum_mask
     
-    def compute_loss(self, params, inputs):
+    def compute_loss(self, params: FrozenDict, inputs: dict) -> jnp.ndarray:
         anchor_input_ids = inputs["anchor_input_ids"]
         anchor_attention_mask = inputs["anchor_attention_mask"]
         positive_input_ids = inputs["positive_input_ids"]
@@ -87,18 +89,18 @@ class TripletLossTrainer:
         
         return loss
     
-    def triplet_margin_loss(self, anchor_embeddings, positive_embeddings, negative_embeddings):
+    def triplet_margin_loss(self, anchor_embeddings: jnp.ndarray, positive_embeddings: jnp.ndarray, negative_embeddings: jnp.ndarray) -> jnp.ndarray:
         return jnp.mean(jnp.maximum(self.triplet_margin + jnp.linalg.norm(anchor_embeddings - positive_embeddings, axis=1) - jnp.linalg.norm(anchor_embeddings - negative_embeddings, axis=1), 0))
 
-    def sgd(self, learning_rate):
+    def sgd(self, learning_rate: float) -> jax.experimental.optimizers.Optimizer:
         return jax.experimental.optimizers.sgd(learning_rate)
 
-    def train_step(self, state, inputs):
+    def train_step(self, state: train_state.TrainState, inputs: dict) -> train_state.TrainState:
         grads = jax.grad(self.compute_loss)(state.params, inputs)
         state = state.apply_gradients(grads=grads)
         return state
 
-    def train(self, dataset, epochs):
+    def train(self, dataset: Dataset, epochs: int):
         for epoch in range(epochs):
             for i in range(len(dataset)):
                 inputs = dataset[i]
