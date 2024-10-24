@@ -146,6 +146,31 @@ def tokenize_dataset(dataset_dict: DatasetDict) -> DatasetDict:
     )
 
 
+def calculate_triplet_loss(model, batch):
+    """Calculates the triplet loss."""
+    anchor_input_ids = batch['anchor_input_ids'].to(model.device)
+    anchor_attention_mask = batch['anchor_attention_mask'].to(model.device)
+    positive_input_ids = batch['positive_input_ids'].to(model.device)
+    positive_attention_mask = batch['positive_attention_mask'].to(model.device)
+    negative_input_ids = batch['negative_input_ids'].to(model.device)
+    negative_attention_mask = batch['negative_attention_mask'].to(model.device)
+
+    anchor_outputs = model(anchor_input_ids, attention_mask=anchor_attention_mask)
+    positive_outputs = model(positive_input_ids, attention_mask=positive_attention_mask)
+    negative_outputs = model(negative_input_ids, attention_mask=negative_attention_mask)
+
+    anchor_embeddings = anchor_outputs.last_hidden_state[:, 0, :]
+    positive_embeddings = positive_outputs.last_hidden_state[:, 0, :]
+    negative_embeddings = negative_outputs.last_hidden_state[:, 0, :]
+
+    triplet_loss = (
+        anchor_embeddings - positive_embeddings
+    ).norm(2, dim=1) - (
+        anchor_embeddings - negative_embeddings
+    ).norm(2, dim=1) + 1
+    return triplet_loss.mean()
+
+
 class DatasetCreator:
     def __init__(self, swebench_dataset_path, snippet_folder_path, instance_id_field='instance_id', num_negatives_per_positive=3):
         self.swebench_dataset_path = swebench_dataset_path
@@ -178,6 +203,38 @@ class DatasetCreator:
         print(f"Dataset saved at: {path}")
 
 
+class TripletModelTrainer:
+    def __init__(self, model, dataset_creator, batch_size=16, epochs=5):
+        self.model = model
+        self.dataset_creator = dataset_creator
+        self.batch_size = batch_size
+        self.epochs = epochs
+
+    def train(self):
+        triplet_data = self.dataset_creator.create_triplet_dataset()
+        dataset_dict = self.dataset_creator.create_huggingface_dataset(triplet_data)
+        tokenized_dataset = self.dataset_creator.tokenize_dataset(dataset_dict)
+
+        for epoch in range(self.epochs):
+            self.model.train()
+            total_loss = 0
+            for batch in tokenized_dataset['train'].batch(self.batch_size):
+                loss = calculate_triplet_loss(self.model, batch)
+                loss.backward()
+                self.model.optimizer.step()
+                self.model.optimizer.zero_grad()
+                total_loss += loss.item()
+            print(f"Epoch {epoch+1}, Loss: {total_loss / len(tokenized_dataset['train'])}")
+
+        self.model.eval()
+        with torch.no_grad():
+            total_loss = 0
+            for batch in tokenized_dataset['test'].batch(self.batch_size):
+                loss = calculate_triplet_loss(self.model, batch)
+                total_loss += loss.item()
+            print(f"Test Loss: {total_loss / len(tokenized_dataset['test'])}")
+
+
 def main():
     swebench_dataset_path = 'datasets/SWE-bench_oracle'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
@@ -199,6 +256,12 @@ def main():
     tokenized_save_path = 'datasets/tokenized_triplet_dataset'
     dataset_creator.save_dataset(tokenized_dataset, tokenized_save_path)
 
+    # Initialize the model and trainer
+    model = YourModel()  # Replace with your model
+    trainer = TripletModelTrainer(model, dataset_creator)
+    trainer.train()
+
 
 if __name__ == "__main__":
+    import torch
     main()
