@@ -7,18 +7,22 @@ from transformers import AutoTokenizer
 
 
 def load_swebench_dataset(dataset_path: str) -> Dataset:
+    """Loads the SWE-bench dataset."""
     return load_dataset(dataset_path)['test']
 
 
 def load_triplet_data(snippet_folder_path: Path) -> list:
+    """Loads the triplet data from the given folder path."""
     return list(snippet_folder_path.iterdir())
 
 
 def create_swebench_dict(swebench_dataset: Dataset) -> dict:
+    """Creates a dictionary from the SWE-bench dataset."""
     return {item['instance_id']: item['problem_statement'] for item in swebench_dataset}
 
 
 def load_snippet_file(snippet_file: Path) -> list:
+    """Loads the snippet file."""
     try:
         with open(snippet_file, 'r', encoding='utf-8') as f:
             return json.load(f)
@@ -28,6 +32,7 @@ def load_snippet_file(snippet_file: Path) -> list:
 
 
 def separate_snippets(snippets: list) -> (list, list):
+    """Separates the snippets into positive and negative snippets."""
     positive_snippets = [
         item['snippet'] for item in snippets
         if item.get('is_bug', False) and item.get('snippet')
@@ -40,6 +45,7 @@ def separate_snippets(snippets: list) -> (list, list):
 
 
 def create_triplets(problem_statement: str, positive_snippets: list, negative_snippets: list, num_negatives_per_positive: int) -> list:
+    """Creates triplets from the problem statement, positive snippets, negative snippets, and the number of negatives per positive."""
     triplets = []
     for positive_doc in positive_snippets:
         if len(negative_snippets) <= num_negatives_per_positive:
@@ -57,6 +63,7 @@ def create_triplets(problem_statement: str, positive_snippets: list, negative_sn
 
 
 def create_triplet_dataset(snippet_folder_path: Path, swebench_dataset: Dataset, instance_id_field: str = 'instance_id', num_negatives_per_positive: int = 3) -> list:
+    """Creates the triplet dataset from the snippet folder path and the SWE-bench dataset."""
     all_dataset = []
     all_test_folders = load_triplet_data(snippet_folder_path)
     swebench_dict = create_swebench_dict(swebench_dataset)
@@ -80,6 +87,7 @@ def create_triplet_dataset(snippet_folder_path: Path, swebench_dataset: Dataset,
 
 
 def create_huggingface_dataset(triplet_data: list) -> DatasetDict:
+    """Creates the Hugging Face dataset from the triplet data."""
     triplet_dataset = Dataset.from_list(triplet_data)
     split_dataset = triplet_dataset.train_test_split(test_size=0.1, seed=42)
     return DatasetDict({
@@ -89,6 +97,7 @@ def create_huggingface_dataset(triplet_data: list) -> DatasetDict:
 
 
 def load_tokenizer(model_name: str) -> AutoTokenizer:
+    """Loads the tokenizer from the given model name."""
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     if not hasattr(tokenizer, 'pad_token') or tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -96,6 +105,7 @@ def load_tokenizer(model_name: str) -> AutoTokenizer:
 
 
 def tokenize_triplet(examples, max_length=512):
+    """Tokenizes the triplet."""
     tokenizer = load_tokenizer('unsloth/Llama-3.2-1B')
     anchor_enc = tokenizer(
         examples['anchor'],
@@ -127,6 +137,7 @@ def tokenize_triplet(examples, max_length=512):
 
 
 def tokenize_dataset(dataset_dict: DatasetDict) -> DatasetDict:
+    """Tokenizes the dataset."""
     return dataset_dict.map(
         tokenize_triplet,
         batched=True,
@@ -135,34 +146,58 @@ def tokenize_dataset(dataset_dict: DatasetDict) -> DatasetDict:
     )
 
 
+class DatasetCreator:
+    def __init__(self, swebench_dataset_path, snippet_folder_path, instance_id_field='instance_id', num_negatives_per_positive=3):
+        self.swebench_dataset_path = swebench_dataset_path
+        self.snippet_folder_path = Path(snippet_folder_path)
+        self.instance_id_field = instance_id_field
+        self.num_negatives_per_positive = num_negatives_per_positive
+        self.swebench_dataset = load_swebench_dataset(swebench_dataset_path)
+
+    def create_triplet_dataset(self):
+        print("Creating triplet dataset...")
+        triplet_data = create_triplet_dataset(
+            self.snippet_folder_path,
+            self.swebench_dataset,
+            self.instance_id_field,
+            self.num_negatives_per_positive
+        )
+        print(f"Number of triplets: {len(triplet_data)}")
+        return triplet_data
+
+    def create_huggingface_dataset(self, triplet_data):
+        dataset_dict = create_huggingface_dataset(triplet_data)
+        return dataset_dict
+
+    def tokenize_dataset(self, dataset_dict):
+        tokenized_dataset = tokenize_dataset(dataset_dict)
+        return tokenized_dataset
+
+    def save_dataset(self, dataset, path):
+        dataset.save_to_disk(path)
+        print(f"Dataset saved at: {path}")
+
+
 def main():
     swebench_dataset_path = 'datasets/SWE-bench_oracle'
-    swebench_dataset = load_swebench_dataset(swebench_dataset_path)
-    dataset_path = Path('datasets/10_10_after_fix_pytest')
-    print("Creating triplet dataset...")
-    triplet_data = create_triplet_dataset(
-        dataset_path,
-        swebench_dataset,
-        instance_id_field='instance_id',
-        num_negatives_per_positive=3
-    )
-    print(f"Number of triplets: {len(triplet_data)}")
+    snippet_folder_path = 'datasets/10_10_after_fix_pytest'
+
+    dataset_creator = DatasetCreator(swebench_dataset_path, snippet_folder_path)
+    triplet_data = dataset_creator.create_triplet_dataset()
     if not triplet_data:
         print("No available triplets to create the dataset.")
         return
-    dataset_dict = create_huggingface_dataset(triplet_data)
-    dataset_save_path = 'datasets/triplet_dataset'
-    dataset_dict.save_to_disk(dataset_save_path)
-    print(f"Dataset saved at: {dataset_save_path}")
+    dataset_dict = dataset_creator.create_huggingface_dataset(triplet_data)
+    dataset_creator.save_dataset(dataset_dict, 'datasets/triplet_dataset')
+
     print("Tokenizing dataset...")
-    tokenized_dataset = tokenize_dataset(dataset_dict)
+    tokenized_dataset = dataset_creator.tokenize_dataset(dataset_dict)
     print("Tokenization completed.")
     print("Verifying the structure of the tokenized dataset:")
     print(tokenized_dataset['train'].column_names)
     print(tokenized_dataset['train'][0])
     tokenized_save_path = 'datasets/tokenized_triplet_dataset'
-    tokenized_dataset.save_to_disk(tokenized_save_path)
-    print(f"Tokenized dataset saved at: {tokenized_save_path}")
+    dataset_creator.save_dataset(tokenized_dataset, tokenized_save_path)
 
 
 if __name__ == "__main__":
