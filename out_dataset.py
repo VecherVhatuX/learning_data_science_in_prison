@@ -8,22 +8,29 @@ import torch
 
 # Functions
 
+# Load SWE-bench dataset from specified path.
 load_swebench_dataset = lambda dataset_path: load_dataset(dataset_path)['test']
 
+# Load triplet data from specified snippet folder path.
 load_triplet_data = lambda snippet_folder_path: list(snippet_folder_path.iterdir())
 
+# Create dictionary mapping instance ids to problem statements in SWE-bench dataset.
 create_swebench_dict = lambda swebench_dataset: {item['instance_id']: item['problem_statement'] for item in swebench_dataset}
 
+# Load snippet file from specified path and return contents as a JSON object or an empty list if file is unreadable.
 load_snippet_file = lambda snippet_file: json.load(open(snippet_file, 'r', encoding='utf-8')) if open(snippet_file, 'r', encoding='utf-8').readable() else []
 
+# Separate bug and non-bug snippets from a list of snippets.
 separate_snippets = lambda snippets: ([item['snippet'] for item in snippets if item.get('is_bug', False) and item.get('snippet')], 
                                       [item['snippet'] for item in snippets if not item.get('is_bug', False) and item.get('snippet')])
 
+# Create triplets from a problem statement, positive snippets, negative snippets, and number of negatives per positive.
 create_triplets = lambda problem_statement, positive_snippets, negative_snippets, num_negatives_per_positive: (
     [{'anchor': problem_statement, 'positive': positive_doc, 'negative': negative_doc} 
      for positive_doc in positive_snippets 
      for negative_doc in (negative_snippets if len(negative_snippets) <= num_negatives_per_positive else random.sample(negative_snippets, num_negatives_per_positive))])
 
+# Create triplet dataset from snippet folder path, SWE-bench dataset, instance id field, and number of negatives per positive.
 create_triplet_dataset = lambda snippet_folder_path, swebench_dataset, instance_id_field='instance_id', num_negatives_per_positive=3: (
     [triplet 
      for folder in tqdm(load_triplet_data(snippet_folder_path), desc="Processing folders") 
@@ -32,13 +39,16 @@ create_triplet_dataset = lambda snippet_folder_path, swebench_dataset, instance_
         *separate_snippets(load_snippet_file(folder / 'snippet.json')), 
         num_negatives_per_positive) if create_swebench_dict(swebench_dataset).get(folder.name) and load_snippet_file(folder / 'snippet.json')])
 
+# Create Hugging Face dataset from triplet data.
 create_huggingface_dataset = lambda triplet_data: DatasetDict({
     'train': Dataset.from_list(triplet_data).train_test_split(test_size=0.1, seed=42)['train'],
     'test': Dataset.from_list(triplet_data).train_test_split(test_size=0.1, seed=42)['test']
 })
 
+# Load tokenizer from specified model name.
 load_tokenizer = lambda model_name: AutoTokenizer.from_pretrained(model_name)
 
+# Tokenize a triplet with specified max length and model name.
 tokenize_triplet = lambda examples, max_length=512, model_name='unsloth/Llama-3.2-1B': {
     'anchor_input_ids': load_tokenizer(model_name)(examples['anchor'], truncation=True, padding='max_length', max_length=max_length)['input_ids'],
     'anchor_attention_mask': load_tokenizer(model_name)(examples['anchor'], truncation=True, padding='max_length', max_length=max_length)['attention_mask'],
@@ -48,6 +58,7 @@ tokenize_triplet = lambda examples, max_length=512, model_name='unsloth/Llama-3.
     'negative_attention_mask': load_tokenizer(model_name)(examples['negative'], truncation=True, padding='max_length', max_length=max_length)['attention_mask'],
 }
 
+# Tokenize dataset with specified model name.
 tokenize_dataset = lambda dataset_dict, model_name='unsloth/Llama-3.2-1B': dataset_dict.map(
     lambda examples: tokenize_triplet(examples, model_name=model_name),
     batched=True,
@@ -55,6 +66,7 @@ tokenize_dataset = lambda dataset_dict, model_name='unsloth/Llama-3.2-1B': datas
     desc="Tokenizing triplet dataset"
 )
 
+# Calculate triplet loss for a batch of triplets.
 calculate_triplet_loss = lambda model, batch: (
     (model(batch['anchor_input_ids'].to(model.device), attention_mask=batch['anchor_attention_mask'].to(model.device)).last_hidden_state[:, 0, :] - 
      model(batch['positive_input_ids'].to(model.device), attention_mask=batch['positive_attention_mask'].to(model.device)).last_hidden_state[:, 0, :]).norm(2, dim=1) - 
@@ -62,10 +74,12 @@ calculate_triplet_loss = lambda model, batch: (
      model(batch['negative_input_ids'].to(model.device), attention_mask=batch['negative_attention_mask'].to(model.device)).last_hidden_state[:, 0, :]).norm(2, dim=1) + 1
 ).mean()
 
+
 # Classes
 
 class DatasetCreator:
     def __init__(self, swebench_dataset_path, snippet_folder_path, instance_id_field='instance_id', num_negatives_per_positive=3):
+        # Initialize the dataset creator with SWE-bench dataset path, snippet folder path, instance id field, and number of negatives per positive.
         self.swebench_dataset_path = swebench_dataset_path
         self.snippet_folder_path = Path(snippet_folder_path)
         self.instance_id_field = instance_id_field
@@ -73,6 +87,7 @@ class DatasetCreator:
         self.swebench_dataset = load_swebench_dataset(swebench_dataset_path)
 
     def create_triplet_dataset(self):
+        # Create triplet dataset from snippet folder path, SWE-bench dataset, instance id field, and number of negatives per positive.
         print("Creating triplet dataset...")
         triplet_data = create_triplet_dataset(
             self.snippet_folder_path,
@@ -84,26 +99,31 @@ class DatasetCreator:
         return triplet_data
 
     def create_huggingface_dataset(self, triplet_data):
+        # Create Hugging Face dataset from triplet data.
         dataset_dict = create_huggingface_dataset(triplet_data)
         return dataset_dict
 
     def tokenize_dataset(self, dataset_dict):
+        # Tokenize dataset with specified model name.
         tokenized_dataset = tokenize_dataset(dataset_dict)
         return tokenized_dataset
 
     def save_dataset(self, dataset, path):
+        # Save dataset to disk at specified path.
         dataset.save_to_disk(path)
         print(f"Dataset saved at: {path}")
 
 
 class TripletModelTrainer:
     def __init__(self, model, dataset_creator, batch_size=16, epochs=5):
+        # Initialize the triplet model trainer with model, dataset creator, batch size, and number of epochs.
         self.model = model
         self.dataset_creator = dataset_creator
         self.batch_size = batch_size
         self.epochs = epochs
 
     def train(self):
+        # Train the triplet model.
         triplet_data = self.dataset_creator.create_triplet_dataset()
         dataset_dict = self.dataset_creator.create_huggingface_dataset(triplet_data)
         tokenized_dataset = self.dataset_creator.tokenize_dataset(dataset_dict)
