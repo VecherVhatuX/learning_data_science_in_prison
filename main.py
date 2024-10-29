@@ -3,13 +3,160 @@ import sys
 import yaml
 from dataclasses import dataclass, field
 from typing import Optional
+from functools import partial
 from transformers import HfArgumentParser, set_seed, TrainingArguments
 from datasets import Dataset as HFDataset, DatasetDict as HF_DatasetDict
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 import requests
-from functools import partial
 
+# Disable SSL warnings
+def disable_ssl_warnings():
+    requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+    original_request = requests.Session.request
+
+    def patched_request(self, *args, **kwargs):
+        kwargs['verify'] = False
+        return original_request(self, *args, **kwargs)
+
+    requests.Session.request = patched_request
+
+# Set seed
+def set_seed(seed):
+    return partial(set_seed, seed)
+
+# Prepare model
+def prepare_model(model_args, data_args, training_args):
+    model = get_peft_model(model_args.model_name_or_path, LoraConfig(
+        r=model_args.lora_r,
+        lora_alpha=model_args.lora_alpha,
+        lora_dropout=model_args.lora_dropout,
+        bias="none",
+        target_modules=model_args.lora_target_modules.split(","),
+        lora_variant="Lora",
+    ), TaskType.CAUSAL_LM)
+
+    peft_config = LoraConfig(
+        r=model_args.lora_r,
+        lora_alpha=model_args.lora_alpha,
+        lora_dropout=model_args.lora_dropout,
+        bias="none",
+        target_modules=model_args.lora_target_modules.split(","),
+        lora_variant="Lora",
+    )
+    model = prepare_model_for_kbit_training(model, peft_config)
+    return model, peft_config
+
+# Create datasets
+def create_datasets(tokenizer, data_args, training_args, apply_chat_template):
+    dataset = HFDataset.from_dataset(data_args.dataset_name, split=data_args.splits)
+
+    def process_data(examples):
+        if apply_chat_template:
+            inputs = []
+            labels = []
+            for example in examples["text"]:
+                inputs.append(f"{example['input']} {tokenizer.sep_token}")
+                labels.append(f"{example['output']} {tokenizer.sep_token}")
+            examples["input_ids"] = tokenizer(inputs, return_tensors="pt", truncation=True, padding="max_length").input_ids
+            examples["labels"] = tokenizer(labels, return_tensors="pt", truncation=True, padding="max_length").input_ids
+        else:
+            examples["input_ids"] = tokenizer(examples["input"], return_tensors="pt", truncation=True, padding="max_length").input_ids
+            examples["labels"] = tokenizer(examples["output"], return_tensors="pt", truncation=True, padding="max_length").input_ids
+
+        return examples
+
+    dataset = dataset.map(process_data, batched=True)
+    return HF_DatasetDict(dataset)
+
+# Triplet dataset
+class TripletDataset:
+    def __init__(self, dataset, epoch, batch_size):
+        self.dataset = dataset
+        self.epoch = epoch
+        self.batch_size = batch_size
+
+    def __getitem__(self, idx):
+        self.dataset = self.dataset.shuffle(seed=self.epoch)
+        batch = self.dataset[idx * self.batch_size:(idx + 1) * self.batch_size]
+        positive_samples = [sample for sample in batch if sample["label"] == 1]
+        negative_samples = [sample for sample in batch if sample["label"] == 0]
+        return positive_samples, negative_samples
+
+# Get trainer
+def get_trainer(model, peft_config, train_dataset, eval_dataset, model_args, training_args):
+    if model_args.use_triplet_loss_trainer:
+        model = get_peft_model(model, peft_config)
+        return TripletLossTrainer(model=model, args=training_args, train_dataset=train_dataset, eval_dataset=eval_dataset, layer_index=-1)
+    else:
+        return SFTTrainer(model=model, tokenizer=model.tokenizer, args=training_args, train_dataset=train_dataset, eval_dataset=eval_dataset, peft_config=peft_config)
+
+# SFT trainer
+class SFTTrainer:
+    def __init__(self, model, tokenizer, args, train_dataset, eval_dataset, peft_config):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.args = args
+        self.train_dataset = train_dataset
+        self.eval_dataset = eval_dataset
+        self.peft_config = peft_config
+
+    def train(self, resume_from_checkpoint):
+        pass
+
+    def save_model(self):
+        pass
+
+    def is_fsdp_enabled(self):
+        return False
+
+    def accelerator(self):
+        return None
+
+# Triplet loss trainer
+class TripletLossTrainer:
+    def __init__(self, model, args, train_dataset, eval_dataset, layer_index):
+        self.model = model
+        self.args = args
+        self.train_dataset = train_dataset
+        self.eval_dataset = eval_dataset
+        self.layer_index = layer_index
+
+    def train(self, resume_from_checkpoint):
+        pass
+
+    def save_model(self):
+        pass
+
+    def is_fsdp_enabled(self):
+        return False
+
+    def accelerator(self):
+        return None
+
+# Trainer pipeline
+class TrainerPipeline:
+    def __init__(self, model_args, data_args, training_args):
+        self.model_args = model_args
+        self.data_args = data_args
+        self.training_args = training_args
+
+    def run_pipeline(self):
+        disable_ssl_warnings()
+        set_seed(self.training_args.seed)
+
+        model, peft_config = prepare_model(self.model_args, self.data_args, self.training_args)
+        tokenizer = model.tokenizer
+        datasets = create_datasets(tokenizer, self.data_args, self.training_args, apply_chat_template=self.data_args.chat_template_format != "none")
+        train_dataset = TripletDataset(datasets["train"], 0, self.training_args.per_device_train_batch_size)
+        eval_dataset = HF_DatasetDict(datasets)["test"]
+        trainer = get_trainer(model, peft_config, train_dataset, eval_dataset, self.model_args, self.training_args)
+        trainer.train(resume_from_checkpoint=self.training_args.resume_from_checkpoint)
+        if trainer.is_fsdp_enabled:
+            trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
+        trainer.save_model()
+
+# Model arguments
 @dataclass
 class ModelArguments:
     """Model arguments data class."""
@@ -31,6 +178,7 @@ class ModelArguments:
     use_unsloth: Optional[bool] = field(default=False, metadata={"help": "Enables UnSloth for training."})
     use_triplet_loss_trainer: Optional[bool] = field(default=False, metadata={"help": "Use our TripletLossTrainer(Trainer)"})
 
+# Data training arguments
 @dataclass
 class DataTrainingArguments:
     """Data training arguments data class."""
@@ -40,181 +188,9 @@ class DataTrainingArguments:
     splits: Optional[str] = field(default="train,test", metadata={"help": "Comma separate list of the splits to use from the dataset."})
     tokenized_dataset_path: Optional[str] = field(default=None, metadata={"help": "Path to the tokenized dataset on disk."})
 
-class DatasetEpoch:
-    """Dataset epoch class."""
-    def __init__(self, dataset, epoch, batch_size):
-        self.dataset = dataset
-        self.epoch = epoch
-        self.batch_size = batch_size
-
-    def __getitem__(self, idx):
-        self.dataset = self.dataset.shuffle(seed=self.epoch)
-        return self.dataset[idx * self.batch_size:(idx + 1) * self.batch_size]
-
-class TripletDataset(DatasetEpoch):
-    """Triplet dataset class."""
-    def __init__(self, dataset, epoch, batch_size):
-        super().__init__(dataset, epoch, batch_size)
-
-    def __getitem__(self, idx):
-        batch = super().__getitem__(idx)
-        positive_samples = [sample for sample in batch if sample["label"] == 1]
-        negative_samples = [sample for sample in batch if sample["label"] == 0]
-        return positive_samples, negative_samples
-
-class SFTTrainer:
-    """SFT trainer class."""
-    def __init__(self, model, tokenizer, args, train_dataset, eval_dataset, peft_config):
-        self.model = model
-        self.tokenizer = tokenizer
-        self.args = args
-        self.train_dataset = train_dataset
-        self.eval_dataset = eval_dataset
-        self.peft_config = peft_config
-
-    def train(self, resume_from_checkpoint):
-        pass
-
-    def save_model(self):
-        pass
-
-    def is_fsdp_enabled(self):
-        return False
-
-    def accelerator(self):
-        return None
-
-class TripletLossTrainer:
-    """Triplet loss trainer class."""
-    def __init__(self, model, args, train_dataset, eval_dataset, layer_index):
-        self.model = model
-        self.args = args
-        self.train_dataset = train_dataset
-        self.eval_dataset = eval_dataset
-        self.layer_index = layer_index
-
-    def train(self, resume_from_checkpoint):
-        pass
-
-    def save_model(self):
-        pass
-
-    def is_fsdp_enabled(self):
-        return False
-
-    def accelerator(self):
-        return None
-
-def create_and_prepare_model(model_args, data_args, training_args):
-    """Create and prepare model."""
-    model = get_peft_model(model_args.model_name_or_path, LoraConfig(
-        r=model_args.lora_r,
-        lora_alpha=model_args.lora_alpha,
-        lora_dropout=model_args.lora_dropout,
-        bias="none",
-        target_modules=model_args.lora_target_modules.split(","),
-        lora_variant="Lora",
-    ), TaskType.CAUSAL_LM)
-
-    peft_config = LoraConfig(
-        r=model_args.lora_r,
-        lora_alpha=model_args.lora_alpha,
-        lora_dropout=model_args.lora_dropout,
-        bias="none",
-        target_modules=model_args.lora_target_modules.split(","),
-        lora_variant="Lora",
-    )
-    model = prepare_model_for_kbit_training(model, peft_config)
-
-    return model, peft_config
-
-def create_datasets(tokenizer, data_args, training_args, apply_chat_template):
-    """Create datasets."""
-    dataset = HFDataset.from_dataset(data_args.dataset_name, split=data_args.splits)
-
-    def process_data(examples):
-        if apply_chat_template:
-            inputs = []
-            labels = []
-            for example in examples["text"]:
-                inputs.append(f"{example['input']} {tokenizer.sep_token}")
-                labels.append(f"{example['output']} {tokenizer.sep_token}")
-            examples["input_ids"] = tokenizer(inputs, return_tensors="pt", truncation=True, padding="max_length").input_ids
-            examples["labels"] = tokenizer(labels, return_tensors="pt", truncation=True, padding="max_length").input_ids
-        else:
-            examples["input_ids"] = tokenizer(examples["input"], return_tensors="pt", truncation=True, padding="max_length").input_ids
-            examples["labels"] = tokenizer(examples["output"], return_tensors="pt", truncation=True, padding="max_length").input_ids
-
-        return examples
-
-    dataset = dataset.map(process_data, batched=True)
-    return HF_DatasetDict(dataset)
-
-class TrainerPipeline:
-    """Trainer pipeline class."""
-    def __init__(self, model_args, data_args, training_args):
-        self.model_args = model_args
-        self.data_args = data_args
-        self.training_args = training_args
-
-    def disable_ssl_warnings(self):
-        """Disable SSL warnings."""
-        requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
-        original_request = requests.Session.request
-
-        def patched_request(self, *args, **kwargs):
-            kwargs['verify'] = False
-            return original_request(self, *args, **kwargs)
-
-        requests.Session.request = patched_request
-
-    def set_seed(self):
-        """Set seed."""
-        set_seed(self.training_args.seed)
-
-    def prepare_model(self):
-        """Prepare model."""
-        model, peft_config = create_and_prepare_model(self.model_args, self.data_args, self.training_args)
-        return model, peft_config
-
-    def create_datasets(self, tokenizer):
-        """Create datasets."""
-        return create_datasets(tokenizer, self.data_args, self.training_args, apply_chat_template=self.data_args.chat_template_format != "none")
-
-    def train(self, trainer, checkpoint):
-        """Train."""
-        trainer.train(resume_from_checkpoint=checkpoint)
-
-    def save_model(self, trainer):
-        """Save model."""
-        if trainer.is_fsdp_enabled:
-            trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
-        trainer.save_model()
-
-def get_trainer(model, peft_config, train_dataset, eval_dataset, model_args, training_args):
-    """Get trainer."""
-    if model_args.use_triplet_loss_trainer:
-        model = get_peft_model(model, peft_config)
-        return TripletLossTrainer(
-            model=model,
-            args=training_args,
-            train_dataset=train_dataset,
-            eval_dataset=eval_dataset,
-            layer_index=-1,
-        )
-    else:
-        return SFTTrainer(
-            model=model,
-            tokenizer=model.tokenizer,
-            args=training_args,
-            train_dataset=train_dataset,
-            eval_dataset=eval_dataset,
-            peft_config=peft_config,
-        )
-
 def main():
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
-    
+
     if len(sys.argv) == 2 and sys.argv[1].endswith((".json", ".yaml", ".yml")):
         config_file = os.path.abspath(sys.argv[1])
         if config_file.endswith(".json"):
@@ -228,23 +204,13 @@ def main():
             training_args = TrainingArguments(**config.get("TrainingArguments", {}))
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-        
+
     os.environ["NCCL_P2P_DISABLE"] = "1"
     os.environ["NCCL_IB_DISABLE"] = "1"
     os.environ["ACCELERATE_USE_FSDP"] = "false"
 
     pipeline = TrainerPipeline(model_args, data_args, training_args)
-    pipeline.disable_ssl_warnings()
-    pipeline.set_seed()
-
-    model, peft_config = pipeline.prepare_model()
-    tokenizer = model.tokenizer
-    datasets = pipeline.create_datasets(tokenizer) if not data_args.tokenized_dataset_path else None
-    train_dataset = TripletDataset(datasets["train"], 0, training_args.per_device_train_batch_size)
-    eval_dataset = HF_DatasetDict(datasets)["test"]
-    trainer = get_trainer(model, peft_config, train_dataset, eval_dataset, model_args, training_args)
-    pipeline.train(trainer, training_args.resume_from_checkpoint)
-    pipeline.save_model(trainer)
+    pipeline.run_pipeline()
 
 if __name__ == "__main__":
     main()
