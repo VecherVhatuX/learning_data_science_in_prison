@@ -93,6 +93,20 @@ class TripletDataset(Dataset):
         negative_samples = [sample for sample in batch if sample["label"] == 0]
         return positive_samples, negative_samples
 
+class Dataset:
+    def __init__(self, dataset, epoch, batch_size):
+        self.dataset = dataset
+        self.epoch = epoch
+        self.batch_size = batch_size
+
+    def __len__(self):
+        return len(self.dataset) // self.batch_size
+
+    def __getitem__(self, idx):
+        self.dataset = torch.utils.data.ConcatDataset([self.dataset[i] for i in random.sample(range(len(self.dataset)), len(self.dataset))])
+        batch = self.dataset[idx * self.batch_size:(idx + 1) * self.batch_size]
+        return batch
+
 class SFTTrainer:
     def __init__(self, model, tokenizer, args, train_dataset, eval_dataset):
         self.model = model
@@ -142,7 +156,7 @@ class TrainerPipeline:
         model = prepare_model(self.model_args, self.data_args, self.training_args)
         tokenizer = AutoTokenizer.from_pretrained(self.model_args.model_name_or_path)
         datasets = create_datasets(tokenizer, self.data_args, self.training_args, apply_chat_template=self.data_args.chat_template_format != "none")
-        train_dataset = TripletDataset(datasets, 0, self.training_args.per_device_train_batch_size)
+        train_dataset = Dataset(datasets, 0, self.training_args.per_device_train_batch_size)
         eval_dataset = datasets
         trainer = get_trainer(model, train_dataset, eval_dataset, self.model_args, self.training_args)
         trainer.train(resume_from_checkpoint=self.training_args.resume_from_checkpoint)
