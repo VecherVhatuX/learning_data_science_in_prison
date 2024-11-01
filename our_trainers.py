@@ -13,17 +13,13 @@ def mean_pooling(hidden_state, attention_mask):
     sum_mask = input_mask_expanded.sum(dim=1).clamp(min=1e-9)
     return sum_embeddings / sum_mask
 
+def normalize_embeddings(embeddings):
+    return embeddings / embeddings.norm(dim=1, keepdim=True)
+
 def triplet_margin_loss(anchor_embeddings, positive_embeddings, negative_embeddings, margin=1.0):
     return (margin + (anchor_embeddings - positive_embeddings).pow(2).sum(dim=1) - (anchor_embeddings - negative_embeddings).pow(2).sum(dim=1)).clamp(min=0).mean()
 
-def compute_loss(model, inputs, layer_index=-1):
-    anchor_input_ids = inputs["anchor_input_ids"]
-    anchor_attention_mask = inputs["anchor_attention_mask"]
-    positive_input_ids = inputs["positive_input_ids"]
-    positive_attention_mask = inputs["positive_attention_mask"]
-    negative_input_ids = inputs["negative_input_ids"]
-    negative_attention_mask = inputs["negative_attention_mask"]
-
+def get_triplet_embeddings(model, anchor_input_ids, anchor_attention_mask, positive_input_ids, positive_attention_mask, negative_input_ids, negative_attention_mask, layer_index=-1):
     anchor_outputs = model(anchor_input_ids, attention_mask=anchor_attention_mask)
     positive_outputs = model(positive_input_ids, attention_mask=positive_attention_mask)
     negative_outputs = model(negative_input_ids, attention_mask=negative_attention_mask)
@@ -36,9 +32,21 @@ def compute_loss(model, inputs, layer_index=-1):
     positive_embeddings = mean_pooling(positive_hidden_state, positive_attention_mask)
     negative_embeddings = mean_pooling(negative_hidden_state, negative_attention_mask)
 
-    anchor_embeddings = anchor_embeddings / anchor_embeddings.norm(dim=1, keepdim=True)
-    positive_embeddings = positive_embeddings / positive_embeddings.norm(dim=1, keepdim=True)
-    negative_embeddings = negative_embeddings / negative_embeddings.norm(dim=1, keepdim=True)
+    anchor_embeddings = normalize_embeddings(anchor_embeddings)
+    positive_embeddings = normalize_embeddings(positive_embeddings)
+    negative_embeddings = normalize_embeddings(negative_embeddings)
+
+    return anchor_embeddings, positive_embeddings, negative_embeddings
+
+def compute_loss(model, inputs, layer_index):
+    anchor_input_ids = inputs["anchor_input_ids"]
+    anchor_attention_mask = inputs["anchor_attention_mask"]
+    positive_input_ids = inputs["positive_input_ids"]
+    positive_attention_mask = inputs["positive_attention_mask"]
+    negative_input_ids = inputs["negative_input_ids"]
+    negative_attention_mask = inputs["negative_attention_mask"]
+
+    anchor_embeddings, positive_embeddings, negative_embeddings = get_triplet_embeddings(model, anchor_input_ids, anchor_attention_mask, positive_input_ids, positive_attention_mask, negative_input_ids, negative_attention_mask, layer_index)
 
     return triplet_margin_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
 
