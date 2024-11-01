@@ -120,14 +120,12 @@ class TripletLossTrainer:
     def train(self, dataset, epochs, num_negatives):
         train(self.model, dataset, epochs, num_negatives, self.layer_index, self.optimizer)
 
-if __name__ == "__main__":
-    # Initialize dataset
+def main():
     dataset = Dataset(np.random.rand(100, 10), np.random.randint(0, 2, 100), 32)
-
-    # Initialize model and trainer
     model = nn.Embedding(100, 10)
     model = model.to(torch.float)
     trainer = TripletLossTrainer(model, triplet_margin=1.0, layer_index=-1, learning_rate=1e-4)
-
-    # Train model
     trainer.train(dataset, epochs=10, num_negatives=5)
+
+if __name__ == "__main__":
+    main()
