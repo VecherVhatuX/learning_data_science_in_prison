@@ -1,3 +1,4 @@
+plaintext
 torch==1.12.1
 torchvision==0.15.1
 torchaudio==1.13.1
