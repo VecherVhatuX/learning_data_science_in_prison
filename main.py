@@ -52,6 +52,40 @@ class TrainingArguments:
     no_cuda: bool = field(default=False, metadata={"help": "Do not use CUDA even when it is available"})
     seed: int = field(default=42, metadata={"help": "Random seed that will be set at the beginning of training."})
 
+class Dataset(torch.utils.data.Dataset):
+    def __init__(self, dataset, epoch, batch_size):
+        self.dataset = dataset
+        self.epoch = epoch
+        self.batch_size = batch_size
+        self.indices = list(range(len(dataset)))
+
+    def __len__(self):
+        return len(self.dataset) // self.batch_size
+
+    def __getitem__(self, idx):
+        random.shuffle(self.indices)
+        batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
+        batch = [self.dataset[i] for i in batch_indices]
+        return batch
+
+class TripletDataset(torch.utils.data.Dataset):
+    def __init__(self, dataset, epoch, batch_size):
+        self.dataset = dataset
+        self.epoch = epoch
+        self.batch_size = batch_size
+        self.indices = list(range(len(dataset)))
+
+    def __len__(self):
+        return len(self.dataset) // self.batch_size
+
+    def __getitem__(self, idx):
+        random.shuffle(self.indices)
+        batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
+        batch = [self.dataset[i] for i in batch_indices]
+        positive_samples = [sample for sample in batch if sample["label"] == 1]
+        negative_samples = [sample for sample in batch if sample["label"] == 0]
+        return positive_samples, negative_samples
+
 def prepare_model(model_args, data_args, training_args):
     model = AutoModelForCausalLM.from_pretrained(model_args.model_name_or_path)
     return model
@@ -76,36 +110,6 @@ def create_datasets(tokenizer, data_args, training_args, apply_chat_template):
 
     dataset = torch.utils.data.ConcatDataset([process_data(dataset[i]) for i in range(len(dataset))])
     return dataset
-
-class TripletDataset(Dataset):
-    def __init__(self, dataset, epoch, batch_size):
-        self.dataset = dataset
-        self.epoch = epoch
-        self.batch_size = batch_size
-
-    def __len__(self):
-        return len(self.dataset) // self.batch_size
-
-    def __getitem__(self, idx):
-        self.dataset = torch.utils.data.ConcatDataset([self.dataset[i] for i in random.sample(range(len(self.dataset)), len(self.dataset))])
-        batch = self.dataset[idx * self.batch_size:(idx + 1) * self.batch_size]
-        positive_samples = [sample for sample in batch if sample["label"] == 1]
-        negative_samples = [sample for sample in batch if sample["label"] == 0]
-        return positive_samples, negative_samples
-
-class Dataset:
-    def __init__(self, dataset, epoch, batch_size):
-        self.dataset = dataset
-        self.epoch = epoch
-        self.batch_size = batch_size
-
-    def __len__(self):
-        return len(self.dataset) // self.batch_size
-
-    def __getitem__(self, idx):
-        self.dataset = torch.utils.data.ConcatDataset([self.dataset[i] for i in random.sample(range(len(self.dataset)), len(self.dataset))])
-        batch = self.dataset[idx * self.batch_size:(idx + 1) * self.batch_size]
-        return batch
 
 class SFTTrainer:
     def __init__(self, model, tokenizer, args, train_dataset, eval_dataset):
