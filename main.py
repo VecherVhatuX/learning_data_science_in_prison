@@ -9,6 +9,9 @@ from datasets import Dataset as HFDataset, DatasetDict as HF_DatasetDict
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 import requests
+from transformers import Trainer, TrainingArguments
+from torch.utils.data import Dataset, DataLoader
+import torch
 
 # Disable SSL warnings
 def disable_ssl_warnings():
@@ -70,11 +73,14 @@ def create_datasets(tokenizer, data_args, training_args, apply_chat_template):
     return HF_DatasetDict(dataset)
 
 # Triplet dataset
-class TripletDataset:
+class TripletDataset(Dataset):
     def __init__(self, dataset, epoch, batch_size):
         self.dataset = dataset
         self.epoch = epoch
         self.batch_size = batch_size
+
+    def __len__(self):
+        return len(self.dataset) // self.batch_size
 
     def __getitem__(self, idx):
         self.dataset = self.dataset.shuffle(seed=self.epoch)
@@ -92,20 +98,17 @@ def get_trainer(model, peft_config, train_dataset, eval_dataset, model_args, tra
         return SFTTrainer(model=model, tokenizer=model.tokenizer, args=training_args, train_dataset=train_dataset, eval_dataset=eval_dataset, peft_config=peft_config)
 
 # SFT trainer
-class SFTTrainer:
+class SFTTrainer(Trainer):
     def __init__(self, model, tokenizer, args, train_dataset, eval_dataset, peft_config):
-        self.model = model
+        super().__init__(model, args, train_dataset, eval_dataset)
         self.tokenizer = tokenizer
-        self.args = args
-        self.train_dataset = train_dataset
-        self.eval_dataset = eval_dataset
         self.peft_config = peft_config
 
-    def train(self, resume_from_checkpoint):
-        pass
+    def train(self, resume_from_checkpoint=None):
+        super().train(resume_from_checkpoint)
 
     def save_model(self):
-        pass
+        super().save_model()
 
     def is_fsdp_enabled(self):
         return False
@@ -114,19 +117,16 @@ class SFTTrainer:
         return None
 
 # Triplet loss trainer
-class TripletLossTrainer:
+class TripletLossTrainer(SFTTrainer):
     def __init__(self, model, args, train_dataset, eval_dataset, layer_index):
-        self.model = model
-        self.args = args
-        self.train_dataset = train_dataset
-        self.eval_dataset = eval_dataset
+        super().__init__(model, model.tokenizer, args, train_dataset, eval_dataset, None)
         self.layer_index = layer_index
 
-    def train(self, resume_from_checkpoint):
-        pass
+    def train(self, resume_from_checkpoint=None):
+        super().train(resume_from_checkpoint)
 
     def save_model(self):
-        pass
+        super().save_model()
 
     def is_fsdp_enabled(self):
         return False
