@@ -4,24 +4,14 @@ import yaml
 from dataclasses import dataclass, field
 from typing import Optional
 from functools import partial
-from transformers import HfArgumentParser, set_seed, TrainingArguments
-from datasets import Dataset as HFDataset, DatasetDict as HF_DatasetDict
-from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
-from requests.packages.urllib3.exceptions import InsecureRequestWarning
-import requests
-from transformers import Trainer
-from torch.utils.data import Dataset, DataLoader
 import torch
-
-def disable_ssl_warnings():
-    requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
-    original_request = requests.Session.request
-
-    def patched_request(self, *args, **kwargs):
-        kwargs['verify'] = False
-        return original_request(self, *args, **kwargs)
-
-    requests.Session.request = patched_request
+from torch.utils.data import Dataset, DataLoader
+import torch.nn as nn
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from accelerate import Accelerator
+import optuna
+import json
+import random
 
 class ModelArguments:
     model_name_or_path: str = field(metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"})
@@ -49,35 +39,31 @@ class DataTrainingArguments:
     splits: Optional[str] = field(default="train,test", metadata={"help": "Comma separate list of the splits to use from the dataset."})
     tokenized_dataset_path: Optional[str] = field(default=None, metadata={"help": "Path to the tokenized dataset on disk."})
 
-def prepare_model(model_args, data_args, training_args):
-    model = get_peft_model(model_args.model_name_or_path, LoraConfig(
-        r=model_args.lora_r,
-        lora_alpha=model_args.lora_alpha,
-        lora_dropout=model_args.lora_dropout,
-        bias="none",
-        target_modules=model_args.lora_target_modules.split(","),
-        lora_variant="Lora",
-    ), TaskType.CAUSAL_LM)
+class TrainingArguments:
+    output_dir: str = field(metadata={"help": "The output directory where the model predictions and checkpoints will be written."})
+    num_train_epochs: int = field(default=3, metadata={"help": "Number of training epochs"})
+    per_device_train_batch_size: int = field(default=16, metadata={"help": "Batch size per GPU/TPU core/CPU for training"})
+    per_device_eval_batch_size: int = field(default=64, metadata={"help": "Batch size per GPU/TPU core/CPU for evaluation"})
+    warmup_steps: int = field(default=500, metadata={"help": "Number of steps for the warmup phase."})
+    weight_decay: float = field(default=0.01, metadata={"help": "Weight decay to apply."})
+    logging_dir: str = field(default="./logs", metadata={"help": "TensorBoard log directory."})
+    save_steps: int = field(default=500, metadata={"help": "Save checkpoint every X updates."})
+    save_total_limit: int = field(default=2, metadata={"help": "Limit the total amount of checkpoints."})
+    no_cuda: bool = field(default=False, metadata={"help": "Do not use CUDA even when it is available"})
+    seed: int = field(default=42, metadata={"help": "Random seed that will be set at the beginning of training."})
 
-    peft_config = LoraConfig(
-        r=model_args.lora_r,
-        lora_alpha=model_args.lora_alpha,
-        lora_dropout=model_args.lora_dropout,
-        bias="none",
-        target_modules=model_args.lora_target_modules.split(","),
-        lora_variant="Lora",
-    )
-    model = prepare_model_for_kbit_training(model, peft_config)
-    return model, peft_config
+def prepare_model(model_args, data_args, training_args):
+    model = AutoModelForCausalLM.from_pretrained(model_args.model_name_or_path)
+    return model
 
 def create_datasets(tokenizer, data_args, training_args, apply_chat_template):
-    dataset = HFDataset.from_dataset(data_args.dataset_name, split=data_args.splits)
+    dataset = torch.utils.data.ConcatDataset([torch.load(f"{data_args.dataset_name}/train.json"), torch.load(f"{data_args.dataset_name}/test.json")])
 
     def process_data(examples):
         if apply_chat_template:
             inputs = []
             labels = []
-            for example in examples["text"]:
+            for example in examples:
                 inputs.append(f"{example['input']} {tokenizer.sep_token}")
                 labels.append(f"{example['output']} {tokenizer.sep_token}")
             examples["input_ids"] = tokenizer(inputs, return_tensors="pt", truncation=True, padding="max_length").input_ids
@@ -88,8 +74,8 @@ def create_datasets(tokenizer, data_args, training_args, apply_chat_template):
 
         return examples
 
-    dataset = dataset.map(process_data, batched=True)
-    return HF_DatasetDict(dataset)
+    dataset = torch.utils.data.ConcatDataset([process_data(dataset[i]) for i in range(len(dataset))])
+    return dataset
 
 class TripletDataset(Dataset):
     def __init__(self, dataset, epoch, batch_size):
@@ -101,53 +87,49 @@ class TripletDataset(Dataset):
         return len(self.dataset) // self.batch_size
 
     def __getitem__(self, idx):
-        self.dataset = self.dataset.shuffle(seed=self.epoch)
+        self.dataset = torch.utils.data.ConcatDataset([self.dataset[i] for i in random.sample(range(len(self.dataset)), len(self.dataset))])
         batch = self.dataset[idx * self.batch_size:(idx + 1) * self.batch_size]
         positive_samples = [sample for sample in batch if sample["label"] == 1]
         negative_samples = [sample for sample in batch if sample["label"] == 0]
         return positive_samples, negative_samples
 
-class SFTTrainer(Trainer):
-    def __init__(self, model, tokenizer, args, train_dataset, eval_dataset, peft_config):
-        super().__init__(model, args, train_dataset, eval_dataset)
+class SFTTrainer:
+    def __init__(self, model, tokenizer, args, train_dataset, eval_dataset):
+        self.model = model
         self.tokenizer = tokenizer
-        self.peft_config = peft_config
+        self.args = args
+        self.train_dataset = train_dataset
+        self.eval_dataset = eval_dataset
+        self.accelerator = Accelerator()
 
     def train(self, resume_from_checkpoint=None):
-        super().train(resume_from_checkpoint)
+        self.model, self.train_dataset, self.eval_dataset = self.accelerator.prepare(self.model, self.train_dataset, self.eval_dataset)
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
+        for epoch in range(self.args.num_train_epochs):
+            self.model.train()
+            total_loss = 0
+            for batch in self.train_dataset:
+                input_ids = batch["input_ids"].to(self.accelerator.device)
+                attention_mask = batch["attention_mask"].to(self.accelerator.device)
+                labels = batch["labels"].to(self.accelerator.device)
+                optimizer.zero_grad()
+                outputs = self.model(input_ids, attention_mask=attention_mask, labels=labels)
+                loss = outputs.loss
+                self.accelerator.backward(loss)
+                optimizer.step()
+                total_loss += loss.item()
+            print(f"Epoch {epoch}, Loss: {total_loss / len(self.train_dataset)}")
 
     def save_model(self):
-        super().save_model()
-
-    def is_fsdp_enabled(self):
-        return False
-
-    def accelerator(self):
-        return None
+        self.accelerator.save(self.model.state_dict(), f"{self.args.output_dir}/model.pth")
 
 class TripletLossTrainer(SFTTrainer):
     def __init__(self, model, args, train_dataset, eval_dataset, layer_index):
-        super().__init__(model, model.tokenizer, args, train_dataset, eval_dataset, None)
+        super().__init__(model, model.tokenizer, args, train_dataset, eval_dataset)
         self.layer_index = layer_index
 
     def train(self, resume_from_checkpoint=None):
         super().train(resume_from_checkpoint)
-
-    def save_model(self):
-        super().save_model()
-
-    def is_fsdp_enabled(self):
-        return False
-
-    def accelerator(self):
-        return None
-
-def get_trainer(model, peft_config, train_dataset, eval_dataset, model_args, training_args):
-    if model_args.use_triplet_loss_trainer:
-        model = get_peft_model(model, peft_config)
-        return TripletLossTrainer(model=model, args=training_args, train_dataset=train_dataset, eval_dataset=eval_dataset, layer_index=-1)
-    else:
-        return SFTTrainer(model=model, tokenizer=model.tokenizer, args=training_args, train_dataset=train_dataset, eval_dataset=eval_dataset, peft_config=peft_config)
 
 class TrainerPipeline:
     def __init__(self, model_args, data_args, training_args):
@@ -156,40 +138,26 @@ class TrainerPipeline:
         self.training_args = training_args
 
     def run_pipeline(self):
-        disable_ssl_warnings()
-        set_seed(self.training_args.seed)
-
-        model, peft_config = prepare_model(self.model_args, self.data_args, self.training_args)
-        tokenizer = model.tokenizer
+        accelerator = Accelerator()
+        model = prepare_model(self.model_args, self.data_args, self.training_args)
+        tokenizer = AutoTokenizer.from_pretrained(self.model_args.model_name_or_path)
         datasets = create_datasets(tokenizer, self.data_args, self.training_args, apply_chat_template=self.data_args.chat_template_format != "none")
-        train_dataset = TripletDataset(datasets["train"], 0, self.training_args.per_device_train_batch_size)
-        eval_dataset = HF_DatasetDict(datasets)["test"]
-        trainer = get_trainer(model, peft_config, train_dataset, eval_dataset, self.model_args, self.training_args)
+        train_dataset = TripletDataset(datasets, 0, self.training_args.per_device_train_batch_size)
+        eval_dataset = datasets
+        trainer = get_trainer(model, train_dataset, eval_dataset, self.model_args, self.training_args)
         trainer.train(resume_from_checkpoint=self.training_args.resume_from_checkpoint)
-        if trainer.is_fsdp_enabled:
-            trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
         trainer.save_model()
 
-def main():
-    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
-
-    if len(sys.argv) == 2 and sys.argv[1].endswith((".json", ".yaml", ".yml")):
-        config_file = os.path.abspath(sys.argv[1])
-        if config_file.endswith(".json"):
-            model_args, data_args, training_args = parser.parse_json_file(json_file=config_file)
-        else:
-            with open(config_file, "r") as f:
-                config = yaml.safe_load(f)
-
-            model_args = ModelArguments(**config.get("ModelArguments", {}))
-            data_args = DataTrainingArguments(**config.get("DataTrainingArguments", {}))
-            training_args = TrainingArguments(**config.get("TrainingArguments", {}))
+def get_trainer(model, train_dataset, eval_dataset, model_args, training_args):
+    if model_args.use_triplet_loss_trainer:
+        return TripletLossTrainer(model=model, args=training_args, train_dataset=train_dataset, eval_dataset=eval_dataset, layer_index=-1)
     else:
-        model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+        return SFTTrainer(model=model, tokenizer=model.tokenizer, args=training_args, train_dataset=train_dataset, eval_dataset=eval_dataset)
 
-    os.environ["NCCL_P2P_DISABLE"] = "1"
-    os.environ["NCCL_IB_DISABLE"] = "1"
-    os.environ["ACCELERATE_USE_FSDP"] = "false"
+def main():
+    model_args = ModelArguments(model_name_or_path="t5-base", chat_template_format="none")
+    data_args = DataTrainingArguments(dataset_name="timdettmers/openassistant-guanaco")
+    training_args = TrainingArguments(output_dir="./results", num_train_epochs=3, per_device_train_batch_size=16)
 
     pipeline = TrainerPipeline(model_args, data_args, training_args)
     pipeline.run_pipeline()
