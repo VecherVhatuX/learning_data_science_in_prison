@@ -1,5 +1,5 @@
 # Install PyTorch, TorchVision, and TorchAudio with CUDA 11.8 support
-torch==1.12.1
+torch==1.13.1
 torchvision==0.14.1
 torchaudio==0.13.1
 
