@@ -3,6 +3,7 @@ import torch.nn as nn
 from torch.optim import SGD
 import numpy as np
 from typing import Optional, Callable
+import random
 
 def create_optimizer(model, learning_rate):
     return SGD(model.parameters(), lr=learning_rate)
@@ -52,11 +53,11 @@ def compute_loss(model, inputs, layer_index):
 
 def get_item(dataset, idx, num_negatives):
     anchor_idx = idx
-    positive_idx = np.random.choice([i for i, label in enumerate(dataset.labels) if label == dataset.labels[anchor_idx]])
+    positive_idx = random.choice([i for i, label in enumerate(dataset.labels) if label == dataset.labels[anchor_idx]])
     while positive_idx == anchor_idx:
-        positive_idx = np.random.choice([i for i, label in enumerate(dataset.labels) if label == dataset.labels[anchor_idx]])
+        positive_idx = random.choice([i for i, label in enumerate(dataset.labels) if label == dataset.labels[anchor_idx]])
 
-    negative_indices = np.random.choice([i for i, label in enumerate(dataset.labels) if label != dataset.labels[anchor_idx]], num_negatives, replace=False)
+    negative_indices = random.sample([i for i, label in enumerate(dataset.labels) if label != dataset.labels[anchor_idx]], num_negatives)
     negative_indices = [i for i in negative_indices if i != anchor_idx]
 
     return {
@@ -76,6 +77,17 @@ class Dataset:
         self.samples = samples
         self.labels = labels
         self.batch_size = batch_size
+        self.indices = list(range(len(samples)))
+
+    def shuffle(self):
+        random.shuffle(self.indices)
+
+    def __getitem__(self, idx):
+        idx = self.indices[idx]
+        return get_item(self, idx, 5)
+
+    def __len__(self):
+        return len(self.samples)
 
 def train_step(model, inputs, optimizer, layer_index):
     optimizer.zero_grad()
@@ -86,12 +98,13 @@ def train_step(model, inputs, optimizer, layer_index):
 
 def train(model, dataset, epochs, num_negatives, layer_index, optimizer):
     for epoch in range(epochs):
+        dataset.shuffle()
         total_loss = 0
-        for i in range(get_len(dataset)):
-            inputs = get_item(dataset, i, num_negatives)
+        for i in range(len(dataset)):
+            inputs = dataset[i]
             loss = train_step(model, inputs, optimizer, layer_index)
             total_loss += loss
-        print(f'Epoch {epoch+1}, loss: {total_loss / get_len(dataset)}')
+        print(f'Epoch {epoch+1}, loss: {total_loss / len(dataset)}')
 
 class TripletLossTrainer:
     def __init__(self, 
