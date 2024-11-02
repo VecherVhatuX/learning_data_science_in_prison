@@ -13,6 +13,8 @@ import optuna
 import json
 import random
 
+# Define ModelArguments
+@dataclass
 class ModelArguments:
     model_name_or_path: str = field(metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"})
     chat_template_format: Optional[str] = field(default="none", metadata={"help": "chatml|zephyr|none. Pass `none` if the dataset is already formatted with the chat template."})
@@ -32,6 +34,8 @@ class ModelArguments:
     use_unsloth: Optional[bool] = field(default=False, metadata={"help": "Enables UnSloth for training."})
     use_triplet_loss_trainer: Optional[bool] = field(default=False, metadata={"help": "Use our TripletLossTrainer(Trainer)"})
 
+# Define DataTrainingArguments
+@dataclass
 class DataTrainingArguments:
     dataset_name: Optional[str] = field(default="timdettmers/openassistant-guanaco", metadata={"help": "The preference dataset to use."})
     append_concat_token: Optional[bool] = field(default=False, metadata={"help": "If True, appends `eos_token_id` at the end of each sample being packed."})
@@ -39,6 +43,8 @@ class DataTrainingArguments:
     splits: Optional[str] = field(default="train,test", metadata={"help": "Comma separate list of the splits to use from the dataset."})
     tokenized_dataset_path: Optional[str] = field(default=None, metadata={"help": "Path to the tokenized dataset on disk."})
 
+# Define TrainingArguments
+@dataclass
 class TrainingArguments:
     output_dir: str = field(metadata={"help": "The output directory where the model predictions and checkpoints will be written."})
     num_train_epochs: int = field(default=3, metadata={"help": "Number of training epochs"})
