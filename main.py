@@ -13,10 +13,9 @@ import optuna
 import json
 import random
 
-# Define ModelArguments
 @dataclass
 class ModelArguments:
-    model_name_or_path: str = field(metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"})
+    model_name_or_path: str = field(default="t5-base", metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"})
     chat_template_format: Optional[str] = field(default="none", metadata={"help": "chatml|zephyr|none. Pass `none` if the dataset is already formatted with the chat template."})
     lora_alpha: Optional[int] = field(default=16)
     lora_dropout: Optional[float] = field(default=0.1)
@@ -34,7 +33,6 @@ class ModelArguments:
     use_unsloth: Optional[bool] = field(default=False, metadata={"help": "Enables UnSloth for training."})
     use_triplet_loss_trainer: Optional[bool] = field(default=False, metadata={"help": "Use our TripletLossTrainer(Trainer)"})
 
-# Define DataTrainingArguments
 @dataclass
 class DataTrainingArguments:
     dataset_name: Optional[str] = field(default="timdettmers/openassistant-guanaco", metadata={"help": "The preference dataset to use."})
@@ -43,10 +41,9 @@ class DataTrainingArguments:
     splits: Optional[str] = field(default="train,test", metadata={"help": "Comma separate list of the splits to use from the dataset."})
     tokenized_dataset_path: Optional[str] = field(default=None, metadata={"help": "Path to the tokenized dataset on disk."})
 
-# Define TrainingArguments
 @dataclass
 class TrainingArguments:
-    output_dir: str = field(metadata={"help": "The output directory where the model predictions and checkpoints will be written."})
+    output_dir: str = field(default="./results", metadata={"help": "The output directory where the model predictions and checkpoints will be written."})
     num_train_epochs: int = field(default=3, metadata={"help": "Number of training epochs"})
     per_device_train_batch_size: int = field(default=16, metadata={"help": "Batch size per GPU/TPU core/CPU for training"})
     per_device_eval_batch_size: int = field(default=64, metadata={"help": "Batch size per GPU/TPU core/CPU for evaluation"})
@@ -57,6 +54,7 @@ class TrainingArguments:
     save_total_limit: int = field(default=2, metadata={"help": "Limit the total amount of checkpoints."})
     no_cuda: bool = field(default=False, metadata={"help": "Do not use CUDA even when it is available"})
     seed: int = field(default=42, metadata={"help": "Random seed that will be set at the beginning of training."})
+    resume_from_checkpoint: Optional[str] = field(default=None, metadata={"help": "Resume training from this checkpoint"})
 
 class Dataset(torch.utils.data.Dataset):
     def __init__(self, dataset, epoch, batch_size):
@@ -92,30 +90,53 @@ class TripletDataset(torch.utils.data.Dataset):
         negative_samples = [sample for sample in batch if sample["label"] == 0]
         return positive_samples, negative_samples
 
-def prepare_model(model_args, data_args, training_args):
-    model = AutoModelForCausalLM.from_pretrained(model_args.model_name_or_path)
-    return model
+class ModelTrainer:
+    def __init__(self, model_args, data_args, training_args):
+        self.model_args = model_args
+        self.data_args = data_args
+        self.training_args = training_args
+        self.accelerator = Accelerator()
 
-def create_datasets(tokenizer, data_args, training_args, apply_chat_template):
-    dataset = torch.utils.data.ConcatDataset([torch.load(f"{data_args.dataset_name}/train.json"), torch.load(f"{data_args.dataset_name}/test.json")])
+    def prepare_model(self):
+        return AutoModelForCausalLM.from_pretrained(self.model_args.model_name_or_path)
 
-    def process_data(examples):
-        if apply_chat_template:
-            inputs = []
-            labels = []
-            for example in examples:
-                inputs.append(f"{example['input']} {tokenizer.sep_token}")
-                labels.append(f"{example['output']} {tokenizer.sep_token}")
-            examples["input_ids"] = tokenizer(inputs, return_tensors="pt", truncation=True, padding="max_length").input_ids
-            examples["labels"] = tokenizer(labels, return_tensors="pt", truncation=True, padding="max_length").input_ids
+    def create_datasets(self):
+        tokenizer = AutoTokenizer.from_pretrained(self.model_args.model_name_or_path)
+        datasets = torch.utils.data.ConcatDataset([torch.load(f"{self.data_args.dataset_name}/train.json"), torch.load(f"{self.data_args.dataset_name}/test.json")])
+        apply_chat_template = self.data_args.chat_template_format != "none"
+
+        def process_data(examples):
+            if apply_chat_template:
+                inputs = []
+                labels = []
+                for example in examples:
+                    inputs.append(f"{example['input']} {tokenizer.sep_token}")
+                    labels.append(f"{example['output']} {tokenizer.sep_token}")
+                examples["input_ids"] = tokenizer(inputs, return_tensors="pt", truncation=True, padding="max_length").input_ids
+                examples["labels"] = tokenizer(labels, return_tensors="pt", truncation=True, padding="max_length").input_ids
+            else:
+                examples["input_ids"] = tokenizer(examples["input"], return_tensors="pt", truncation=True, padding="max_length").input_ids
+                examples["labels"] = tokenizer(examples["output"], return_tensors="pt", truncation=True, padding="max_length").input_ids
+
+            return examples
+
+        datasets = torch.utils.data.ConcatDataset([process_data(datasets[i]) for i in range(len(datasets))])
+        return datasets
+
+    def get_trainer(self, model, train_dataset, eval_dataset):
+        if self.model_args.use_triplet_loss_trainer:
+            return TripletLossTrainer(model=model, args=self.training_args, train_dataset=train_dataset, eval_dataset=eval_dataset, layer_index=-1)
         else:
-            examples["input_ids"] = tokenizer(examples["input"], return_tensors="pt", truncation=True, padding="max_length").input_ids
-            examples["labels"] = tokenizer(examples["output"], return_tensors="pt", truncation=True, padding="max_length").input_ids
+            return SFTTrainer(model=model, tokenizer=model.tokenizer, args=self.training_args, train_dataset=train_dataset, eval_dataset=eval_dataset)
 
-        return examples
-
-    dataset = torch.utils.data.ConcatDataset([process_data(dataset[i]) for i in range(len(dataset))])
-    return dataset
+    def run_pipeline(self):
+        model = self.prepare_model()
+        datasets = self.create_datasets()
+        train_dataset = Dataset(datasets, 0, self.training_args.per_device_train_batch_size)
+        eval_dataset = datasets
+        trainer = self.get_trainer(model, train_dataset, eval_dataset)
+        trainer.train(resume_from_checkpoint=self.training_args.resume_from_checkpoint)
+        trainer.save_model()
 
 class SFTTrainer:
     def __init__(self, model, tokenizer, args, train_dataset, eval_dataset):
@@ -152,39 +173,10 @@ class TripletLossTrainer(SFTTrainer):
         super().__init__(model, model.tokenizer, args, train_dataset, eval_dataset)
         self.layer_index = layer_index
 
-    def train(self, resume_from_checkpoint=None):
-        super().train(resume_from_checkpoint)
-
-class TrainerPipeline:
-    def __init__(self, model_args, data_args, training_args):
-        self.model_args = model_args
-        self.data_args = data_args
-        self.training_args = training_args
-
-    def run_pipeline(self):
-        accelerator = Accelerator()
-        model = prepare_model(self.model_args, self.data_args, self.training_args)
-        tokenizer = AutoTokenizer.from_pretrained(self.model_args.model_name_or_path)
-        datasets = create_datasets(tokenizer, self.data_args, self.training_args, apply_chat_template=self.data_args.chat_template_format != "none")
-        train_dataset = Dataset(datasets, 0, self.training_args.per_device_train_batch_size)
-        eval_dataset = datasets
-        trainer = get_trainer(model, train_dataset, eval_dataset, self.model_args, self.training_args)
-        trainer.train(resume_from_checkpoint=self.training_args.resume_from_checkpoint)
-        trainer.save_model()
-
-def get_trainer(model, train_dataset, eval_dataset, model_args, training_args):
-    if model_args.use_triplet_loss_trainer:
-        return TripletLossTrainer(model=model, args=training_args, train_dataset=train_dataset, eval_dataset=eval_dataset, layer_index=-1)
-    else:
-        return SFTTrainer(model=model, tokenizer=model.tokenizer, args=training_args, train_dataset=train_dataset, eval_dataset=eval_dataset)
-
-def main():
+if __name__ == "__main__":
     model_args = ModelArguments(model_name_or_path="t5-base", chat_template_format="none")
     data_args = DataTrainingArguments(dataset_name="timdettmers/openassistant-guanaco")
     training_args = TrainingArguments(output_dir="./results", num_train_epochs=3, per_device_train_batch_size=16)
 
-    pipeline = TrainerPipeline(model_args, data_args, training_args)
+    pipeline = ModelTrainer(model_args, data_args, training_args)
     pipeline.run_pipeline()
-
-if __name__ == "__main__":
-    main()
