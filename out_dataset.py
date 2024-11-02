@@ -1,11 +1,12 @@
 import json
 import random
 import os
-from multiprocessing import Pool
 import numpy as np
 from nltk.tokenize import word_tokenize
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Embedding, LSTM, Dense
 
 def load_swebench_dataset(dataset_path):
     return np.load(dataset_path, allow_pickle=True)
@@ -22,16 +23,17 @@ def load_snippet_file(snippet_file):
         return []
 
 def separate_snippets(snippets):
-    bug_snippets = [item['snippet'] for item in snippets if item.get('is_bug', False) and item.get('snippet')]
-    non_bug_snippets = [item['snippet'] for item in snippets if not item.get('is_bug', False) and item.get('snippet')]
-    return bug_snippets, non_bug_snippets
+    return (
+        [item['snippet'] for item in snippets if item.get('is_bug', False) and item.get('snippet')],
+        [item['snippet'] for item in snippets if not item.get('is_bug', False) and item.get('snippet')]
+    )
 
 def create_triplets(problem_statement, positive_snippets, negative_snippets, num_negatives_per_positive):
-    triplets = []
-    for positive_doc in positive_snippets:
-        for negative_doc in (negative_snippets if len(negative_snippets) <= num_negatives_per_positive else random.sample(negative_snippets, num_negatives_per_positive)):
-            triplets.append({'anchor': problem_statement, 'positive': positive_doc, 'negative': negative_doc})
-    return triplets
+    return [
+        {'anchor': problem_statement, 'positive': positive_doc, 'negative': negative_doc}
+        for positive_doc in positive_snippets
+        for negative_doc in (negative_snippets if len(negative_snippets) <= num_negatives_per_positive else random.sample(negative_snippets, num_negatives_per_positive))
+    ]
 
 def create_swebench_dict(swebench_dataset):
     return {item['instance_id']: item['problem_statement'] for item in swebench_dataset}
@@ -44,9 +46,6 @@ def batch_data(data, batch_size=16, shuffle=True):
 def create_triplet_dataset(swebench_dataset_path, snippet_folder_path, instance_id_field='instance_id', num_negatives_per_positive=3):
     swebench_dataset = load_swebench_dataset(swebench_dataset_path)
     swebench_dict = create_swebench_dict(swebench_dataset)
-    snippet_folder_path = snippet_folder_path
-    
-    print("Creating triplet dataset...")
     triplet_data = []
     for folder in os.listdir(snippet_folder_path):
         folder_path = os.path.join(snippet_folder_path, folder)
@@ -104,18 +103,12 @@ def train(model, dataset, batch_size=16, epochs=5):
             total_loss += loss
         print(f"Epoch {epoch+1}, Loss: {total_loss / len(dataset)}")
 
-def main():
-    swebench_dataset_path = 'datasets/SWE-bench_oracle.npy'
-    snippet_folder_path = 'datasets/10_10_after_fix_pytest'
-
+def main(swebench_dataset_path, snippet_folder_path):
     dataset = create_triplet_dataset(swebench_dataset_path, snippet_folder_path)
     if not dataset:
         print("No available triplets to create the dataset.")
         return
     
-    # Initialize the model
-    from tensorflow.keras.models import Sequential
-    from tensorflow.keras.layers import Embedding, LSTM, Dense
     model = Sequential()
     model.add(Embedding(input_dim=10000, output_dim=128, input_length=512))
     model.add(LSTM(64, dropout=0.2))
@@ -124,4 +117,7 @@ def main():
     train(model, dataset)
 
 if __name__ == "__main__":
-    main()
+    swebench_dataset_path = 'datasets/SWE-bench_oracle.npy'
+    snippet_folder_path = 'datasets/10_10_after_fix_pytest'
+
+    main(swebench_dataset_path, snippet_folder_path)
