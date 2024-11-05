@@ -59,43 +59,35 @@ class TrainingConfig:
     seed: int = field(default=42, metadata={"help": "Random seed."})
     resume_from_checkpoint: Optional[str] = field(default=None, metadata={"help": "Resume training from checkpoint."})
 
-def create_dataset(epoch, batch_size, datasets):
-    class Dataset(torch.utils.data.Dataset):
-        def __init__(self):
-            self.epoch = epoch
-            self.batch_size = batch_size
-            self.datasets = datasets
-            self.indices = list(range(len(datasets)))
+class BaseDataset(torch.utils.data.Dataset):
+    def __init__(self, datasets, epoch, batch_size):
+        self.epoch = epoch
+        self.batch_size = batch_size
+        self.datasets = datasets
+        self.indices = list(range(len(datasets)))
 
-        def __len__(self):
-            return len(self.datasets) // self.batch_size
+    def __len__(self):
+        return len(self.datasets) // self.batch_size
 
-        def __getitem__(self, idx):
-            random.shuffle(self.indices)
-            batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
-            batch = [self.datasets[i] for i in batch_indices]
-            return batch
-    return Dataset()
+    def __getitem__(self, idx):
+        random.shuffle(self.indices)
+        batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
+        batch = [self.datasets[i] for i in batch_indices]
+        return batch
 
-def create_triplet_dataset(epoch, batch_size, datasets):
-    class TripletDataset(torch.utils.data.Dataset):
-        def __init__(self):
-            self.epoch = epoch
-            self.batch_size = batch_size
-            self.datasets = datasets
-            self.indices = list(range(len(datasets)))
+class Dataset(BaseDataset):
+    def __init__(self, datasets, epoch, batch_size):
+        super().__init__(datasets, epoch, batch_size)
 
-        def __len__(self):
-            return len(self.datasets) // self.batch_size
+class TripletDataset(BaseDataset):
+    def __init__(self, datasets, epoch, batch_size):
+        super().__init__(datasets, epoch, batch_size)
 
-        def __getitem__(self, idx):
-            random.shuffle(self.indices)
-            batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
-            batch = [self.datasets[i] for i in batch_indices]
-            positive_samples = [sample for sample in batch if sample["label"] == 1]
-            negative_samples = [sample for sample in batch if sample["label"] == 0]
-            return positive_samples, negative_samples
-    return TripletDataset()
+    def __getitem__(self, idx):
+        batch = super().__getitem__(idx)
+        positive_samples = [sample for sample in batch if sample["label"] == 1]
+        negative_samples = [sample for sample in batch if sample["label"] == 0]
+        return positive_samples, negative_samples
 
 def prepare_model(model_args):
     return AutoModelForCausalLM.from_pretrained(model_args.model_identifier)
@@ -127,7 +119,7 @@ def get_trainer(model_args, model, train_dataset, eval_dataset):
     else:
         return SFTTrainer(model=model, train_dataset=train_dataset, eval_dataset=eval_dataset)
 
-class SFTTrainer:
+class BaseTrainer:
     def __init__(self, model, train_dataset, eval_dataset):
         self.model = model
         self.train_dataset = train_dataset
@@ -155,7 +147,10 @@ class SFTTrainer:
     def save_model(self, output_dir):
         self.accelerator.save(self.model.state_dict(), f"{output_dir}/model.pth")
 
-class TripletLossTrainer(SFTTrainer):
+class SFTTrainer(BaseTrainer):
+    pass
+
+class TripletLossTrainer(BaseTrainer):
     def __init__(self, model, train_dataset, eval_dataset, layer_index):
         super().__init__(model, train_dataset, eval_dataset)
         self.layer_index = layer_index
@@ -163,7 +158,7 @@ class TripletLossTrainer(SFTTrainer):
 def run_pipeline(model_args, data_args, training_args):
     model = prepare_model(model_args)
     datasets = create_datasets(model_args, data_args)
-    train_dataset = create_dataset(0, training_args.per_device_train_batch_size, datasets)
+    train_dataset = Dataset(datasets, 0, training_args.per_device_train_batch_size)
     eval_dataset = datasets
     trainer = get_trainer(model_args, model, train_dataset, eval_dataset)
     trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
