@@ -1,12 +1,61 @@
 import json
 import random
 import os
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from transformers import AutoModel, AutoTokenizer
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import Normalizer
 import numpy as np
+import nltk
 from nltk.tokenize import word_tokenize
-from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras.utils import to_categorical
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Embedding, LSTM, Dense
+
+nltk.download('punkt')
+
+class TripletDataset(Dataset):
+    def __init__(self, data, tokenizer, max_length):
+        self.data = data
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        example = self.data[idx]
+        anchor = self.tokenizer.encode_plus(
+            example['anchor'],
+            max_length=self.max_length,
+            padding='max_length',
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors='pt'
+        )
+        positive = self.tokenizer.encode_plus(
+            example['positive'],
+            max_length=self.max_length,
+            padding='max_length',
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors='pt'
+        )
+        negative = self.tokenizer.encode_plus(
+            example['negative'],
+            max_length=self.max_length,
+            padding='max_length',
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors='pt'
+        )
+        return {
+            'anchor_input_ids': anchor['input_ids'].flatten(),
+            'anchor_attention_mask': anchor['attention_mask'].flatten(),
+            'positive_input_ids': positive['input_ids'].flatten(),
+            'positive_attention_mask': positive['attention_mask'].flatten(),
+            'negative_input_ids': negative['input_ids'].flatten(),
+            'negative_attention_mask': negative['attention_mask'].flatten()
+        }
 
 def load_swebench_dataset(dataset_path):
     return np.load(dataset_path, allow_pickle=True)
@@ -38,11 +87,6 @@ def create_triplets(problem_statement, positive_snippets, negative_snippets, num
 def create_swebench_dict(swebench_dataset):
     return {item['instance_id']: item['problem_statement'] for item in swebench_dataset}
 
-def batch_data(data, batch_size=16, shuffle=True):
-    if shuffle:
-        random.shuffle(data)
-    return [data[i:i + batch_size] for i in range(0, len(data), batch_size)]
-
 def create_triplet_dataset(swebench_dataset_path, snippet_folder_path, instance_id_field='instance_id', num_negatives_per_positive=3):
     swebench_dataset = load_swebench_dataset(swebench_dataset_path)
     swebench_dict = create_swebench_dict(swebench_dataset)
@@ -59,62 +103,72 @@ def create_triplet_dataset(swebench_dataset_path, snippet_folder_path, instance_
                     triplets = create_triplets(problem_statement, bug_snippets, non_bug_snippets, num_negatives_per_positive)
                     triplet_data.extend(triplets)
     print(f"Number of triplets: {len(triplet_data)}")
-    return batch_data(triplet_data)
+    return triplet_data
 
-def tokenize_data(data, max_length=512):
-    tokenizer = word_tokenize
-    input_ids = []
-    attention_masks = []
-    for example in data:
-        anchor = tokenizer(example['anchor'])
-        positive = tokenizer(example['positive'])
-        negative = tokenizer(example['negative'])
-        
-        anchor_input_id = pad_sequences([anchor], maxlen=max_length, padding='post', truncating='post')[0]
-        positive_input_id = pad_sequences([positive], maxlen=max_length, padding='post', truncating='post')[0]
-        negative_input_id = pad_sequences([negative], maxlen=max_length, padding='post', truncating='post')[0]
-        
-        anchor_attention_mask = [1] * len(anchor_input_id)
-        positive_attention_mask = [1] * len(positive_input_id)
-        negative_attention_mask = [1] * len(negative_input_id)
-        
-        input_ids.append([anchor_input_id, positive_input_id, negative_input_id])
-        attention_masks.append([anchor_attention_mask, positive_attention_mask, negative_attention_mask])
-    
-    return np.array(input_ids), np.array(attention_masks)
+class TripletLoss(nn.Module):
+    def __init__(self):
+        super(TripletLoss, self).__init__()
 
-def calculate_triplet_loss(model, batch):
-    anchor_input_ids, positive_input_ids, negative_input_ids = batch[0]
-    anchor_attention_masks, positive_attention_masks, negative_attention_masks = batch[1]
-    
-    anchor_embedding = model.predict([anchor_input_ids, anchor_attention_masks])
-    positive_embedding = model.predict([positive_input_ids, positive_attention_masks])
-    negative_embedding = model.predict([negative_input_ids, negative_attention_masks])
-    
-    loss = np.mean(np.linalg.norm(anchor_embedding - positive_embedding, axis=1) - np.linalg.norm(anchor_embedding - negative_embedding, axis=1) + 1)
-    return loss
+    def forward(self, anchor, positive, negative):
+        return torch.mean(torch.norm(anchor - positive, dim=1) - torch.norm(anchor - negative, dim=1) + 1)
 
-def train(model, dataset, batch_size=16, epochs=5):
+class Model(nn.Module):
+    def __init__(self):
+        super(Model, self).__init__()
+        self.model = AutoModel.from_pretrained('bert-base-uncased')
+        self.dropout = nn.Dropout(0.2)
+        self.fc = nn.Linear(768, 64)
+        self.relu = nn.ReLU()
+
+    def forward(self, input_ids, attention_mask):
+        outputs = self.model(input_ids, attention_mask=attention_mask)
+        pooled_output = outputs.pooler_output
+        pooled_output = self.dropout(pooled_output)
+        pooled_output = self.fc(pooled_output)
+        pooled_output = self.relu(pooled_output)
+        return pooled_output
+
+def train(model, device, train_loader, epochs):
+    model.train()
+    criterion = TripletLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-5)
     for epoch in range(epochs):
         total_loss = 0
-        for batch in dataset:
-            input_ids, attention_masks = tokenize_data(batch)
-            loss = calculate_triplet_loss(model, [input_ids, attention_masks])
-            total_loss += loss
-        print(f"Epoch {epoch+1}, Loss: {total_loss / len(dataset)}")
+        for batch in train_loader:
+            anchor_input_ids = batch['anchor_input_ids'].to(device)
+            anchor_attention_mask = batch['anchor_attention_mask'].to(device)
+            positive_input_ids = batch['positive_input_ids'].to(device)
+            positive_attention_mask = batch['positive_attention_mask'].to(device)
+            negative_input_ids = batch['negative_input_ids'].to(device)
+            negative_attention_mask = batch['negative_attention_mask'].to(device)
+
+            anchor_output = model(anchor_input_ids, anchor_attention_mask)
+            positive_output = model(positive_input_ids, positive_attention_mask)
+            negative_output = model(negative_input_ids, negative_attention_mask)
+
+            loss = criterion(anchor_output, positive_output, negative_output)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+        print(f"Epoch {epoch+1}, Loss: {total_loss / len(train_loader)}")
 
 def main(swebench_dataset_path, snippet_folder_path):
     dataset = create_triplet_dataset(swebench_dataset_path, snippet_folder_path)
     if not dataset:
         print("No available triplets to create the dataset.")
         return
-    
-    model = Sequential()
-    model.add(Embedding(input_dim=10000, output_dim=128, input_length=512))
-    model.add(LSTM(64, dropout=0.2))
-    model.add(Dense(64, activation='relu'))
-    
-    train(model, dataset)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
+    dataset = TripletDataset(dataset, tokenizer, max_length=512)
+    train_loader = DataLoader(dataset, batch_size=16, shuffle=True)
+
+    model = Model()
+    model.to(device)
+
+    train(model, device, train_loader, epochs=5)
 
 if __name__ == "__main__":
     swebench_dataset_path = 'datasets/SWE-bench_oracle.npy'
