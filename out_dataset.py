@@ -140,7 +140,12 @@ def train(model, train_dataset, epochs):
             positive_output = model(positive_input_ids, positive_attention_mask)
             negative_output = model(negative_input_ids, negative_attention_mask)
 
-            loss = model.train_on_batch(tf.concat([anchor_output, positive_output, negative_output], axis=0), tf.zeros((anchor_output.shape[0]*3,)))
+            with tf.GradientTape() as tape:
+                outputs = tf.concat([anchor_output, positive_output, negative_output], axis=0)
+                loss = model.loss(outputs, tf.zeros((anchor_output.shape[0]*3,)))
+
+            gradients = tape.gradient(loss, model.trainable_variables)
+            model.optimizer.apply_gradients(zip(gradients, model.trainable_variables))
             total_loss += loss
         print(f"Epoch {epoch+1}, Loss: {total_loss / len(train_dataset)}")
 
@@ -152,7 +157,7 @@ def main(swebench_dataset_path, snippet_folder_path):
 
     tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
     dataset = TripletDataset(dataset, tokenizer, max_length=512)
-    dataset = tf.data.Dataset.from_generator(lambda: dataset, output_types={'anchor_input_ids': tf.int32, 'anchor_attention_mask': tf.int32, 'positive_input_ids': tf.int32, 'positive_attention_mask': tf.int32, 'negative_input_ids': tf.int32, 'negative_attention_mask': tf.int32}).batch(16)
+    dataset = tf.data.Dataset.from_generator(lambda: dataset, output_types={'anchor_input_ids': tf.int32, 'anchor_attention_mask': tf.int32, 'positive_input_ids': tf.int32, 'positive_attention_mask': tf.int32, 'negative_input_ids': tf.int32, 'negative_attention_mask': tf.int32}).batch(16).prefetch(tf.data.AUTOTUNE)
 
     model = Model()
 
