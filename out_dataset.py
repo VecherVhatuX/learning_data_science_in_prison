@@ -1,19 +1,19 @@
 import json
 import random
 import os
-import torch
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-from transformers import AutoModel, AutoTokenizer
+import tensorflow as tf
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.utils import to_categorical
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import Normalizer
 import numpy as np
 import nltk
 from nltk.tokenize import word_tokenize
+from transformers import AutoTokenizer
 
 nltk.download('punkt')
 
-class TripletDataset(Dataset):
+class TripletDataset:
     def __init__(self, data, tokenizer, max_length):
         self.data = data
         self.tokenizer = tokenizer
@@ -30,7 +30,7 @@ class TripletDataset(Dataset):
             padding='max_length',
             truncation=True,
             return_attention_mask=True,
-            return_tensors='pt'
+            return_tensors='np'
         )
         positive = self.tokenizer.encode_plus(
             example['positive'],
@@ -38,7 +38,7 @@ class TripletDataset(Dataset):
             padding='max_length',
             truncation=True,
             return_attention_mask=True,
-            return_tensors='pt'
+            return_tensors='np'
         )
         negative = self.tokenizer.encode_plus(
             example['negative'],
@@ -46,7 +46,7 @@ class TripletDataset(Dataset):
             padding='max_length',
             truncation=True,
             return_attention_mask=True,
-            return_tensors='pt'
+            return_tensors='np'
         )
         return {
             'anchor_input_ids': anchor['input_ids'].flatten(),
@@ -105,54 +105,44 @@ def create_triplet_dataset(swebench_dataset_path, snippet_folder_path, instance_
     print(f"Number of triplets: {len(triplet_data)}")
     return triplet_data
 
-class TripletLoss(nn.Module):
-    def __init__(self):
-        super(TripletLoss, self).__init__()
+class TripletLoss(tf.keras.losses.Loss):
+    def call(self, y_true, y_pred):
+        anchor, positive, negative = tf.split(y_pred, 3, axis=0)
+        return tf.reduce_mean(tf.norm(anchor - positive, axis=1) - tf.norm(anchor - negative, axis=1) + 1)
 
-    def forward(self, anchor, positive, negative):
-        return torch.mean(torch.norm(anchor - positive, dim=1) - torch.norm(anchor - negative, dim=1) + 1)
-
-class Model(nn.Module):
+class Model(tf.keras.Model):
     def __init__(self):
         super(Model, self).__init__()
-        self.model = AutoModel.from_pretrained('bert-base-uncased')
-        self.dropout = nn.Dropout(0.2)
-        self.fc = nn.Linear(768, 64)
-        self.relu = nn.ReLU()
+        self.model = tf.keras.layers.Embedding(input_dim=30522, output_dim=128, input_length=512)
+        self.dropout = tf.keras.layers.Dropout(0.2)
+        self.fc = tf.keras.layers.Dense(64, activation='relu')
 
-    def forward(self, input_ids, attention_mask):
-        outputs = self.model(input_ids, attention_mask=attention_mask)
-        pooled_output = outputs.pooler_output
-        pooled_output = self.dropout(pooled_output)
-        pooled_output = self.fc(pooled_output)
-        pooled_output = self.relu(pooled_output)
-        return pooled_output
+    def call(self, input_ids, attention_mask):
+        outputs = self.model(input_ids)
+        outputs = self.dropout(outputs)
+        outputs = tf.reduce_mean(outputs, axis=1)
+        outputs = self.fc(outputs)
+        return outputs
 
-def train(model, device, train_loader, epochs):
-    model.train()
-    criterion = TripletLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-5)
+def train(model, train_dataset, epochs):
+    model.compile(optimizer=tf.keras.optimizers.Adam(1e-5), loss=TripletLoss())
     for epoch in range(epochs):
         total_loss = 0
-        for batch in train_loader:
-            anchor_input_ids = batch['anchor_input_ids'].to(device)
-            anchor_attention_mask = batch['anchor_attention_mask'].to(device)
-            positive_input_ids = batch['positive_input_ids'].to(device)
-            positive_attention_mask = batch['positive_attention_mask'].to(device)
-            negative_input_ids = batch['negative_input_ids'].to(device)
-            negative_attention_mask = batch['negative_attention_mask'].to(device)
+        for batch in train_dataset:
+            anchor_input_ids = batch['anchor_input_ids']
+            anchor_attention_mask = batch['anchor_attention_mask']
+            positive_input_ids = batch['positive_input_ids']
+            positive_attention_mask = batch['positive_attention_mask']
+            negative_input_ids = batch['negative_input_ids']
+            negative_attention_mask = batch['negative_attention_mask']
 
             anchor_output = model(anchor_input_ids, anchor_attention_mask)
             positive_output = model(positive_input_ids, positive_attention_mask)
             negative_output = model(negative_input_ids, negative_attention_mask)
 
-            loss = criterion(anchor_output, positive_output, negative_output)
-
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-        print(f"Epoch {epoch+1}, Loss: {total_loss / len(train_loader)}")
+            loss = model.train_on_batch(tf.concat([anchor_output, positive_output, negative_output], axis=0), tf.zeros((anchor_output.shape[0]*3,)))
+            total_loss += loss
+        print(f"Epoch {epoch+1}, Loss: {total_loss / len(train_dataset)}")
 
 def main(swebench_dataset_path, snippet_folder_path):
     dataset = create_triplet_dataset(swebench_dataset_path, snippet_folder_path)
@@ -160,15 +150,13 @@ def main(swebench_dataset_path, snippet_folder_path):
         print("No available triplets to create the dataset.")
         return
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
     dataset = TripletDataset(dataset, tokenizer, max_length=512)
-    train_loader = DataLoader(dataset, batch_size=16, shuffle=True)
+    dataset = tf.data.Dataset.from_generator(lambda: dataset, output_types={'anchor_input_ids': tf.int32, 'anchor_attention_mask': tf.int32, 'positive_input_ids': tf.int32, 'positive_attention_mask': tf.int32, 'negative_input_ids': tf.int32, 'negative_attention_mask': tf.int32}).batch(16)
 
     model = Model()
-    model.to(device)
 
-    train(model, device, train_loader, epochs=5)
+    train(model, dataset, epochs=5)
 
 if __name__ == "__main__":
     swebench_dataset_path = 'datasets/SWE-bench_oracle.npy'
