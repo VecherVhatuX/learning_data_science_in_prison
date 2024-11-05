@@ -59,105 +59,85 @@ class TrainingConfig:
     seed: int = field(default=42, metadata={"help": "Random seed."})
     resume_from_checkpoint: Optional[str] = field(default=None, metadata={"help": "Resume training from checkpoint."})
 
-class Dataset(torch.utils.data.Dataset):
-    """Custom dataset class."""
-    def __init__(self, dataset, epoch, batch_size):
-        self.dataset = dataset
-        self.epoch = epoch
-        self.batch_size = batch_size
-        self.indices = list(range(len(dataset)))
+def create_dataset(epoch, batch_size, datasets):
+    class Dataset(torch.utils.data.Dataset):
+        def __init__(self):
+            self.epoch = epoch
+            self.batch_size = batch_size
+            self.datasets = datasets
+            self.indices = list(range(len(datasets)))
 
-    def __len__(self):
-        return len(self.dataset) // self.batch_size
+        def __len__(self):
+            return len(self.datasets) // self.batch_size
 
-    def __getitem__(self, idx):
-        random.shuffle(self.indices)
-        batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
-        batch = [self.dataset[i] for i in batch_indices]
-        return batch
+        def __getitem__(self, idx):
+            random.shuffle(self.indices)
+            batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
+            batch = [self.datasets[i] for i in batch_indices]
+            return batch
+    return Dataset()
 
-class TripletDataset(torch.utils.data.Dataset):
-    """Custom triplet dataset class."""
-    def __init__(self, dataset, epoch, batch_size):
-        self.dataset = dataset
-        self.epoch = epoch
-        self.batch_size = batch_size
-        self.indices = list(range(len(dataset)))
+def create_triplet_dataset(epoch, batch_size, datasets):
+    class TripletDataset(torch.utils.data.Dataset):
+        def __init__(self):
+            self.epoch = epoch
+            self.batch_size = batch_size
+            self.datasets = datasets
+            self.indices = list(range(len(datasets)))
 
-    def __len__(self):
-        return len(self.dataset) // self.batch_size
+        def __len__(self):
+            return len(self.datasets) // self.batch_size
 
-    def __getitem__(self, idx):
-        random.shuffle(self.indices)
-        batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
-        batch = [self.dataset[i] for i in batch_indices]
-        positive_samples = [sample for sample in batch if sample["label"] == 1]
-        negative_samples = [sample for sample in batch if sample["label"] == 0]
-        return positive_samples, negative_samples
+        def __getitem__(self, idx):
+            random.shuffle(self.indices)
+            batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
+            batch = [self.datasets[i] for i in batch_indices]
+            positive_samples = [sample for sample in batch if sample["label"] == 1]
+            negative_samples = [sample for sample in batch if sample["label"] == 0]
+            return positive_samples, negative_samples
+    return TripletDataset()
 
-class ModelTrainer:
-    """Model trainer class."""
-    def __init__(self, model_args, data_args, training_args):
-        self.model_args = model_args
-        self.data_args = data_args
-        self.training_args = training_args
-        self.accelerator = Accelerator()
+def prepare_model(model_args):
+    return AutoModelForCausalLM.from_pretrained(model_args.model_identifier)
 
-    def prepare_model(self):
-        return AutoModelForCausalLM.from_pretrained(self.model_args.model_identifier)
+def process_data(examples, chat_template):
+    tokenizer = AutoTokenizer.from_pretrained("t5-base")
+    apply_chat_template = chat_template != "none"
+    if apply_chat_template:
+        inputs = []
+        labels = []
+        for example in examples:
+            inputs.append(f"{example['input']} {tokenizer.sep_token}")
+            labels.append(f"{example['output']} {tokenizer.sep_token}")
+        examples["input_ids"] = tokenizer(inputs, return_tensors="pt", truncation=True, padding="max_length").input_ids
+        examples["labels"] = tokenizer(labels, return_tensors="pt", truncation=True, padding="max_length").input_ids
+    else:
+        examples["input_ids"] = tokenizer(examples["input"], return_tensors="pt", truncation=True, padding="max_length").input_ids
+        examples["labels"] = tokenizer(examples["output"], return_tensors="pt", truncation=True, padding="max_length").input_ids
+    return examples
 
-    def create_datasets(self):
-        tokenizer = AutoTokenizer.from_pretrained(self.model_args.model_identifier)
-        datasets = torch.utils.data.ConcatDataset([torch.load(f"{self.data_args.dataset_name}/train.json"), torch.load(f"{self.data_args.dataset_name}/test.json")])
-        apply_chat_template = self.data_args.chat_template != "none"
+def create_datasets(model_args, data_args):
+    datasets = torch.utils.data.ConcatDataset([torch.load(f"{data_args.dataset_name}/train.json"), torch.load(f"{data_args.dataset_name}/test.json")])
+    datasets = torch.utils.data.ConcatDataset([process_data(datasets[i], model_args.chat_template) for i in range(len(datasets))])
+    return datasets
 
-        def process_data(examples):
-            if apply_chat_template:
-                inputs = []
-                labels = []
-                for example in examples:
-                    inputs.append(f"{example['input']} {tokenizer.sep_token}")
-                    labels.append(f"{example['output']} {tokenizer.sep_token}")
-                examples["input_ids"] = tokenizer(inputs, return_tensors="pt", truncation=True, padding="max_length").input_ids
-                examples["labels"] = tokenizer(labels, return_tensors="pt", truncation=True, padding="max_length").input_ids
-            else:
-                examples["input_ids"] = tokenizer(examples["input"], return_tensors="pt", truncation=True, padding="max_length").input_ids
-                examples["labels"] = tokenizer(examples["output"], return_tensors="pt", truncation=True, padding="max_length").input_ids
-
-            return examples
-
-        datasets = torch.utils.data.ConcatDataset([process_data(datasets[i]) for i in range(len(datasets))])
-        return datasets
-
-    def get_trainer(self, model, train_dataset, eval_dataset):
-        if self.model_args.use_triplet_loss_trainer:
-            return TripletLossTrainer(model=model, args=self.training_args, train_dataset=train_dataset, eval_dataset=eval_dataset, layer_index=-1)
-        else:
-            return SFTTrainer(model=model, tokenizer=model.tokenizer, args=self.training_args, train_dataset=train_dataset, eval_dataset=eval_dataset)
-
-    def run_pipeline(self):
-        model = self.prepare_model()
-        datasets = self.create_datasets()
-        train_dataset = Dataset(datasets, 0, self.training_args.per_device_train_batch_size)
-        eval_dataset = datasets
-        trainer = self.get_trainer(model, train_dataset, eval_dataset)
-        trainer.train(resume_from_checkpoint=self.training_args.resume_from_checkpoint)
-        trainer.save_model()
+def get_trainer(model_args, model, train_dataset, eval_dataset):
+    if model_args.use_triplet_loss_trainer:
+        return TripletLossTrainer(model=model, train_dataset=train_dataset, eval_dataset=eval_dataset, layer_index=-1)
+    else:
+        return SFTTrainer(model=model, train_dataset=train_dataset, eval_dataset=eval_dataset)
 
 class SFTTrainer:
-    """SFT trainer class."""
-    def __init__(self, model, tokenizer, args, train_dataset, eval_dataset):
+    def __init__(self, model, train_dataset, eval_dataset):
         self.model = model
-        self.tokenizer = tokenizer
-        self.args = args
         self.train_dataset = train_dataset
         self.eval_dataset = eval_dataset
         self.accelerator = Accelerator()
 
     def train(self, resume_from_checkpoint=None):
         self.model, self.train_dataset, self.eval_dataset = self.accelerator.prepare(self.model, self.train_dataset, self.eval_dataset)
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
-        for epoch in range(self.args.num_train_epochs):
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
+        for epoch in range(3):
             self.model.train()
             total_loss = 0
             for batch in self.train_dataset:
@@ -172,19 +152,26 @@ class SFTTrainer:
                 total_loss += loss.item()
             print(f"Epoch {epoch}, Loss: {total_loss / len(self.train_dataset)}")
 
-    def save_model(self):
-        self.accelerator.save(self.model.state_dict(), f"{self.args.output_dir}/model.pth")
+    def save_model(self, output_dir):
+        self.accelerator.save(self.model.state_dict(), f"{output_dir}/model.pth")
 
 class TripletLossTrainer(SFTTrainer):
-    """Triplet loss trainer class."""
-    def __init__(self, model, args, train_dataset, eval_dataset, layer_index):
-        super().__init__(model, model.tokenizer, args, train_dataset, eval_dataset)
+    def __init__(self, model, train_dataset, eval_dataset, layer_index):
+        super().__init__(model, train_dataset, eval_dataset)
         self.layer_index = layer_index
+
+def run_pipeline(model_args, data_args, training_args):
+    model = prepare_model(model_args)
+    datasets = create_datasets(model_args, data_args)
+    train_dataset = create_dataset(0, training_args.per_device_train_batch_size, datasets)
+    eval_dataset = datasets
+    trainer = get_trainer(model_args, model, train_dataset, eval_dataset)
+    trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
+    trainer.save_model(training_args.output_dir)
 
 if __name__ == "__main__":
     model_args = ModelConfig(model_identifier="t5-base", chat_template="none")
     data_args = TrainingDataConfig(dataset_name="timdettmers/openassistant-guanaco")
     training_args = TrainingConfig(output_dir="./results", num_train_epochs=3, per_device_train_batch_size=16)
 
-    pipeline = ModelTrainer(model_args, data_args, training_args)
-    pipeline.run_pipeline()
+    run_pipeline(model_args, data_args, training_args)
