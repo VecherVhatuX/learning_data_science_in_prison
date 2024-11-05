@@ -130,7 +130,7 @@ class TripletLossTrainer:
             negative_attention_mask
         )
 
-        return triplet_margin_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
+        return triplet_margin_loss(anchor_embeddings, positive_embeddings, negative_embeddings, margin=self.triplet_margin)
 
     def train(self, dataset: Dataset, epochs: int, num_negatives: int) -> None:
         for epoch in range(epochs):
@@ -149,8 +149,18 @@ class TripletLossTrainer:
         self.optimizer.step()
         return loss.item()
 
-if __name__ == "__main__":
+    def save_model(self, path: str) -> None:
+        torch.save(self.model.state_dict(), path)
+
+    def load_model(self, path: str) -> None:
+        self.model.load_state_dict(torch.load(path))
+
+def main():
     dataset = Dataset(np.random.rand(100, 10), np.random.randint(0, 2, 100), 32)
     model = EmbeddingModel(100, 10)
     trainer = TripletLossTrainer(model, triplet_margin=1.0, layer_index=-1, learning_rate=1e-4)
     trainer.train(dataset, epochs=10, num_negatives=5)
+    trainer.save_model("model.pth")
+
+if __name__ == "__main__":
+    main()
