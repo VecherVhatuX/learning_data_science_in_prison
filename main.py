@@ -14,49 +14,53 @@ import json
 import random
 
 @dataclass
-class ModelArguments:
-    model_name_or_path: str = field(default="t5-base", metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"})
-    chat_template_format: Optional[str] = field(default="none", metadata={"help": "chatml|zephyr|none. Pass `none` if the dataset is already formatted with the chat template."})
+class ModelConfig:
+    """Configuration for the model."""
+    model_identifier: str = field(default="t5-base", metadata={"help": "Pre-trained model identifier from Hugging Face."})
+    chat_template: Optional[str] = field(default="none", metadata={"help": "Format for chat template. Options: chatml, zephyr, none."})
     lora_alpha: Optional[int] = field(default=16)
     lora_dropout: Optional[float] = field(default=0.1)
-    lora_r: Optional[int] = field(default=64)
-    lora_target_modules: Optional[str] = field(default="q_proj,k_proj,v_proj,o_proj,down_proj,up_proj,gate_proj", metadata={"help": "comma separated list of target modules to apply LoRA layers to"})
-    use_nested_quant: Optional[bool] = field(default=False, metadata={"help": "Activate nested quantization for 4bit base models"})
-    bnb_4bit_compute_dtype: Optional[str] = field(default="float16", metadata={"help": "Compute dtype for 4bit base models"})
-    bnb_4bit_quant_storage_dtype: Optional[str] = field(default="uint8", metadata={"help": "Quantization storage dtype for 4bit base models"})
-    bnb_4bit_quant_type: Optional[str] = field(default="nf4", metadata={"help": "Quantization type fp4 or nf4"})
-    use_flash_attn: Optional[bool] = field(default=False, metadata={"help": "Enables Flash attention for training."})
-    use_peft_lora: Optional[bool] = field(default=False, metadata={"help": "Enables PEFT LoRA for training."})
-    use_8bit_quantization: Optional[bool] = field(default=False, metadata={"help": "Enables loading model in 8bit."})
-    use_4bit_quantization: Optional[bool] = field(default=False, metadata={"help": "Enables loading model in 4bit."})
-    use_reentrant: Optional[bool] = field(default=False, metadata={"help": "Gradient Checkpointing param. Refer the related docs"})
-    use_unsloth: Optional[bool] = field(default=False, metadata={"help": "Enables UnSloth for training."})
-    use_triplet_loss_trainer: Optional[bool] = field(default=False, metadata={"help": "Use our TripletLossTrainer(Trainer)"})
+    lora_rank: Optional[int] = field(default=64)
+    lora_target_layers: Optional[str] = field(default="q_proj,k_proj,v_proj,o_proj,down_proj,up_proj,gate_proj", metadata={"help": "Target layers for LoRA."})
+    nested_quant: Optional[bool] = field(default=False, metadata={"help": "Enable nested quantization for 4-bit base models."})
+    bnb_4bit_compute_dtype: Optional[str] = field(default="float16", metadata={"help": "Compute data type for 4-bit base models."})
+    bnb_4bit_quant_storage_dtype: Optional[str] = field(default="uint8", metadata={"help": "Quantization storage data type for 4-bit base models."})
+    bnb_4bit_quant_type: Optional[str] = field(default="nf4", metadata={"help": "Quantization type for 4-bit base models. Options: fp4, nf4."})
+    use_flash_attention: Optional[bool] = field(default=False, metadata={"help": "Enable flash attention for training."})
+    use_peft_lora: Optional[bool] = field(default=False, metadata={"help": "Enable PEFT LoRA for training."})
+    use_8bit_quantization: Optional[bool] = field(default=False, metadata={"help": "Enable 8-bit quantization."})
+    use_4bit_quantization: Optional[bool] = field(default=False, metadata={"help": "Enable 4-bit quantization."})
+    use_reentrant: Optional[bool] = field(default=False, metadata={"help": "Enable reentrant gradient checkpointing."})
+    use_unsloth: Optional[bool] = field(default=False, metadata={"help": "Enable UnSloth for training."})
+    use_triplet_loss_trainer: Optional[bool] = field(default=False, metadata={"help": "Use TripletLossTrainer for training."})
 
 @dataclass
-class DataTrainingArguments:
-    dataset_name: Optional[str] = field(default="timdettmers/openassistant-guanaco", metadata={"help": "The preference dataset to use."})
-    append_concat_token: Optional[bool] = field(default=False, metadata={"help": "If True, appends `eos_token_id` at the end of each sample being packed."})
-    add_special_tokens: Optional[bool] = field(default=False, metadata={"help": "If True, tokenizers adds special tokens to each sample being packed."})
-    splits: Optional[str] = field(default="train,test", metadata={"help": "Comma separate list of the splits to use from the dataset."})
-    tokenized_dataset_path: Optional[str] = field(default=None, metadata={"help": "Path to the tokenized dataset on disk."})
+class TrainingDataConfig:
+    """Configuration for training data."""
+    dataset_name: Optional[str] = field(default="timdettmers/openassistant-guanaco", metadata={"help": "Dataset name."})
+    append_concat_token: Optional[bool] = field(default=False, metadata={"help": "Append EOS token to each sample."})
+    add_special_tokens: Optional[bool] = field(default=False, metadata={"help": "Add special tokens to each sample."})
+    splits: Optional[str] = field(default="train,test", metadata={"help": "Comma-separated list of dataset splits."})
+    tokenized_dataset_path: Optional[str] = field(default=None, metadata={"help": "Path to tokenized dataset."})
 
 @dataclass
-class TrainingArguments:
-    output_dir: str = field(default="./results", metadata={"help": "The output directory where the model predictions and checkpoints will be written."})
-    num_train_epochs: int = field(default=3, metadata={"help": "Number of training epochs"})
-    per_device_train_batch_size: int = field(default=16, metadata={"help": "Batch size per GPU/TPU core/CPU for training"})
-    per_device_eval_batch_size: int = field(default=64, metadata={"help": "Batch size per GPU/TPU core/CPU for evaluation"})
-    warmup_steps: int = field(default=500, metadata={"help": "Number of steps for the warmup phase."})
-    weight_decay: float = field(default=0.01, metadata={"help": "Weight decay to apply."})
+class TrainingConfig:
+    """Configuration for training."""
+    output_dir: str = field(default="./results", metadata={"help": "Output directory for training results."})
+    num_train_epochs: int = field(default=3, metadata={"help": "Number of training epochs."})
+    per_device_train_batch_size: int = field(default=16, metadata={"help": "Batch size per device for training."})
+    per_device_eval_batch_size: int = field(default=64, metadata={"help": "Batch size per device for evaluation."})
+    warmup_steps: int = field(default=500, metadata={"help": "Number of warmup steps."})
+    weight_decay: float = field(default=0.01, metadata={"help": "Weight decay."})
     logging_dir: str = field(default="./logs", metadata={"help": "TensorBoard log directory."})
-    save_steps: int = field(default=500, metadata={"help": "Save checkpoint every X updates."})
-    save_total_limit: int = field(default=2, metadata={"help": "Limit the total amount of checkpoints."})
-    no_cuda: bool = field(default=False, metadata={"help": "Do not use CUDA even when it is available"})
-    seed: int = field(default=42, metadata={"help": "Random seed that will be set at the beginning of training."})
-    resume_from_checkpoint: Optional[str] = field(default=None, metadata={"help": "Resume training from this checkpoint"})
+    save_steps: int = field(default=500, metadata={"help": "Save checkpoint every X steps."})
+    save_total_limit: int = field(default=2, metadata={"help": "Total number of checkpoints to save."})
+    no_cuda: bool = field(default=False, metadata={"help": "Disable CUDA."})
+    seed: int = field(default=42, metadata={"help": "Random seed."})
+    resume_from_checkpoint: Optional[str] = field(default=None, metadata={"help": "Resume training from checkpoint."})
 
 class Dataset(torch.utils.data.Dataset):
+    """Custom dataset class."""
     def __init__(self, dataset, epoch, batch_size):
         self.dataset = dataset
         self.epoch = epoch
@@ -73,6 +77,7 @@ class Dataset(torch.utils.data.Dataset):
         return batch
 
 class TripletDataset(torch.utils.data.Dataset):
+    """Custom triplet dataset class."""
     def __init__(self, dataset, epoch, batch_size):
         self.dataset = dataset
         self.epoch = epoch
@@ -91,6 +96,7 @@ class TripletDataset(torch.utils.data.Dataset):
         return positive_samples, negative_samples
 
 class ModelTrainer:
+    """Model trainer class."""
     def __init__(self, model_args, data_args, training_args):
         self.model_args = model_args
         self.data_args = data_args
@@ -98,12 +104,12 @@ class ModelTrainer:
         self.accelerator = Accelerator()
 
     def prepare_model(self):
-        return AutoModelForCausalLM.from_pretrained(self.model_args.model_name_or_path)
+        return AutoModelForCausalLM.from_pretrained(self.model_args.model_identifier)
 
     def create_datasets(self):
-        tokenizer = AutoTokenizer.from_pretrained(self.model_args.model_name_or_path)
+        tokenizer = AutoTokenizer.from_pretrained(self.model_args.model_identifier)
         datasets = torch.utils.data.ConcatDataset([torch.load(f"{self.data_args.dataset_name}/train.json"), torch.load(f"{self.data_args.dataset_name}/test.json")])
-        apply_chat_template = self.data_args.chat_template_format != "none"
+        apply_chat_template = self.data_args.chat_template != "none"
 
         def process_data(examples):
             if apply_chat_template:
@@ -139,6 +145,7 @@ class ModelTrainer:
         trainer.save_model()
 
 class SFTTrainer:
+    """SFT trainer class."""
     def __init__(self, model, tokenizer, args, train_dataset, eval_dataset):
         self.model = model
         self.tokenizer = tokenizer
@@ -169,14 +176,15 @@ class SFTTrainer:
         self.accelerator.save(self.model.state_dict(), f"{self.args.output_dir}/model.pth")
 
 class TripletLossTrainer(SFTTrainer):
+    """Triplet loss trainer class."""
     def __init__(self, model, args, train_dataset, eval_dataset, layer_index):
         super().__init__(model, model.tokenizer, args, train_dataset, eval_dataset)
         self.layer_index = layer_index
 
 if __name__ == "__main__":
-    model_args = ModelArguments(model_name_or_path="t5-base", chat_template_format="none")
-    data_args = DataTrainingArguments(dataset_name="timdettmers/openassistant-guanaco")
-    training_args = TrainingArguments(output_dir="./results", num_train_epochs=3, per_device_train_batch_size=16)
+    model_args = ModelConfig(model_identifier="t5-base", chat_template="none")
+    data_args = TrainingDataConfig(dataset_name="timdettmers/openassistant-guanaco")
+    training_args = TrainingConfig(output_dir="./results", num_train_epochs=3, per_device_train_batch_size=16)
 
     pipeline = ModelTrainer(model_args, data_args, training_args)
     pipeline.run_pipeline()
