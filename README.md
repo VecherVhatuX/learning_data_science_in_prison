@@ -1,0 +1,5 @@
+This project explores Parameter Efficient Fine-Tuning (PEFT) combined with Priplett Loss for optimizing prompt tuning in large language models. The work is being done from prison, where the author, with limited access to resources and without prior experience in advanced machine learning techniques, is learning from the ground up. As a result, the project focuses on basic but essential techniques that are accessible yet powerful in improving model efficiency without requiring large-scale computational resources.
+
+PEFT allows fine-tuning only a small subset of model parameters, making it computationally feasible to work with large pre-trained models even in a resource-constrained environment. By applying this to prompt tuning, the author focuses on adjusting just the input prompts to tailor the model for specific tasks, minimizing the need for extensive model updates.
+
+Additionally, Priplett Loss is integrated as a novel loss function aimed at improving robustness and generalization during prompt tuning. The goal is to prevent overfitting while ensuring that the models can still adapt to diverse tasks with minimal changes.
