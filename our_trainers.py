@@ -42,6 +42,14 @@ class TripletDataset(Dataset):
             'negative_attention_mask': torch.ones_like(torch.stack([torch.tensor(self.samples[i]) for i in negative_indices]), dtype=torch.long)
         }
 
+    def on_epoch_end(self):
+        random.shuffle(self.indices)
+
+    def __iter__(self):
+        self.on_epoch_end()
+        for idx in self.indices:
+            yield self.__getitem__(idx)
+
 class TripletLossTrainer:
     def __init__(self, model: nn.Module, device: str, triplet_margin: float = 1.0, learning_rate: float = 1e-4):
         self.model = model.to(device)
@@ -91,7 +99,7 @@ class TripletLossTrainer:
 
     def train(self, dataset: TripletDataset, epochs: int, batch_size: int) -> None:
         device = self.device
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        dataloader = DataLoader(dataset, batch_size=batch_size)
         for epoch in range(epochs):
             total_loss = 0
             for batch in dataloader:
