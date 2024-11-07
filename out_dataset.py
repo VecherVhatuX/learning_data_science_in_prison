@@ -14,15 +14,19 @@ from transformers import AutoTokenizer
 nltk.download('punkt')
 
 class TripletDataset:
+    # Dataset class to handle triplet data
     def __init__(self, data, tokenizer, max_length):
+        # Initialize the dataset with data, tokenizer, and max length
         self.data = data
         self.tokenizer = tokenizer
         self.max_length = max_length
 
     def __len__(self):
+        # Return the length of the dataset
         return len(self.data)
 
     def __getitem__(self, idx):
+        # Get an item from the dataset by index
         example = self.data[idx]
         anchor = self._encode(example['anchor'])
         positive = self._encode(example['positive'])
@@ -37,6 +41,7 @@ class TripletDataset:
         }
 
     def _encode(self, text):
+        # Encode text using the tokenizer
         return self.tokenizer.encode_plus(
             text,
             max_length=self.max_length,
@@ -47,18 +52,23 @@ class TripletDataset:
         )
 
 class TripletLoss(tf.keras.losses.Loss):
+    # Loss function for triplet loss
     def call(self, y_true, y_pred):
+        # Calculate the loss
         anchor, positive, negative = tf.split(y_pred, 3, axis=0)
         return tf.reduce_mean(tf.norm(anchor - positive, axis=1) - tf.norm(anchor - negative, axis=1) + 1)
 
 class Model(tf.keras.Model):
+    # Model class for the neural network
     def __init__(self):
+        # Initialize the model
         super(Model, self).__init__()
         self.embedding = tf.keras.layers.Embedding(input_dim=30522, output_dim=128, input_length=512)
         self.dropout = tf.keras.layers.Dropout(0.2)
         self.fc = tf.keras.layers.Dense(64, activation='relu')
 
     def call(self, inputs):
+        # Define the forward pass
         input_ids, attention_mask = inputs
         outputs = self.embedding(input_ids)
         outputs = self.dropout(outputs)
@@ -67,26 +77,32 @@ class Model(tf.keras.Model):
         return outputs
 
 def load_swebench_dataset(dataset_path):
+    # Load the SWE-bench dataset
     return np.load(dataset_path, allow_pickle=True)
 
 def load_triplet_data(snippet_folder_path):
+    # Load the triplet data
     return [os.path.join(snippet_folder_path, f) for f in os.listdir(snippet_folder_path) if os.path.isdir(os.path.join(snippet_folder_path, f))]
 
 def load_snippet_file(snippet_file):
+    # Load a snippet file
     try:
         with open(snippet_file, 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception as e:
+        # Handle exceptions
         print(f"Failed to load snippet file: {snippet_file}, error: {str(e)}")
         return []
 
 def separate_snippets(snippets):
+    # Separate bug and non-bug snippets
     return (
         [item['snippet'] for item in snippets if item.get('is_bug', False) and item.get('snippet')],
         [item['snippet'] for item in snippets if not item.get('is_bug', False) and item.get('snippet')]
     )
 
 def create_triplets(problem_statement, positive_snippets, negative_snippets, num_negatives_per_positive):
+    # Create triplets
     return [
         {'anchor': problem_statement, 'positive': positive_doc, 'negative': negative_doc}
         for positive_doc in positive_snippets
@@ -94,9 +110,11 @@ def create_triplets(problem_statement, positive_snippets, negative_snippets, num
     ]
 
 def create_swebench_dict(swebench_dataset):
+    # Create a dictionary for the SWE-bench dataset
     return {item['instance_id']: item['problem_statement'] for item in swebench_dataset}
 
 def create_triplet_dataset(swebench_dataset_path, snippet_folder_path, instance_id_field='instance_id', num_negatives_per_positive=3):
+    # Create a triplet dataset
     swebench_dataset = load_swebench_dataset(swebench_dataset_path)
     swebench_dict = create_swebench_dict(swebench_dataset)
     triplet_data = []
@@ -115,6 +133,7 @@ def create_triplet_dataset(swebench_dataset_path, snippet_folder_path, instance_
     return triplet_data
 
 def train(model, train_dataset, epochs):
+    # Train the model
     model.compile(optimizer=tf.keras.optimizers.Adam(1e-5), loss=TripletLoss())
     for epoch in range(epochs):
         total_loss = 0
@@ -144,6 +163,7 @@ def train(model, train_dataset, epochs):
         print(f"Epoch {epoch+1}, Loss: {total_loss / len(train_dataset)}")
 
 def main(swebench_dataset_path, snippet_folder_path):
+    # Main function
     dataset = create_triplet_dataset(swebench_dataset_path, snippet_folder_path)
     if not dataset:
         print("No available triplets to create the dataset.")
