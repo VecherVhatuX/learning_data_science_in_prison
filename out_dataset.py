@@ -24,30 +24,9 @@ class TripletDataset:
 
     def __getitem__(self, idx):
         example = self.data[idx]
-        anchor = self.tokenizer.encode_plus(
-            example['anchor'],
-            max_length=self.max_length,
-            padding='max_length',
-            truncation=True,
-            return_attention_mask=True,
-            return_tensors='np'
-        )
-        positive = self.tokenizer.encode_plus(
-            example['positive'],
-            max_length=self.max_length,
-            padding='max_length',
-            truncation=True,
-            return_attention_mask=True,
-            return_tensors='np'
-        )
-        negative = self.tokenizer.encode_plus(
-            example['negative'],
-            max_length=self.max_length,
-            padding='max_length',
-            truncation=True,
-            return_attention_mask=True,
-            return_tensors='np'
-        )
+        anchor = self._encode(example['anchor'])
+        positive = self._encode(example['positive'])
+        negative = self._encode(example['negative'])
         return {
             'anchor_input_ids': anchor['input_ids'].flatten(),
             'anchor_attention_mask': anchor['attention_mask'].flatten(),
@@ -56,6 +35,35 @@ class TripletDataset:
             'negative_input_ids': negative['input_ids'].flatten(),
             'negative_attention_mask': negative['attention_mask'].flatten()
         }
+
+    def _encode(self, text):
+        return self.tokenizer.encode_plus(
+            text,
+            max_length=self.max_length,
+            padding='max_length',
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors='np'
+        )
+
+class TripletLoss(tf.keras.losses.Loss):
+    def call(self, y_true, y_pred):
+        anchor, positive, negative = tf.split(y_pred, 3, axis=0)
+        return tf.reduce_mean(tf.norm(anchor - positive, axis=1) - tf.norm(anchor - negative, axis=1) + 1)
+
+class Model(tf.keras.Model):
+    def __init__(self):
+        super(Model, self).__init__()
+        self.embedding = tf.keras.layers.Embedding(input_dim=30522, output_dim=128, input_length=512)
+        self.dropout = tf.keras.layers.Dropout(0.2)
+        self.fc = tf.keras.layers.Dense(64, activation='relu')
+
+    def call(self, input_ids, attention_mask):
+        outputs = self.embedding(input_ids)
+        outputs = self.dropout(outputs)
+        outputs = tf.reduce_mean(outputs, axis=1)
+        outputs = self.fc(outputs)
+        return outputs
 
 def load_swebench_dataset(dataset_path):
     return np.load(dataset_path, allow_pickle=True)
@@ -104,25 +112,6 @@ def create_triplet_dataset(swebench_dataset_path, snippet_folder_path, instance_
                     triplet_data.extend(triplets)
     print(f"Number of triplets: {len(triplet_data)}")
     return triplet_data
-
-class TripletLoss(tf.keras.losses.Loss):
-    def call(self, y_true, y_pred):
-        anchor, positive, negative = tf.split(y_pred, 3, axis=0)
-        return tf.reduce_mean(tf.norm(anchor - positive, axis=1) - tf.norm(anchor - negative, axis=1) + 1)
-
-class Model(tf.keras.Model):
-    def __init__(self):
-        super(Model, self).__init__()
-        self.model = tf.keras.layers.Embedding(input_dim=30522, output_dim=128, input_length=512)
-        self.dropout = tf.keras.layers.Dropout(0.2)
-        self.fc = tf.keras.layers.Dense(64, activation='relu')
-
-    def call(self, input_ids, attention_mask):
-        outputs = self.model(input_ids)
-        outputs = self.dropout(outputs)
-        outputs = tf.reduce_mean(outputs, axis=1)
-        outputs = self.fc(outputs)
-        return outputs
 
 def train(model, train_dataset, epochs):
     model.compile(optimizer=tf.keras.optimizers.Adam(1e-5), loss=TripletLoss())
