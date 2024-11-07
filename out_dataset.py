@@ -58,7 +58,8 @@ class Model(tf.keras.Model):
         self.dropout = tf.keras.layers.Dropout(0.2)
         self.fc = tf.keras.layers.Dense(64, activation='relu')
 
-    def call(self, input_ids, attention_mask):
+    def call(self, inputs):
+        input_ids, attention_mask = inputs
         outputs = self.embedding(input_ids)
         outputs = self.dropout(outputs)
         outputs = tf.reduce_mean(outputs, axis=1)
@@ -125,13 +126,17 @@ def train(model, train_dataset, epochs):
             negative_input_ids = batch['negative_input_ids']
             negative_attention_mask = batch['negative_attention_mask']
 
-            anchor_output = model(anchor_input_ids, anchor_attention_mask)
-            positive_output = model(positive_input_ids, positive_attention_mask)
-            negative_output = model(negative_input_ids, negative_attention_mask)
+            anchor_inputs = (anchor_input_ids, anchor_attention_mask)
+            positive_inputs = (positive_input_ids, positive_attention_mask)
+            negative_inputs = (negative_input_ids, negative_attention_mask)
+
+            anchor_output = model(anchor_inputs)
+            positive_output = model(positive_inputs)
+            negative_output = model(negative_inputs)
 
             with tf.GradientTape() as tape:
                 outputs = tf.concat([anchor_output, positive_output, negative_output], axis=0)
-                loss = model.loss(outputs, tf.zeros((anchor_output.shape[0]*3,)))
+                loss = model.loss(tf.zeros((anchor_output.shape[0]*3,)), outputs)
 
             gradients = tape.gradient(loss, model.trainable_variables)
             model.optimizer.apply_gradients(zip(gradients, model.trainable_variables))
