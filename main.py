@@ -4,12 +4,16 @@ import yaml
 from dataclasses import dataclass, field
 from typing import Optional
 from functools import partial
-import torch
-from torch.utils.data import Dataset, DataLoader
-import torch.nn as nn
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from accelerate import Accelerator
-import optuna
+import jax
+from jax.experimental import jax2tf
+import flax
+import flax.linen as nn
+from flax.core import FrozenDict
+from flax.training import train_state
+from flax.training import common_utils
+import optax
+import tensorflow as tf
+from tensorflow import keras
 import json
 import random
 
@@ -59,7 +63,7 @@ class TrainingConfig:
     seed: int = field(default=42, metadata={"help": "Random seed."})
     resume_from_checkpoint: Optional[str] = field(default=None, metadata={"help": "Resume training from checkpoint."})
 
-class BaseDataset(torch.utils.data.Dataset):
+class BaseDataset:
     def __init__(self, datasets, epoch, batch_size):
         self.epoch = epoch
         self.batch_size = batch_size
@@ -90,27 +94,32 @@ class TripletDataset(BaseDataset):
         return positive_samples, negative_samples
 
 def prepare_model(model_args):
-    return AutoModelForCausalLM.from_pretrained(model_args.model_identifier)
+    class Transformer(nn.Module):
+        @nn.compact
+        def __call__(self, x):
+            return nn.Dense(1)(x)
+    return Transformer()
 
 def process_data(examples, chat_template):
-    tokenizer = AutoTokenizer.from_pretrained("t5-base")
+    tokenizer = keras.preprocessing.text.Tokenizer()
+    tokenizer.fit_on_texts(examples["input"])
     apply_chat_template = chat_template != "none"
     if apply_chat_template:
         inputs = []
         labels = []
         for example in examples:
-            inputs.append(f"{example['input']} {tokenizer.sep_token}")
-            labels.append(f"{example['output']} {tokenizer.sep_token}")
-        examples["input_ids"] = tokenizer(inputs, return_tensors="pt", truncation=True, padding="max_length").input_ids
-        examples["labels"] = tokenizer(labels, return_tensors="pt", truncation=True, padding="max_length").input_ids
+            inputs.append(f"{example['input']} {tokenizer.sep}")
+            labels.append(f"{example['output']} {tokenizer.sep}")
+        examples["input_ids"] = tokenizer.texts_to_sequences(inputs)
+        examples["labels"] = tokenizer.texts_to_sequences(labels)
     else:
-        examples["input_ids"] = tokenizer(examples["input"], return_tensors="pt", truncation=True, padding="max_length").input_ids
-        examples["labels"] = tokenizer(examples["output"], return_tensors="pt", truncation=True, padding="max_length").input_ids
+        examples["input_ids"] = tokenizer.texts_to_sequences(examples["input"])
+        examples["labels"] = tokenizer.texts_to_sequences(examples["output"])
     return examples
 
 def create_datasets(model_args, data_args):
-    datasets = torch.utils.data.ConcatDataset([torch.load(f"{data_args.dataset_name}/train.json"), torch.load(f"{data_args.dataset_name}/test.json")])
-    datasets = torch.utils.data.ConcatDataset([process_data(datasets[i], model_args.chat_template) for i in range(len(datasets))])
+    datasets = tf.data.Dataset.from_tensor_slices((json.load(open("train.json")), json.load(open("test.json"))))
+    datasets = datasets.map(lambda x: process_data(x, model_args.chat_template))
     return datasets
 
 def get_trainer(model_args, model, train_dataset, eval_dataset):
@@ -124,28 +133,25 @@ class BaseTrainer:
         self.model = model
         self.train_dataset = train_dataset
         self.eval_dataset = eval_dataset
-        self.accelerator = Accelerator()
 
     def train(self, resume_from_checkpoint=None):
-        self.model, self.train_dataset, self.eval_dataset = self.accelerator.prepare(self.model, self.train_dataset, self.eval_dataset)
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
+        optimizer = optax.adam(0.001)
+        state = train_state.TrainState.create(apply_fn=self.model.apply, params=self.model.init(jax.random.PRNGKey(0), jax.numpy.zeros((1, 1))), tx=optimizer)
         for epoch in range(3):
             self.model.train()
             total_loss = 0
             for batch in self.train_dataset:
-                input_ids = batch["input_ids"].to(self.accelerator.device)
-                attention_mask = batch["attention_mask"].to(self.accelerator.device)
-                labels = batch["labels"].to(self.accelerator.device)
-                optimizer.zero_grad()
-                outputs = self.model(input_ids, attention_mask=attention_mask, labels=labels)
-                loss = outputs.loss
-                self.accelerator.backward(loss)
-                optimizer.step()
-                total_loss += loss.item()
+                input_ids = batch["input_ids"]
+                attention_mask = batch["attention_mask"]
+                labels = batch["labels"]
+                loss_fn = lambda params: jax.numpy.mean((self.model.apply(params, input_ids, attention_mask) - labels) ** 2)
+                grads = jax.grad(loss_fn)(state.params)
+                state = state.apply_gradients(grads=grads)
+                total_loss += loss_fn(state.params)
             print(f"Epoch {epoch}, Loss: {total_loss / len(self.train_dataset)}")
 
     def save_model(self, output_dir):
-        self.accelerator.save(self.model.state_dict(), f"{output_dir}/model.pth")
+        jax2tf.convert(self.model).save(output_dir)
 
 class SFTTrainer(BaseTrainer):
     pass
