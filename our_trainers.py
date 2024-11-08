@@ -6,11 +6,12 @@ import random
 
 class EmbeddingModel(models.Model):
     def __init__(self, num_embeddings, embedding_dim):
-        super(EmbeddingModel, self).__init__()
+        super().__init__()
         self.embedding = layers.Embedding(num_embeddings, embedding_dim)
 
     def call(self, input_ids, attention_mask=None):
         return self.embedding(input_ids)
+
 
 class TripletDataset:
     def __init__(self, samples, labels, batch_size, num_negatives):
@@ -40,6 +41,7 @@ class TripletDataset:
 
     def on_epoch_end(self):
         random.shuffle(self.indices)
+
 
 class TripletLossTrainer:
     def __init__(self, model, triplet_margin, learning_rate):
@@ -106,6 +108,7 @@ class TripletLossTrainer:
     def load_model(self, path):
         self.model.load_weights(path)
 
+
 def main():
     samples = np.random.randint(0, 100, (100, 10))
     labels = np.random.randint(0, 2, 100)
@@ -118,6 +121,7 @@ def main():
     trainer = TripletLossTrainer(model, 1.0, 1e-4)
     trainer.train(dataset, epochs, batch_size)
     trainer.save_model("model.h5")
+
 
 if __name__ == "__main__":
     main()
