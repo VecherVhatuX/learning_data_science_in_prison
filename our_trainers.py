@@ -1,5 +1,5 @@
 import tensorflow as tf
-from tensorflow.keras import layers, models, backend as K
+from tensorflow.keras import layers, models
 from tensorflow.keras.optimizers import SGD
 import numpy as np
 import random
@@ -9,7 +9,7 @@ class EmbeddingModel(models.Model):
         super(EmbeddingModel, self).__init__()
         self.embedding = layers.Embedding(num_embeddings, embedding_dim)
 
-    def call(self, input_ids, attention_mask):
+    def call(self, input_ids, attention_mask=None):
         return self.embedding(input_ids)
 
 class TripletDataset:
@@ -34,11 +34,8 @@ class TripletDataset:
 
         return {
             'anchor_input_ids': self.samples[anchor_idx],
-            'anchor_attention_mask': np.ones_like(self.samples[anchor_idx], dtype=np.int32),
             'positive_input_ids': self.samples[positive_idx],
-            'positive_attention_mask': np.ones_like(self.samples[positive_idx], dtype=np.int32),
             'negative_input_ids': np.stack([self.samples[i] for i in negative_indices]),
-            'negative_attention_mask': np.ones_like(np.stack([self.samples[i] for i in negative_indices]), dtype=np.int32)
         }
 
     def on_epoch_end(self):
@@ -67,19 +64,16 @@ class TripletLossTrainer:
     def train_step(self, inputs):
         with tf.GradientTape() as tape:
             anchor_input_ids = inputs["anchor_input_ids"]
-            anchor_attention_mask = inputs["anchor_attention_mask"]
             positive_input_ids = inputs["positive_input_ids"]
-            positive_attention_mask = inputs["positive_attention_mask"]
             negative_input_ids = inputs["negative_input_ids"]
-            negative_attention_mask = inputs["negative_attention_mask"]
 
-            anchor_outputs = self.model(anchor_input_ids, attention_mask=anchor_attention_mask)
-            positive_outputs = self.model(positive_input_ids, attention_mask=positive_attention_mask)
-            negative_outputs = self.model(negative_input_ids, attention_mask=negative_attention_mask)
+            anchor_outputs = self.model(anchor_input_ids)
+            positive_outputs = self.model(positive_input_ids)
+            negative_outputs = self.model(negative_input_ids)
 
-            anchor_embeddings = self.mean_pooling(anchor_outputs, anchor_attention_mask)
-            positive_embeddings = self.mean_pooling(positive_outputs, positive_attention_mask)
-            negative_embeddings = self.mean_pooling(negative_outputs, negative_attention_mask)
+            anchor_embeddings = tf.reduce_mean(anchor_outputs, axis=1)
+            positive_embeddings = tf.reduce_mean(positive_outputs, axis=1)
+            negative_embeddings = tf.reduce_mean(negative_outputs, axis=1)
 
             anchor_embeddings = self.normalize_embeddings(anchor_embeddings)
             positive_embeddings = self.normalize_embeddings(positive_embeddings)
@@ -99,11 +93,8 @@ class TripletLossTrainer:
                 batch = [dataset[j] for j in range(i * batch_size, (i + 1) * batch_size)]
                 inputs = {
                     'anchor_input_ids': np.stack([x['anchor_input_ids'] for x in batch]),
-                    'anchor_attention_mask': np.stack([x['anchor_attention_mask'] for x in batch]),
                     'positive_input_ids': np.stack([x['positive_input_ids'] for x in batch]),
-                    'positive_attention_mask': np.stack([x['positive_attention_mask'] for x in batch]),
                     'negative_input_ids': np.stack([x['negative_input_ids'] for x in batch]),
-                    'negative_attention_mask': np.stack([x['negative_attention_mask'] for x in batch]),
                 }
                 loss = self.train_step(inputs)
                 total_loss += loss
@@ -116,7 +107,7 @@ class TripletLossTrainer:
         self.model.load_weights(path)
 
 def main():
-    samples = np.random.rand(100, 10)
+    samples = np.random.randint(0, 100, (100, 10))
     labels = np.random.randint(0, 2, 100)
     batch_size = 32
     num_negatives = 5
