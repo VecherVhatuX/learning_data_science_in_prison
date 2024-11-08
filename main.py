@@ -19,7 +19,6 @@ import random
 
 @dataclass
 class ModelConfig:
-    """Configuration for the model."""
     model_identifier: str = field(default="t5-base", metadata={"help": "Pre-trained model identifier from Hugging Face."})
     chat_template: Optional[str] = field(default="none", metadata={"help": "Format for chat template. Options: chatml, zephyr, none."})
     lora_alpha: Optional[int] = field(default=16)
@@ -40,7 +39,6 @@ class ModelConfig:
 
 @dataclass
 class TrainingDataConfig:
-    """Configuration for training data."""
     dataset_name: Optional[str] = field(default="timdettmers/openassistant-guanaco", metadata={"help": "Dataset name."})
     append_concat_token: Optional[bool] = field(default=False, metadata={"help": "Append EOS token to each sample."})
     add_special_tokens: Optional[bool] = field(default=False, metadata={"help": "Add special tokens to each sample."})
@@ -49,7 +47,6 @@ class TrainingDataConfig:
 
 @dataclass
 class TrainingConfig:
-    """Configuration for training."""
     output_dir: str = field(default="./results", metadata={"help": "Output directory for training results."})
     num_train_epochs: int = field(default=3, metadata={"help": "Number of training epochs."})
     per_device_train_batch_size: int = field(default=16, metadata={"help": "Batch size per device for training."})
@@ -63,113 +60,109 @@ class TrainingConfig:
     seed: int = field(default=42, metadata={"help": "Random seed."})
     resume_from_checkpoint: Optional[str] = field(default=None, metadata={"help": "Resume training from checkpoint."})
 
-class Dataset:
-    def __init__(self, datasets, epoch, batch_size):
-        self.epoch = epoch
-        self.batch_size = batch_size
-        self.datasets = datasets
-        self.indices = list(range(len(datasets)))
-
-    def __len__(self):
-        return len(self.datasets) // self.batch_size
-
-    def __getitem__(self, idx):
-        random.shuffle(self.indices)
-        batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
-        batch = [self.datasets[i] for i in batch_indices]
-        return batch
-
-class TripletDataset(Dataset):
-    def __init__(self, datasets, epoch, batch_size, num_negative_samples):
-        super().__init__(datasets, epoch, batch_size)
-        self.num_negative_samples = num_negative_samples
-
-    def __getitem__(self, idx):
-        batch = super().__getitem__(idx)
-        positive_samples = [sample for sample in batch if sample["label"] == 1]
-        negative_samples = random.sample([sample for sample in batch if sample["label"] == 0], self.num_negative_samples)
-        return positive_samples, negative_samples
-
-def prepare_model(model_args):
+def create_model(args):
     class Transformer(nn.Module):
         @nn.compact
         def __call__(self, x):
             return nn.Dense(1)(x)
     return Transformer()
 
-def process_data(examples, chat_template):
-    tokenizer = keras.preprocessing.text.Tokenizer()
-    tokenizer.fit_on_texts(examples["input"])
-    apply_chat_template = chat_template != "none"
-    if apply_chat_template:
-        inputs = []
-        labels = []
-        for example in examples:
-            inputs.append(f"{example['input']} {tokenizer.sep}")
-            labels.append(f"{example['output']} {tokenizer.sep}")
-        examples["input_ids"] = tokenizer.texts_to_sequences(inputs)
-        examples["labels"] = tokenizer.texts_to_sequences(labels)
-    else:
-        examples["input_ids"] = tokenizer.texts_to_sequences(examples["input"])
-        examples["labels"] = tokenizer.texts_to_sequences(examples["output"])
-    return examples
+def prepare_datasets(model_args, data_args, epoch):
+    def process_data(examples, chat_template):
+        tokenizer = keras.preprocessing.text.Tokenizer()
+        tokenizer.fit_on_texts(examples["input"])
+        apply_chat_template = chat_template != "none"
+        if apply_chat_template:
+            inputs = []
+            labels = []
+            for example in examples:
+                inputs.append(f"{example['input']} {tokenizer.sep}")
+                labels.append(f"{example['output']} {tokenizer.sep}")
+            examples["input_ids"] = tokenizer.texts_to_sequences(inputs)
+            examples["labels"] = tokenizer.texts_to_sequences(labels)
+        else:
+            examples["input_ids"] = tokenizer.texts_to_sequences(examples["input"])
+            examples["labels"] = tokenizer.texts_to_sequences(examples["output"])
+        return examples
 
-def create_datasets(model_args, data_args, epoch):
     train_data = json.load(open("train.json"))
     test_data = json.load(open("test.json"))
     train_data = process_data(train_data, model_args.chat_template)
     test_data = process_data(test_data, model_args.chat_template)
-    train_dataset = tf.data.Dataset.from_tensor_slices(train_data)
-    test_dataset = tf.data.Dataset.from_tensor_slices(test_data)
-    train_dataset = TripletDataset(train_data, epoch, data_args.per_device_train_batch_size, 5)
-    test_dataset = TripletDataset(test_data, epoch, data_args.per_device_eval_batch_size, 5)
+    return train_data, test_data
+
+def create_triplet_dataset(data, epoch, batch_size, num_negative_samples):
+    class TripletDataset:
+        def __init__(self, data, epoch, batch_size, num_negative_samples):
+            self.epoch = epoch
+            self.batch_size = batch_size
+            self.data = data
+            self.indices = list(range(len(data)))
+            self.num_negative_samples = num_negative_samples
+
+        def __len__(self):
+            return len(self.data) // self.batch_size
+
+        def __getitem__(self, idx):
+            random.shuffle(self.indices)
+            batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
+            batch = [self.data[i] for i in batch_indices]
+            positive_samples = [sample for sample in batch if sample["label"] == 1]
+            negative_samples = random.sample([sample for sample in batch if sample["label"] == 0], self.num_negative_samples)
+            return positive_samples, negative_samples
+    return TripletDataset(data, epoch, batch_size, num_negative_samples)
+
+def create_data_loaders(model_args, data_args, epoch):
+    train_data, test_data = prepare_datasets(model_args, data_args, epoch)
+    train_dataset = create_triplet_dataset(train_data, epoch, data_args.per_device_train_batch_size, 5)
+    test_dataset = create_triplet_dataset(test_data, epoch, data_args.per_device_eval_batch_size, 5)
     return train_dataset, test_dataset
 
-def get_trainer(model_args, model, train_dataset, eval_dataset):
+def create_trainer(model_args, model, train_dataset, eval_dataset):
+    class BaseTrainer:
+        def __init__(self, model, train_dataset, eval_dataset):
+            self.model = model
+            self.train_dataset = train_dataset
+            self.eval_dataset = eval_dataset
+
+        def train(self, resume_from_checkpoint=None):
+            optimizer = optax.adam(0.001)
+            state = train_state.TrainState.create(apply_fn=self.model.apply, params=self.model.init(jax.random.PRNGKey(0), jax.numpy.zeros((1, 1))), tx=optimizer)
+            for epoch in range(3):
+                self.model.train()
+                total_loss = 0
+                for batch in self.train_dataset:
+                    positive_samples, negative_samples = batch
+                    input_ids = [sample["input_ids"] for sample in positive_samples + negative_samples]
+                    attention_mask = [sample["attention_mask"] for sample in positive_samples + negative_samples]
+                    labels = [sample["labels"] for sample in positive_samples + negative_samples]
+                    loss_fn = lambda params: jax.numpy.mean((self.model.apply(params, input_ids, attention_mask) - labels) ** 2)
+                    grads = jax.grad(loss_fn)(state.params)
+                    state = state.apply_gradients(grads=grads)
+                    total_loss += loss_fn(state.params)
+                print(f"Epoch {epoch}, Loss: {total_loss / len(self.train_dataset)}")
+
+        def save_model(self, output_dir):
+            jax2tf.convert(self.model).save(output_dir)
+
+    class TripletLossTrainer(BaseTrainer):
+        def __init__(self, model, train_dataset, eval_dataset, layer_index):
+            super().__init__(model, train_dataset, eval_dataset)
+            self.layer_index = layer_index
+
+    class SFTTrainer(BaseTrainer):
+        pass
+
     if model_args.use_triplet_loss_trainer:
         return TripletLossTrainer(model=model, train_dataset=train_dataset, eval_dataset=eval_dataset, layer_index=-1)
     else:
         return SFTTrainer(model=model, train_dataset=train_dataset, eval_dataset=eval_dataset)
 
-class BaseTrainer:
-    def __init__(self, model, train_dataset, eval_dataset):
-        self.model = model
-        self.train_dataset = train_dataset
-        self.eval_dataset = eval_dataset
-
-    def train(self, resume_from_checkpoint=None):
-        optimizer = optax.adam(0.001)
-        state = train_state.TrainState.create(apply_fn=self.model.apply, params=self.model.init(jax.random.PRNGKey(0), jax.numpy.zeros((1, 1))), tx=optimizer)
-        for epoch in range(3):
-            self.model.train()
-            total_loss = 0
-            for batch in self.train_dataset:
-                positive_samples, negative_samples = batch
-                input_ids = [sample["input_ids"] for sample in positive_samples + negative_samples]
-                attention_mask = [sample["attention_mask"] for sample in positive_samples + negative_samples]
-                labels = [sample["labels"] for sample in positive_samples + negative_samples]
-                loss_fn = lambda params: jax.numpy.mean((self.model.apply(params, input_ids, attention_mask) - labels) ** 2)
-                grads = jax.grad(loss_fn)(state.params)
-                state = state.apply_gradients(grads=grads)
-                total_loss += loss_fn(state.params)
-            print(f"Epoch {epoch}, Loss: {total_loss / len(self.train_dataset)}")
-
-    def save_model(self, output_dir):
-        jax2tf.convert(self.model).save(output_dir)
-
-class SFTTrainer(BaseTrainer):
-    pass
-
-class TripletLossTrainer(BaseTrainer):
-    def __init__(self, model, train_dataset, eval_dataset, layer_index):
-        super().__init__(model, train_dataset, eval_dataset)
-        self.layer_index = layer_index
-
 def run_pipeline(model_args, data_args, training_args):
-    model = prepare_model(model_args)
+    model = create_model(model_args)
     for epoch in range(training_args.num_train_epochs):
-        train_dataset, eval_dataset = create_datasets(model_args, data_args, epoch)
-        trainer = get_trainer(model_args, model, train_dataset, eval_dataset)
+        train_dataset, eval_dataset = create_data_loaders(model_args, data_args, epoch)
+        trainer = create_trainer(model_args, model, train_dataset, eval_dataset)
         trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
     trainer.save_model(training_args.output_dir)
 
