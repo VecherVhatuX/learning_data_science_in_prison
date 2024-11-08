@@ -118,9 +118,13 @@ def process_data(examples, chat_template):
     return examples
 
 def create_datasets(model_args, data_args):
-    datasets = tf.data.Dataset.from_tensor_slices((json.load(open("train.json")), json.load(open("test.json"))))
-    datasets = datasets.map(lambda x: process_data(x, model_args.chat_template))
-    return datasets
+    train_data = json.load(open("train.json"))
+    test_data = json.load(open("test.json"))
+    train_data = process_data(train_data, model_args.chat_template)
+    test_data = process_data(test_data, model_args.chat_template)
+    train_dataset = tf.data.Dataset.from_tensor_slices(train_data)
+    test_dataset = tf.data.Dataset.from_tensor_slices(test_data)
+    return train_dataset, test_dataset
 
 def get_trainer(model_args, model, train_dataset, eval_dataset):
     if model_args.use_triplet_loss_trainer:
@@ -163,9 +167,9 @@ class TripletLossTrainer(BaseTrainer):
 
 def run_pipeline(model_args, data_args, training_args):
     model = prepare_model(model_args)
-    datasets = create_datasets(model_args, data_args)
-    train_dataset = Dataset(datasets, 0, training_args.per_device_train_batch_size)
-    eval_dataset = datasets
+    train_dataset, eval_dataset = create_datasets(model_args, data_args)
+    train_dataset = train_dataset.batch(training_args.per_device_train_batch_size)
+    eval_dataset = eval_dataset.batch(training_args.per_device_eval_batch_size)
     trainer = get_trainer(model_args, model, train_dataset, eval_dataset)
     trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
     trainer.save_model(training_args.output_dir)
