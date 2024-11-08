@@ -151,7 +151,13 @@ def main(swebench_dataset_path, snippet_folder_path):
 
     tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
     dataset = TripletDataset(dataset, tokenizer, max_length=512)
-    dataset = tf.data.Dataset.from_generator(lambda: dataset, output_types={'anchor_input_ids': tf.int32, 'anchor_attention_mask': tf.int32, 'positive_input_ids': tf.int32, 'positive_attention_mask': tf.int32, 'negative_input_ids': tf.int32, 'negative_attention_mask': tf.int32}).batch(16).prefetch(tf.data.AUTOTUNE)
+    dataset = tf.data.Dataset.from_generator(lambda: dataset, 
+                                             output_types={'anchor_input_ids': tf.int32, 
+                                                           'anchor_attention_mask': tf.int32, 
+                                                           'positive_input_ids': tf.int32, 
+                                                           'positive_attention_mask': tf.int32, 
+                                                           'negative_input_ids': tf.int32, 
+                                                           'negative_attention_mask': tf.int32}).batch(16).prefetch(tf.data.AUTOTUNE)
 
     model = Model()
 
