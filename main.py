@@ -63,7 +63,7 @@ class TrainingConfig:
     seed: int = field(default=42, metadata={"help": "Random seed."})
     resume_from_checkpoint: Optional[str] = field(default=None, metadata={"help": "Resume training from checkpoint."})
 
-class BaseDataset:
+class Dataset:
     def __init__(self, datasets, epoch, batch_size):
         self.epoch = epoch
         self.batch_size = batch_size
@@ -79,18 +79,15 @@ class BaseDataset:
         batch = [self.datasets[i] for i in batch_indices]
         return batch
 
-class Dataset(BaseDataset):
-    def __init__(self, datasets, epoch, batch_size):
+class TripletDataset(Dataset):
+    def __init__(self, datasets, epoch, batch_size, num_negative_samples):
         super().__init__(datasets, epoch, batch_size)
-
-class TripletDataset(BaseDataset):
-    def __init__(self, datasets, epoch, batch_size):
-        super().__init__(datasets, epoch, batch_size)
+        self.num_negative_samples = num_negative_samples
 
     def __getitem__(self, idx):
         batch = super().__getitem__(idx)
         positive_samples = [sample for sample in batch if sample["label"] == 1]
-        negative_samples = [sample for sample in batch if sample["label"] == 0]
+        negative_samples = random.sample([sample for sample in batch if sample["label"] == 0], self.num_negative_samples)
         return positive_samples, negative_samples
 
 def prepare_model(model_args):
@@ -117,13 +114,15 @@ def process_data(examples, chat_template):
         examples["labels"] = tokenizer.texts_to_sequences(examples["output"])
     return examples
 
-def create_datasets(model_args, data_args):
+def create_datasets(model_args, data_args, epoch):
     train_data = json.load(open("train.json"))
     test_data = json.load(open("test.json"))
     train_data = process_data(train_data, model_args.chat_template)
     test_data = process_data(test_data, model_args.chat_template)
     train_dataset = tf.data.Dataset.from_tensor_slices(train_data)
     test_dataset = tf.data.Dataset.from_tensor_slices(test_data)
+    train_dataset = TripletDataset(train_data, epoch, data_args.per_device_train_batch_size, 5)
+    test_dataset = TripletDataset(test_data, epoch, data_args.per_device_eval_batch_size, 5)
     return train_dataset, test_dataset
 
 def get_trainer(model_args, model, train_dataset, eval_dataset):
@@ -145,9 +144,10 @@ class BaseTrainer:
             self.model.train()
             total_loss = 0
             for batch in self.train_dataset:
-                input_ids = batch["input_ids"]
-                attention_mask = batch["attention_mask"]
-                labels = batch["labels"]
+                positive_samples, negative_samples = batch
+                input_ids = [sample["input_ids"] for sample in positive_samples + negative_samples]
+                attention_mask = [sample["attention_mask"] for sample in positive_samples + negative_samples]
+                labels = [sample["labels"] for sample in positive_samples + negative_samples]
                 loss_fn = lambda params: jax.numpy.mean((self.model.apply(params, input_ids, attention_mask) - labels) ** 2)
                 grads = jax.grad(loss_fn)(state.params)
                 state = state.apply_gradients(grads=grads)
@@ -167,11 +167,10 @@ class TripletLossTrainer(BaseTrainer):
 
 def run_pipeline(model_args, data_args, training_args):
     model = prepare_model(model_args)
-    train_dataset, eval_dataset = create_datasets(model_args, data_args)
-    train_dataset = train_dataset.batch(training_args.per_device_train_batch_size)
-    eval_dataset = eval_dataset.batch(training_args.per_device_eval_batch_size)
-    trainer = get_trainer(model_args, model, train_dataset, eval_dataset)
-    trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
+    for epoch in range(training_args.num_train_epochs):
+        train_dataset, eval_dataset = create_datasets(model_args, data_args, epoch)
+        trainer = get_trainer(model_args, model, train_dataset, eval_dataset)
+        trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
     trainer.save_model(training_args.output_dir)
 
 if __name__ == "__main__":
