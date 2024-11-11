@@ -16,7 +16,7 @@ def create_embedding_model(num_embeddings, embedding_dim):
 
 def create_triplet_dataset(samples, labels, batch_size, num_negatives):
     class TripletDataset:
-        def __init__(self):
+        def __init__(self, samples, labels, batch_size, num_negatives):
             self.samples = samples
             self.labels = labels
             self.batch_size = batch_size
@@ -43,74 +43,72 @@ def create_triplet_dataset(samples, labels, batch_size, num_negatives):
 
         def on_epoch_end(self):
             random.shuffle(self.indices)
-    return TripletDataset()
+    return TripletDataset(samples, labels, batch_size, num_negatives)
 
-def create_triplet_loss_trainer(model, triplet_margin, learning_rate):
-    class TripletLossTrainer:
-        def __init__(self):
-            self.model = model
-            self.triplet_margin = triplet_margin
-            self.optimizer = SGD(learning_rate=learning_rate)
+def mean_pooling(hidden_state, attention_mask):
+    input_mask_expanded = tf.expand_dims(attention_mask, 1)
+    input_mask_expanded = tf.broadcast_to(input_mask_expanded, tf.shape(hidden_state))
+    sum_embeddings = tf.reduce_sum(hidden_state * tf.cast(input_mask_expanded, tf.float32), axis=1)
+    sum_mask = tf.reduce_sum(tf.cast(input_mask_expanded, tf.float32), axis=1)
+    sum_mask = tf.maximum(sum_mask, 1e-9)
+    return sum_embeddings / sum_mask
 
-        def mean_pooling(self, hidden_state, attention_mask):
-            input_mask_expanded = tf.expand_dims(attention_mask, 1)
-            input_mask_expanded = tf.broadcast_to(input_mask_expanded, tf.shape(hidden_state))
-            sum_embeddings = tf.reduce_sum(hidden_state * tf.cast(input_mask_expanded, tf.float32), axis=1)
-            sum_mask = tf.reduce_sum(tf.cast(input_mask_expanded, tf.float32), axis=1)
-            sum_mask = tf.maximum(sum_mask, 1e-9)
-            return sum_embeddings / sum_mask
+def normalize_embeddings(embeddings):
+    return embeddings / tf.norm(embeddings, axis=1, keepdims=True)
 
-        def normalize_embeddings(self, embeddings):
-            return embeddings / tf.norm(embeddings, axis=1, keepdims=True)
+def triplet_margin_loss(anchor_embeddings, positive_embeddings, negative_embeddings, margin):
+    return tf.reduce_mean(tf.maximum(margin + tf.reduce_sum(tf.square(anchor_embeddings - positive_embeddings), axis=1) - tf.reduce_sum(tf.square(anchor_embeddings - negative_embeddings), axis=1), 0))
 
-        def triplet_margin_loss(self, anchor_embeddings, positive_embeddings, negative_embeddings):
-            return tf.reduce_mean(tf.maximum(self.triplet_margin + tf.reduce_sum(tf.square(anchor_embeddings - positive_embeddings), axis=1) - tf.reduce_sum(tf.square(anchor_embeddings - negative_embeddings), axis=1), 0))
+class TripletLossTrainer:
+    def __init__(self, model, margin, learning_rate):
+        self.model = model
+        self.margin = margin
+        self.optimizer = SGD(learning_rate=learning_rate)
 
-        def train_step(self, inputs):
-            with tf.GradientTape() as tape:
-                anchor_input_ids = inputs["anchor_input_ids"]
-                positive_input_ids = inputs["positive_input_ids"]
-                negative_input_ids = inputs["negative_input_ids"]
+    def train_step(self, inputs):
+        with tf.GradientTape() as tape:
+            anchor_input_ids = inputs["anchor_input_ids"]
+            positive_input_ids = inputs["positive_input_ids"]
+            negative_input_ids = inputs["negative_input_ids"]
 
-                anchor_outputs = self.model(anchor_input_ids)
-                positive_outputs = self.model(positive_input_ids)
-                negative_outputs = self.model(negative_input_ids)
+            anchor_outputs = self.model(anchor_input_ids)
+            positive_outputs = self.model(positive_input_ids)
+            negative_outputs = self.model(negative_input_ids)
 
-                anchor_embeddings = tf.reduce_mean(anchor_outputs, axis=1)
-                positive_embeddings = tf.reduce_mean(positive_outputs, axis=1)
-                negative_embeddings = tf.reduce_mean(negative_outputs, axis=1)
+            anchor_embeddings = tf.reduce_mean(anchor_outputs, axis=1)
+            positive_embeddings = tf.reduce_mean(positive_outputs, axis=1)
+            negative_embeddings = tf.reduce_mean(negative_outputs, axis=1)
 
-                anchor_embeddings = self.normalize_embeddings(anchor_embeddings)
-                positive_embeddings = self.normalize_embeddings(positive_embeddings)
-                negative_embeddings = self.normalize_embeddings(negative_embeddings)
+            anchor_embeddings = normalize_embeddings(anchor_embeddings)
+            positive_embeddings = normalize_embeddings(positive_embeddings)
+            negative_embeddings = normalize_embeddings(negative_embeddings)
 
-                loss = self.triplet_margin_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
+            loss = triplet_margin_loss(anchor_embeddings, positive_embeddings, negative_embeddings, self.margin)
 
-            gradients = tape.gradient(loss, self.model.trainable_variables)
-            self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+        gradients = tape.gradient(loss, self.model.trainable_variables)
+        self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
 
-            return loss
+        return loss
 
-        def train(self, dataset, epochs, batch_size):
-            for epoch in range(epochs):
-                total_loss = 0
-                for i in range(len(dataset) // batch_size):
-                    batch = [dataset[j] for j in range(i * batch_size, (i + 1) * batch_size)]
-                    inputs = {
-                        'anchor_input_ids': np.stack([x['anchor_input_ids'] for x in batch]),
-                        'positive_input_ids': np.stack([x['positive_input_ids'] for x in batch]),
-                        'negative_input_ids': np.stack([x['negative_input_ids'] for x in batch]),
-                    }
-                    loss = self.train_step(inputs)
-                    total_loss += loss
-                print(f'Epoch {epoch+1}, loss: {total_loss / (len(dataset) // batch_size)}')
+    def train(self, dataset, epochs, batch_size):
+        for epoch in range(epochs):
+            total_loss = 0
+            for i in range(len(dataset) // batch_size):
+                batch = [dataset[j] for j in range(i * batch_size, (i + 1) * batch_size)]
+                inputs = {
+                    'anchor_input_ids': np.stack([x['anchor_input_ids'] for x in batch]),
+                    'positive_input_ids': np.stack([x['positive_input_ids'] for x in batch]),
+                    'negative_input_ids': np.stack([x['negative_input_ids'] for x in batch]),
+                }
+                loss = self.train_step(inputs)
+                total_loss += loss
+            print(f'Epoch {epoch+1}, loss: {total_loss / (len(dataset) // batch_size)}')
 
-        def save_model(self, path):
-            self.model.save_weights(path)
+    def save_model(self, path):
+        self.model.save_weights(path)
 
-        def load_model(self, path):
-            self.model.load_weights(path)
-    return TripletLossTrainer()
+    def load_model(self, path):
+        self.model.load_weights(path)
 
 def main():
     samples = np.random.randint(0, 100, (100, 10))
@@ -121,7 +119,7 @@ def main():
 
     model = create_embedding_model(100, 10)
     dataset = create_triplet_dataset(samples, labels, batch_size, num_negatives)
-    trainer = create_triplet_loss_trainer(model, 1.0, 1e-4)
+    trainer = TripletLossTrainer(model, 1.0, 1e-4)
     trainer.train(dataset, epochs, batch_size)
     trainer.save_model("model.h5")
 
