@@ -13,64 +13,11 @@ from transformers import AutoTokenizer
 
 nltk.download('punkt')
 
-class TripletDataset:
-    def __init__(self, data, tokenizer, max_length):
-        self.data = data
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        example = self.data[idx]
-        anchor = self._encode(example['anchor'])
-        positive = self._encode(example['positive'])
-        negative = self._encode(example['negative'])
-        return {
-            'anchor_input_ids': anchor['input_ids'].flatten(),
-            'anchor_attention_mask': anchor['attention_mask'].flatten(),
-            'positive_input_ids': positive['input_ids'].flatten(),
-            'positive_attention_mask': positive['attention_mask'].flatten(),
-            'negative_input_ids': negative['input_ids'].flatten(),
-            'negative_attention_mask': negative['attention_mask'].flatten()
-        }
-
-    def _encode(self, text):
-        return self.tokenizer.encode_plus(
-            text,
-            max_length=self.max_length,
-            padding='max_length',
-            truncation=True,
-            return_attention_mask=True,
-            return_tensors='np'
-        )
-
-class TripletLoss(tf.keras.losses.Loss):
-    def call(self, y_true, y_pred):
-        anchor, positive, negative = tf.split(y_pred, 3, axis=0)
-        return tf.reduce_mean(tf.norm(anchor - positive, axis=1) - tf.norm(anchor - negative, axis=1) + 1)
-
-class Model(tf.keras.Model):
-    def __init__(self):
-        super(Model, self).__init__()
-        self.embedding = tf.keras.layers.Embedding(input_dim=30522, output_dim=128, input_length=512)
-        self.dropout = tf.keras.layers.Dropout(0.2)
-        self.fc = tf.keras.layers.Dense(64, activation='relu')
-
-    def call(self, inputs):
-        input_ids, attention_mask = inputs
-        outputs = self.embedding(input_ids)
-        outputs = self.dropout(outputs)
-        outputs = tf.reduce_mean(outputs, axis=1)
-        outputs = self.fc(outputs)
-        return outputs
+def create_swebench_dict(swebench_dataset):
+    return {item['instance_id']: item['problem_statement'] for item in swebench_dataset}
 
 def load_swebench_dataset(dataset_path):
     return np.load(dataset_path, allow_pickle=True)
-
-def load_triplet_data(snippet_folder_path):
-    return [os.path.join(snippet_folder_path, f) for f in os.listdir(snippet_folder_path) if os.path.isdir(os.path.join(snippet_folder_path, f))]
 
 def load_snippet_file(snippet_file):
     try:
@@ -79,6 +26,9 @@ def load_snippet_file(snippet_file):
     except Exception as e:
         print(f"Failed to load snippet file: {snippet_file}, error: {str(e)}")
         return []
+
+def load_triplet_data(snippet_folder_path):
+    return [os.path.join(snippet_folder_path, f) for f in os.listdir(snippet_folder_path) if os.path.isdir(os.path.join(snippet_folder_path, f))]
 
 def separate_snippets(snippets):
     return (
@@ -93,8 +43,57 @@ def create_triplets(problem_statement, positive_snippets, negative_snippets, num
         for negative_doc in (negative_snippets if len(negative_snippets) <= num_negatives_per_positive else random.sample(negative_snippets, num_negatives_per_positive))
     ]
 
-def create_swebench_dict(swebench_dataset):
-    return {item['instance_id']: item['problem_statement'] for item in swebench_dataset}
+def encode_data(tokenizer, data, max_length):
+    return {
+        'anchor_input_ids': tokenizer.encode_plus(
+            text=data['anchor'],
+            max_length=max_length,
+            padding='max_length',
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors='np'
+        )['input_ids'].flatten(),
+        'anchor_attention_mask': tokenizer.encode_plus(
+            text=data['anchor'],
+            max_length=max_length,
+            padding='max_length',
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors='np'
+        )['attention_mask'].flatten(),
+        'positive_input_ids': tokenizer.encode_plus(
+            text=data['positive'],
+            max_length=max_length,
+            padding='max_length',
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors='np'
+        )['input_ids'].flatten(),
+        'positive_attention_mask': tokenizer.encode_plus(
+            text=data['positive'],
+            max_length=max_length,
+            padding='max_length',
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors='np'
+        )['attention_mask'].flatten(),
+        'negative_input_ids': tokenizer.encode_plus(
+            text=data['negative'],
+            max_length=max_length,
+            padding='max_length',
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors='np'
+        )['input_ids'].flatten(),
+        'negative_attention_mask': tokenizer.encode_plus(
+            text=data['negative'],
+            max_length=max_length,
+            padding='max_length',
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors='np'
+        )['attention_mask'].flatten()
+    }
 
 def create_triplet_dataset(swebench_dataset_path, snippet_folder_path, instance_id_field='instance_id', num_negatives_per_positive=3):
     swebench_dataset = load_swebench_dataset(swebench_dataset_path)
@@ -114,11 +113,40 @@ def create_triplet_dataset(swebench_dataset_path, snippet_folder_path, instance_
     print(f"Number of triplets: {len(triplet_data)}")
     return triplet_data
 
-def train(model, train_dataset, epochs):
-    model.compile(optimizer=tf.keras.optimizers.Adam(1e-5), loss=TripletLoss())
+def create_triplet_dataset_generator(swebench_dataset_path, snippet_folder_path, instance_id_field='instance_id', num_negatives_per_positive=3, tokenizer=None, max_length=512):
+    swebench_dataset = load_swebench_dataset(swebench_dataset_path)
+    swebench_dict = create_swebench_dict(swebench_dataset)
+    for folder in os.listdir(snippet_folder_path):
+        folder_path = os.path.join(snippet_folder_path, folder)
+        if os.path.isdir(folder_path):
+            snippet_file = os.path.join(folder_path, 'snippet.json')
+            snippets = load_snippet_file(snippet_file)
+            if snippets:
+                bug_snippets, non_bug_snippets = separate_snippets(snippets)
+                problem_statement = swebench_dict.get(folder)
+                if problem_statement:
+                    triplets = create_triplets(problem_statement, bug_snippets, non_bug_snippets, num_negatives_per_positive)
+                    for triplet in triplets:
+                        yield encode_data(tokenizer, triplet, max_length)
+
+def create_model():
+    embedding = tf.keras.layers.Embedding(input_dim=30522, output_dim=128, input_length=512)
+    dropout = tf.keras.layers.Dropout(0.2)
+    fc = tf.keras.layers.Dense(64, activation='relu')
+    inputs = tf.keras.Input(shape=(512,))
+    attention_mask = tf.keras.Input(shape=(512,))
+    outputs = embedding(inputs)
+    outputs = dropout(outputs)
+    outputs = tf.reduce_mean(outputs, axis=1)
+    outputs = fc(outputs)
+    return tf.keras.Model(inputs=[inputs, attention_mask], outputs=outputs)
+
+def train(model, dataset, epochs):
+    loss_fn = lambda y_true, y_pred: tf.reduce_mean(tf.norm(y_pred[:64] - y_pred[64:128], axis=1) - tf.norm(y_pred[:64] - y_pred[128:], axis=1) + 1)
+    optimizer = tf.keras.optimizers.Adam(1e-5)
     for epoch in range(epochs):
         total_loss = 0
-        for batch in train_dataset:
+        for batch in dataset:
             anchor_input_ids = batch['anchor_input_ids'].numpy()
             anchor_attention_mask = batch['anchor_attention_mask'].numpy()
             positive_input_ids = batch['positive_input_ids'].numpy()
@@ -136,12 +164,12 @@ def train(model, train_dataset, epochs):
 
             with tf.GradientTape() as tape:
                 outputs = tf.concat([anchor_output, positive_output, negative_output], axis=0)
-                loss = model.loss(tf.zeros((anchor_output.shape[0]*3,)), outputs)
+                loss = loss_fn(tf.zeros((anchor_output.shape[0]*3,)), outputs)
 
             gradients = tape.gradient(loss, model.trainable_variables)
-            model.optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
             total_loss += loss
-        print(f"Epoch {epoch+1}, Loss: {total_loss / len(train_dataset)}")
+        print(f"Epoch {epoch+1}, Loss: {total_loss / len(dataset)}")
 
 def main(swebench_dataset_path, snippet_folder_path):
     dataset = create_triplet_dataset(swebench_dataset_path, snippet_folder_path)
@@ -150,8 +178,8 @@ def main(swebench_dataset_path, snippet_folder_path):
         return
 
     tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
-    dataset = TripletDataset(dataset, tokenizer, max_length=512)
-    dataset = tf.data.Dataset.from_generator(lambda: dataset, 
+    dataset_generator = create_triplet_dataset_generator(swebench_dataset_path, snippet_folder_path, tokenizer=tokenizer)
+    dataset = tf.data.Dataset.from_generator(lambda: dataset_generator, 
                                              output_types={'anchor_input_ids': tf.int32, 
                                                            'anchor_attention_mask': tf.int32, 
                                                            'positive_input_ids': tf.int32, 
@@ -159,7 +187,7 @@ def main(swebench_dataset_path, snippet_folder_path):
                                                            'negative_input_ids': tf.int32, 
                                                            'negative_attention_mask': tf.int32}).batch(16).prefetch(tf.data.AUTOTUNE)
 
-    model = Model()
+    model = create_model()
 
     train(model, dataset, epochs=5)
 
