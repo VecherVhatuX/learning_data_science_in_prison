@@ -60,12 +60,10 @@ class TrainingConfig:
     seed: int = field(default=42, metadata={"help": "Random seed."})
     resume_from_checkpoint: Optional[str] = field(default=None, metadata={"help": "Resume training from checkpoint."})
 
-def create_model(args):
-    class Transformer(nn.Module):
-        @nn.compact
-        def __call__(self, x):
-            return nn.Dense(1)(x)
-    return Transformer()
+class Transformer(nn.Module):
+    @nn.compact
+    def __call__(self, x):
+        return nn.Dense(1)(x)
 
 def prepare_datasets(model_args, data_args, epoch):
     def process_data(examples, chat_template):
@@ -91,75 +89,73 @@ def prepare_datasets(model_args, data_args, epoch):
     test_data = process_data(test_data, model_args.chat_template)
     return train_data, test_data
 
-def create_triplet_dataset(data, epoch, batch_size, num_negative_samples):
-    class TripletDataset:
-        def __init__(self, data, epoch, batch_size, num_negative_samples):
-            self.epoch = epoch
-            self.batch_size = batch_size
-            self.data = data
-            self.indices = list(range(len(data)))
-            self.num_negative_samples = num_negative_samples
+class TripletDataset:
+    def __init__(self, data, epoch, batch_size, num_negative_samples):
+        self.epoch = epoch
+        self.batch_size = batch_size
+        self.data = data
+        self.indices = list(range(len(data)))
+        self.num_negative_samples = num_negative_samples
 
-        def __len__(self):
-            return len(self.data) // self.batch_size
+    def __len__(self):
+        return len(self.data) // self.batch_size
 
-        def __getitem__(self, idx):
-            random.shuffle(self.indices)
-            batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
-            batch = [self.data[i] for i in batch_indices]
-            positive_samples = [sample for sample in batch if sample["label"] == 1]
-            negative_samples = random.sample([sample for sample in batch if sample["label"] == 0], self.num_negative_samples)
-            return positive_samples, negative_samples
-    return TripletDataset(data, epoch, batch_size, num_negative_samples)
+    def __getitem__(self, idx):
+        random.shuffle(self.indices)
+        batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
+        batch = [self.data[i] for i in batch_indices]
+        positive_samples = [sample for sample in batch if sample["label"] == 1]
+        negative_samples = random.sample([sample for sample in batch if sample["label"] == 0], self.num_negative_samples)
+        return positive_samples, negative_samples
 
 def create_data_loaders(model_args, data_args, epoch):
     train_data, test_data = prepare_datasets(model_args, data_args, epoch)
-    train_dataset = create_triplet_dataset(train_data, epoch, data_args.per_device_train_batch_size, 5)
-    test_dataset = create_triplet_dataset(test_data, epoch, data_args.per_device_eval_batch_size, 5)
+    train_dataset = TripletDataset(train_data, epoch, data_args.per_device_train_batch_size, 5)
+    test_dataset = TripletDataset(test_data, epoch, data_args.per_device_eval_batch_size, 5)
     return train_dataset, test_dataset
 
+class BaseTrainer:
+    def __init__(self, model, train_dataset, eval_dataset):
+        self.model = model
+        self.train_dataset = train_dataset
+        self.eval_dataset = eval_dataset
+
+    def train(self, resume_from_checkpoint=None):
+        optimizer = optax.adam(0.001)
+        state = train_state.TrainState.create(apply_fn=self.model.apply, params=self.model.init(jax.random.PRNGKey(0), jax.numpy.zeros((1, 1))), tx=optimizer)
+        for epoch in range(3):
+            self.model.train()
+            total_loss = 0
+            for batch in self.train_dataset:
+                positive_samples, negative_samples = batch
+                input_ids = [sample["input_ids"] for sample in positive_samples + negative_samples]
+                attention_mask = [sample["attention_mask"] for sample in positive_samples + negative_samples]
+                labels = [sample["labels"] for sample in positive_samples + negative_samples]
+                loss_fn = lambda params: jax.numpy.mean((self.model.apply(params, input_ids, attention_mask) - labels) ** 2)
+                grads = jax.grad(loss_fn)(state.params)
+                state = state.apply_gradients(grads=grads)
+                total_loss += loss_fn(state.params)
+            print(f"Epoch {epoch}, Loss: {total_loss / len(self.train_dataset)}")
+
+    def save_model(self, output_dir):
+        jax2tf.convert(self.model).save(output_dir)
+
+class TripletLossTrainer(BaseTrainer):
+    def __init__(self, model, train_dataset, eval_dataset, layer_index):
+        super().__init__(model, train_dataset, eval_dataset)
+        self.layer_index = layer_index
+
+class SFTTrainer(BaseTrainer):
+    pass
+
 def create_trainer(model_args, model, train_dataset, eval_dataset):
-    class BaseTrainer:
-        def __init__(self, model, train_dataset, eval_dataset):
-            self.model = model
-            self.train_dataset = train_dataset
-            self.eval_dataset = eval_dataset
-
-        def train(self, resume_from_checkpoint=None):
-            optimizer = optax.adam(0.001)
-            state = train_state.TrainState.create(apply_fn=self.model.apply, params=self.model.init(jax.random.PRNGKey(0), jax.numpy.zeros((1, 1))), tx=optimizer)
-            for epoch in range(3):
-                self.model.train()
-                total_loss = 0
-                for batch in self.train_dataset:
-                    positive_samples, negative_samples = batch
-                    input_ids = [sample["input_ids"] for sample in positive_samples + negative_samples]
-                    attention_mask = [sample["attention_mask"] for sample in positive_samples + negative_samples]
-                    labels = [sample["labels"] for sample in positive_samples + negative_samples]
-                    loss_fn = lambda params: jax.numpy.mean((self.model.apply(params, input_ids, attention_mask) - labels) ** 2)
-                    grads = jax.grad(loss_fn)(state.params)
-                    state = state.apply_gradients(grads=grads)
-                    total_loss += loss_fn(state.params)
-                print(f"Epoch {epoch}, Loss: {total_loss / len(self.train_dataset)}")
-
-        def save_model(self, output_dir):
-            jax2tf.convert(self.model).save(output_dir)
-
-    class TripletLossTrainer(BaseTrainer):
-        def __init__(self, model, train_dataset, eval_dataset, layer_index):
-            super().__init__(model, train_dataset, eval_dataset)
-            self.layer_index = layer_index
-
-    class SFTTrainer(BaseTrainer):
-        pass
-
     if model_args.use_triplet_loss_trainer:
         return TripletLossTrainer(model=model, train_dataset=train_dataset, eval_dataset=eval_dataset, layer_index=-1)
     else:
         return SFTTrainer(model=model, train_dataset=train_dataset, eval_dataset=eval_dataset)
 
 def run_pipeline(model_args, data_args, training_args):
-    model = create_model(model_args)
+    model = Transformer()
     for epoch in range(training_args.num_train_epochs):
         train_dataset, eval_dataset = create_data_loaders(model_args, data_args, epoch)
         trainer = create_trainer(model_args, model, train_dataset, eval_dataset)
