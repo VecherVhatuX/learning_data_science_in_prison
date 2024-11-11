@@ -4,15 +4,13 @@ from tensorflow.keras.optimizers import SGD
 import numpy as np
 import random
 
-def create_embedding_model(num_embeddings, embedding_dim):
-    class EmbeddingModel(models.Model):
-        def __init__(self):
-            super().__init__()
-            self.embedding = layers.Embedding(num_embeddings, embedding_dim)
+class EmbeddingModel(models.Model):
+    def __init__(self, num_embeddings, embedding_dim):
+        super().__init__()
+        self.embedding = layers.Embedding(num_embeddings, embedding_dim)
 
-        def call(self, input_ids, attention_mask=None):
-            return self.embedding(input_ids)
-    return EmbeddingModel()
+    def call(self, input_ids, attention_mask=None):
+        return self.embedding(input_ids)
 
 def create_triplet_dataset(samples, labels, batch_size, num_negatives):
     class TripletDataset:
@@ -117,7 +115,7 @@ def main():
     num_negatives = 5
     epochs = 10
 
-    model = create_embedding_model(100, 10)
+    model = EmbeddingModel(100, 10)
     dataset = create_triplet_dataset(samples, labels, batch_size, num_negatives)
     trainer = TripletLossTrainer(model, 1.0, 1e-4)
     trainer.train(dataset, epochs, batch_size)
