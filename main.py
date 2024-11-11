@@ -65,26 +65,29 @@ class Transformer(nn.Module):
     def __call__(self, x):
         return nn.Dense(1)(x)
 
-def prepare_datasets(model_args, data_args, epoch):
-    def process_data(examples, chat_template):
-        tokenizer = keras.preprocessing.text.Tokenizer()
-        tokenizer.fit_on_texts(examples["input"])
-        apply_chat_template = chat_template != "none"
-        if apply_chat_template:
-            inputs = []
-            labels = []
-            for example in examples:
-                inputs.append(f"{example['input']} {tokenizer.sep}")
-                labels.append(f"{example['output']} {tokenizer.sep}")
-            examples["input_ids"] = tokenizer.texts_to_sequences(inputs)
-            examples["labels"] = tokenizer.texts_to_sequences(labels)
-        else:
-            examples["input_ids"] = tokenizer.texts_to_sequences(examples["input"])
-            examples["labels"] = tokenizer.texts_to_sequences(examples["output"])
-        return examples
+def load_data(file_name):
+    return json.load(open(file_name))
 
-    train_data = json.load(open("train.json"))
-    test_data = json.load(open("test.json"))
+def process_data(examples, chat_template):
+    tokenizer = keras.preprocessing.text.Tokenizer()
+    tokenizer.fit_on_texts(examples["input"])
+    apply_chat_template = chat_template != "none"
+    if apply_chat_template:
+        inputs = []
+        labels = []
+        for example in examples:
+            inputs.append(f"{example['input']} {tokenizer.sep}")
+            labels.append(f"{example['output']} {tokenizer.sep}")
+        examples["input_ids"] = tokenizer.texts_to_sequences(inputs)
+        examples["labels"] = tokenizer.texts_to_sequences(labels)
+    else:
+        examples["input_ids"] = tokenizer.texts_to_sequences(examples["input"])
+        examples["labels"] = tokenizer.texts_to_sequences(examples["output"])
+    return examples
+
+def prepare_datasets(model_args, data_args, epoch):
+    train_data = load_data("train.json")
+    test_data = load_data("test.json")
     train_data = process_data(train_data, model_args.chat_template)
     test_data = process_data(test_data, model_args.chat_template)
     return train_data, test_data
@@ -114,53 +117,40 @@ def create_data_loaders(model_args, data_args, epoch):
     test_dataset = TripletDataset(test_data, epoch, data_args.per_device_eval_batch_size, 5)
     return train_dataset, test_dataset
 
-class BaseTrainer:
-    def __init__(self, model, train_dataset, eval_dataset):
-        self.model = model
-        self.train_dataset = train_dataset
-        self.eval_dataset = eval_dataset
+def create_optimizer():
+    return optax.adam(0.001)
 
-    def train(self, resume_from_checkpoint=None):
-        optimizer = optax.adam(0.001)
-        state = train_state.TrainState.create(apply_fn=self.model.apply, params=self.model.init(jax.random.PRNGKey(0), jax.numpy.zeros((1, 1))), tx=optimizer)
-        for epoch in range(3):
-            self.model.train()
-            total_loss = 0
-            for batch in self.train_dataset:
-                positive_samples, negative_samples = batch
-                input_ids = [sample["input_ids"] for sample in positive_samples + negative_samples]
-                attention_mask = [sample["attention_mask"] for sample in positive_samples + negative_samples]
-                labels = [sample["labels"] for sample in positive_samples + negative_samples]
-                loss_fn = lambda params: jax.numpy.mean((self.model.apply(params, input_ids, attention_mask) - labels) ** 2)
-                grads = jax.grad(loss_fn)(state.params)
-                state = state.apply_gradients(grads=grads)
-                total_loss += loss_fn(state.params)
-            print(f"Epoch {epoch}, Loss: {total_loss / len(self.train_dataset)}")
+def create_train_state(model, optimizer, params):
+    return train_state.TrainState.create(apply_fn=model.apply, params=params, tx=optimizer)
 
-    def save_model(self, output_dir):
-        jax2tf.convert(self.model).save(output_dir)
+def train_step(model, state, batch):
+    positive_samples, negative_samples = batch
+    input_ids = [sample["input_ids"] for sample in positive_samples + negative_samples]
+    attention_mask = [sample["attention_mask"] for sample in positive_samples + negative_samples]
+    labels = [sample["labels"] for sample in positive_samples + negative_samples]
+    loss_fn = lambda params: jax.numpy.mean((model.apply(params, input_ids, attention_mask) - labels) ** 2)
+    grads = jax.grad(loss_fn)(state.params)
+    state = state.apply_gradients(grads=grads)
+    return state, loss_fn(state.params)
 
-class TripletLossTrainer(BaseTrainer):
-    def __init__(self, model, train_dataset, eval_dataset, layer_index):
-        super().__init__(model, train_dataset, eval_dataset)
-        self.layer_index = layer_index
+def train(model, state, train_dataset, epochs):
+    for epoch in range(epochs):
+        for batch in train_dataset:
+            state, loss = train_step(model, state, batch)
+        print(f"Epoch {epoch}, Loss: {loss / len(train_dataset)}")
 
-class SFTTrainer(BaseTrainer):
-    pass
-
-def create_trainer(model_args, model, train_dataset, eval_dataset):
-    if model_args.use_triplet_loss_trainer:
-        return TripletLossTrainer(model=model, train_dataset=train_dataset, eval_dataset=eval_dataset, layer_index=-1)
-    else:
-        return SFTTrainer(model=model, train_dataset=train_dataset, eval_dataset=eval_dataset)
+def save_model(model, output_dir):
+    jax2tf.convert(model).save(output_dir)
 
 def run_pipeline(model_args, data_args, training_args):
     model = Transformer()
+    params = model.init(jax.random.PRNGKey(0), jax.numpy.zeros((1, 1)))
+    optimizer = create_optimizer()
+    state = create_train_state(model, optimizer, params)
     for epoch in range(training_args.num_train_epochs):
         train_dataset, eval_dataset = create_data_loaders(model_args, data_args, epoch)
-        trainer = create_trainer(model_args, model, train_dataset, eval_dataset)
-        trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
-    trainer.save_model(training_args.output_dir)
+        train(model, state, train_dataset, 1)
+    save_model(model, training_args.output_dir)
 
 if __name__ == "__main__":
     model_args = ModelConfig(model_identifier="t5-base", chat_template="none")
