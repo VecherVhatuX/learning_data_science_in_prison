@@ -60,6 +60,24 @@ class TrainingConfig:
     seed: int = field(default=42, metadata={"help": "Random seed."})
     resume_from_checkpoint: Optional[str] = field(default=None, metadata={"help": "Resume training from checkpoint."})
 
+class Dataset:
+    def __init__(self, data, batch_size, num_negative_samples):
+        self.data = data
+        self.batch_size = batch_size
+        self.num_negative_samples = num_negative_samples
+        self.indices = list(range(len(data)))
+
+    def __len__(self):
+        return len(self.data) // self.batch_size
+
+    def __getitem__(self, idx):
+        random.shuffle(self.indices)
+        batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
+        batch = [self.data[i] for i in batch_indices]
+        positive_samples = [sample for sample in batch if sample["label"] == 1]
+        negative_samples = random.sample([sample for sample in batch if sample["label"] == 0], self.num_negative_samples)
+        return positive_samples, negative_samples
+
 class Transformer(nn.Module):
     @nn.compact
     def __call__(self, x):
@@ -92,29 +110,10 @@ def prepare_datasets(model_args, data_args, epoch):
     test_data = process_data(test_data, model_args.chat_template)
     return train_data, test_data
 
-class TripletDataset:
-    def __init__(self, data, epoch, batch_size, num_negative_samples):
-        self.epoch = epoch
-        self.batch_size = batch_size
-        self.data = data
-        self.indices = list(range(len(data)))
-        self.num_negative_samples = num_negative_samples
-
-    def __len__(self):
-        return len(self.data) // self.batch_size
-
-    def __getitem__(self, idx):
-        random.shuffle(self.indices)
-        batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
-        batch = [self.data[i] for i in batch_indices]
-        positive_samples = [sample for sample in batch if sample["label"] == 1]
-        negative_samples = random.sample([sample for sample in batch if sample["label"] == 0], self.num_negative_samples)
-        return positive_samples, negative_samples
-
 def create_data_loaders(model_args, data_args, epoch):
     train_data, test_data = prepare_datasets(model_args, data_args, epoch)
-    train_dataset = TripletDataset(train_data, epoch, data_args.per_device_train_batch_size, 5)
-    test_dataset = TripletDataset(test_data, epoch, data_args.per_device_eval_batch_size, 5)
+    train_dataset = Dataset(train_data, data_args.per_device_train_batch_size, 5)
+    test_dataset = Dataset(test_data, data_args.per_device_eval_batch_size, 5)
     return train_dataset, test_dataset
 
 def create_optimizer():
