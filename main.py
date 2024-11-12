@@ -64,12 +64,12 @@ class Dataset(Dataset):
         self.batch_size = batch_size
         self.num_negative_samples = num_negative_samples
         self.indices = list(range(len(data)))
+        self.epoch = 0
 
     def __len__(self):
         return len(self.data) // self.batch_size
 
     def __getitem__(self, idx):
-        random.shuffle(self.indices)
         batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
         batch = [self.data[i] for i in batch_indices]
         positive_samples = [sample for sample in batch if sample["label"] == 1]
@@ -78,6 +78,7 @@ class Dataset(Dataset):
 
     def epoch_shuffle(self):
         random.shuffle(self.indices)
+        self.epoch += 1
 
 class Transformer(nn.Module):
     def __init__(self):
@@ -169,7 +170,7 @@ class Trainer:
             self.train_dataset.epoch_shuffle()
             for batch in DataLoader(self.train_dataset, batch_size=1, shuffle=False):
                 loss = self.train_step(batch)
-            print(f"Epoch {epoch}, Loss: {loss}")
+            print(f"Epoch {epoch+1}, Loss: {loss}")
 
 def run_pipeline(model_args, data_args, training_args):
     model_manager = ModelManager(model_args, training_args)
