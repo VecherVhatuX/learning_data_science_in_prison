@@ -58,7 +58,7 @@ class TrainingConfig:
     seed: int = field(default=42, metadata={"help": "Random seed."})
     resume_from_checkpoint: Optional[str] = field(default=None, metadata={"help": "Resume training from checkpoint."})
 
-class Dataset(Dataset):
+class Dataset(torch.utils.data.Dataset):
     def __init__(self, data, batch_size, num_negative_samples):
         self.data = data
         self.batch_size = batch_size
@@ -156,9 +156,9 @@ class Trainer:
 
     def train_step(self, batch):
         positive_samples, negative_samples = batch
-        input_ids = torch.tensor([sample["input_ids"] for sample in positive_samples + negative_samples], dtype=torch.long).to(self.device)
-        attention_mask = torch.tensor([sample["attention_mask"] for sample in positive_samples + negative_samples], dtype=torch.long).to(self.device)
-        labels = torch.tensor([sample["labels"] for sample in positive_samples + negative_samples], dtype=torch.long).to(self.device)
+        input_ids = torch.tensor([sample["input_ids"][0] for sample in positive_samples + negative_samples], dtype=torch.long).to(self.device)
+        attention_mask = torch.tensor([sample["attention_mask"][0] for sample in positive_samples + negative_samples], dtype=torch.long).to(self.device)
+        labels = torch.tensor([sample["labels"][0] for sample in positive_samples + negative_samples], dtype=torch.long).to(self.device)
         self.model.zero_grad()
         loss = self.model(input_ids, attention_mask, labels)
         loss.backward()
