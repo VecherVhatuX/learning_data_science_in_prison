@@ -15,37 +15,35 @@ class EmbeddingModel(models.Model):
         pooled_embeddings = self.pooling(embeddings)
         return pooled_embeddings
 
-def create_triplet_dataset(samples, labels, batch_size, num_negatives):
-    class TripletDataset:
-        def __init__(self, samples, labels, batch_size, num_negatives):
-            self.samples = samples
-            self.labels = labels
-            self.batch_size = batch_size
-            self.num_negatives = num_negatives
-            self.indices = list(range(len(samples)))
+class TripletDataset:
+    def __init__(self, samples, labels, batch_size, num_negatives):
+        self.samples = samples
+        self.labels = labels
+        self.batch_size = batch_size
+        self.num_negatives = num_negatives
+        self.indices = list(range(len(samples)))
 
-        def __len__(self):
-            return len(self.samples) // self.batch_size
+    def __len__(self):
+        return len(self.samples) // self.batch_size
 
-        def __getitem__(self, idx):
-            batch = np.random.choice(self.indices, self.batch_size, replace=False)
-            anchor_idx = batch
+    def __getitem__(self, idx):
+        batch = np.random.choice(self.indices, self.batch_size, replace=False)
+        anchor_idx = batch
+        positive_idx = [np.random.choice([i for i, label in enumerate(self.labels) if label == self.labels[anchor]], 1)[0] for anchor in anchor_idx]
+        while np.any(positive_idx == anchor_idx):
             positive_idx = [np.random.choice([i for i, label in enumerate(self.labels) if label == self.labels[anchor]], 1)[0] for anchor in anchor_idx]
-            while np.any(positive_idx == anchor_idx):
-                positive_idx = [np.random.choice([i for i, label in enumerate(self.labels) if label == self.labels[anchor]], 1)[0] for anchor in anchor_idx]
 
-            negative_indices = [np.random.choice([i for i, label in enumerate(self.labels) if label != self.labels[anchor]], self.num_negatives) for anchor in anchor_idx]
-            negative_indices = [np.setdiff1d(negative_idx, [anchor]) for anchor, negative_idx in zip(anchor_idx, negative_indices)]
+        negative_indices = [np.random.choice([i for i, label in enumerate(self.labels) if label != self.labels[anchor]], self.num_negatives) for anchor in anchor_idx]
+        negative_indices = [np.setdiff1d(negative_idx, [anchor]) for anchor, negative_idx in zip(anchor_idx, negative_indices)]
 
-            return {
-                'anchor_input_ids': self.samples[anchor_idx],
-                'positive_input_ids': self.samples[positive_idx],
-                'negative_input_ids': np.stack([self.samples[negative_idx] for negative_idx in negative_indices]),
-            }
+        return {
+            'anchor_input_ids': self.samples[anchor_idx],
+            'positive_input_ids': self.samples[positive_idx],
+            'negative_input_ids': np.stack([self.samples[negative_idx] for negative_idx in negative_indices]),
+        }
 
-        def on_epoch_end(self):
-            random.shuffle(self.indices)
-    return TripletDataset(samples, labels, batch_size, num_negatives)
+    def on_epoch_end(self):
+        random.shuffle(self.indices)
 
 def normalize_embeddings(embeddings):
     return embeddings / tf.norm(embeddings, axis=1, keepdims=True)
@@ -53,11 +51,15 @@ def normalize_embeddings(embeddings):
 def triplet_margin_loss(anchor_embeddings, positive_embeddings, negative_embeddings, margin):
     return tf.reduce_mean(tf.maximum(margin + tf.reduce_sum(tf.square(anchor_embeddings - positive_embeddings), axis=1) - tf.reduce_sum(tf.square(anchor_embeddings - negative_embeddings[:, 0, :]), axis=1), 0))
 
-class TripletLossTrainer:
+class TripletLossTrainer(models.Model):
     def __init__(self, model, margin, learning_rate):
+        super().__init__()
         self.model = model
         self.margin = margin
         self.optimizer = SGD(learning_rate=learning_rate)
+
+    def compile(self):
+        super().compile(optimizer=self.optimizer, loss=None, metrics=None)
 
     def train_step(self, inputs):
         with tf.GradientTape() as tape:
@@ -78,21 +80,7 @@ class TripletLossTrainer:
         gradients = tape.gradient(loss, self.model.trainable_variables)
         self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
 
-        return loss
-
-    def train(self, dataset, epochs):
-        for epoch in range(epochs):
-            total_loss = 0
-            for i, batch in enumerate(dataset):
-                loss = self.train_step(batch)
-                total_loss += loss
-            print(f'Epoch {epoch+1}, loss: {total_loss / len(dataset)}')
-
-    def save_model(self, path):
-        self.model.save_weights(path)
-
-    def load_model(self, path):
-        self.model.load_weights(path)
+        return {"loss": loss}
 
 def main():
     samples = np.random.randint(0, 100, (100, 10))
@@ -102,10 +90,11 @@ def main():
     epochs = 10
 
     model = EmbeddingModel(100, 10)
-    dataset = create_triplet_dataset(samples, labels, batch_size, num_negatives)
+    dataset = TripletDataset(samples, labels, batch_size, num_negatives)
     trainer = TripletLossTrainer(model, 1.0, 1e-4)
-    trainer.train(dataset, epochs)
-    trainer.save_model("model.h5")
+    trainer.compile()
+    trainer.fit(dataset, epochs=epochs)
+    trainer.model.save_weights("model.h5")
 
 if __name__ == "__main__":
     main()
