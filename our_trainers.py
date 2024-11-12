@@ -49,7 +49,10 @@ def normalize_embeddings(embeddings):
     return embeddings / tf.norm(embeddings, axis=1, keepdims=True)
 
 def triplet_margin_loss(anchor_embeddings, positive_embeddings, negative_embeddings, margin):
-    return tf.reduce_mean(tf.maximum(margin + tf.reduce_sum(tf.square(anchor_embeddings - positive_embeddings), axis=1) - tf.reduce_sum(tf.square(anchor_embeddings - negative_embeddings[:, 0, :]), axis=1), 0))
+    return tf.reduce_mean(tf.maximum(tf.constant(margin, dtype=tf.float32) + 
+                                     tf.reduce_sum(tf.square(anchor_embeddings - positive_embeddings), axis=1) - 
+                                     tf.reduce_sum(tf.square(anchor_embeddings - negative_embeddings[:, 0, :]), axis=1), 
+                                     tf.constant(0.0, dtype=tf.float32)))
 
 class TripletLossTrainer(models.Model):
     def __init__(self, model, margin, learning_rate):
@@ -58,8 +61,8 @@ class TripletLossTrainer(models.Model):
         self.margin = margin
         self.optimizer = SGD(learning_rate=learning_rate)
 
-    def compile(self):
-        super().compile(optimizer=self.optimizer, loss=None, metrics=None)
+    def compile(self, run_eagerly=True, **kwargs):
+        super().compile(run_eagerly=run_eagerly, **kwargs)
 
     def train_step(self, inputs):
         with tf.GradientTape() as tape:
