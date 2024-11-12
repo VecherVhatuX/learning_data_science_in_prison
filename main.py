@@ -103,6 +103,12 @@ class ModelManager:
     def save_model(self, model):
         torch.save(model.state_dict(), self.training_args.output_dir)
 
+    def load_model(self, path):
+        model = Transformer()
+        model.load_state_dict(torch.load(path))
+        model.to(self.device)
+        return model
+
 class DatasetManager:
     def __init__(self, model_args, data_args):
         self.model_args = model_args
@@ -141,10 +147,11 @@ class DatasetManager:
         return train_dataset, test_dataset
 
 class Trainer:
-    def __init__(self, model, device, train_dataset):
+    def __init__(self, model, device, train_dataset, optimizer):
         self.model = model
         self.device = device
         self.train_dataset = train_dataset
+        self.optimizer = optimizer
 
     def train_step(self, batch):
         positive_samples, negative_samples = batch
@@ -154,8 +161,7 @@ class Trainer:
         self.model.zero_grad()
         loss = self.model(input_ids, attention_mask, labels)
         loss.backward()
-        optimizer = ModelManager(None, None).create_optimizer(self.model)
-        optimizer.step()
+        self.optimizer.step()
         return loss.item()
 
     def train(self, epochs):
@@ -169,14 +175,25 @@ def run_pipeline(model_args, data_args, training_args):
     model_manager = ModelManager(model_args, training_args)
     dataset_manager = DatasetManager(model_args, data_args)
     model = model_manager.create_model()
+    optimizer = model_manager.create_optimizer(model)
     train_dataset, _ = dataset_manager.create_data_loaders()
-    trainer = Trainer(model, model_manager.device, train_dataset)
+    trainer = Trainer(model, model_manager.device, train_dataset, optimizer)
     trainer.train(training_args.num_train_epochs)
     model_manager.save_model(model)
+
+def resume_pipeline(model_args, data_args, training_args, checkpoint_path):
+    model_manager = ModelManager(model_args, training_args)
+    dataset_manager = DatasetManager(model_args, data_args)
+    model = model_manager.load_model(checkpoint_path)
+    optimizer = model_manager.create_optimizer(model)
+    train_dataset, _ = dataset_manager.create_data_loaders()
+    trainer = Trainer(model, model_manager.device, train_dataset, optimizer)
+    trainer.train(training_args.num_train_epochs)
 
 if __name__ == "__main__":
     model_args = ModelConfig(model_identifier="t5-base", chat_template="none")
     data_args = TrainingDataConfig(dataset_name="timdettmers/openassistant-guanaco")
     training_args = TrainingConfig(output_dir="./results", num_train_epochs=3, per_device_train_batch_size=16)
 
-    run_pipeline(model_args, data_args, training_args)
+    #run_pipeline(model_args, data_args, training_args)
+    resume_pipeline(model_args, data_args, training_args, "./results/model.pth")
