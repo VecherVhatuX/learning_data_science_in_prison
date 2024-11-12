@@ -17,6 +17,7 @@ from tensorflow import keras
 import json
 import random
 
+# Data classes
 @dataclass
 class ModelConfig:
     model_identifier: str = field(default="t5-base", metadata={"help": "Pre-trained model identifier from Hugging Face."})
@@ -60,29 +61,7 @@ class TrainingConfig:
     seed: int = field(default=42, metadata={"help": "Random seed."})
     resume_from_checkpoint: Optional[str] = field(default=None, metadata={"help": "Resume training from checkpoint."})
 
-class Dataset:
-    def __init__(self, data, batch_size, num_negative_samples):
-        self.data = data
-        self.batch_size = batch_size
-        self.num_negative_samples = num_negative_samples
-        self.indices = list(range(len(data)))
-
-    def __len__(self):
-        return len(self.data) // self.batch_size
-
-    def __getitem__(self, idx):
-        random.shuffle(self.indices)
-        batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
-        batch = [self.data[i] for i in batch_indices]
-        positive_samples = [sample for sample in batch if sample["label"] == 1]
-        negative_samples = random.sample([sample for sample in batch if sample["label"] == 0], self.num_negative_samples)
-        return positive_samples, negative_samples
-
-class Transformer(nn.Module):
-    @nn.compact
-    def __call__(self, x):
-        return nn.Dense(1)(x)
-
+# Utility functions
 def load_data(file_name):
     return json.load(open(file_name))
 
@@ -103,25 +82,39 @@ def process_data(examples, chat_template):
         examples["labels"] = tokenizer.texts_to_sequences(examples["output"])
     return examples
 
-def prepare_datasets(model_args, data_args, epoch):
-    train_data = load_data("train.json")
-    test_data = load_data("test.json")
-    train_data = process_data(train_data, model_args.chat_template)
-    test_data = process_data(test_data, model_args.chat_template)
-    return train_data, test_data
+# Dataset class
+class Dataset:
+    def __init__(self, data, batch_size, num_negative_samples):
+        self.data = data
+        self.batch_size = batch_size
+        self.num_negative_samples = num_negative_samples
+        self.indices = list(range(len(data)))
 
-def create_data_loaders(model_args, data_args, epoch):
-    train_data, test_data = prepare_datasets(model_args, data_args, epoch)
-    train_dataset = Dataset(train_data, data_args.per_device_train_batch_size, 5)
-    test_dataset = Dataset(test_data, data_args.per_device_eval_batch_size, 5)
-    return train_dataset, test_dataset
+    def __len__(self):
+        return len(self.data) // self.batch_size
 
+    def __getitem__(self, idx):
+        random.shuffle(self.indices)
+        batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
+        batch = [self.data[i] for i in batch_indices]
+        positive_samples = [sample for sample in batch if sample["label"] == 1]
+        negative_samples = random.sample([sample for sample in batch if sample["label"] == 0], self.num_negative_samples)
+        return positive_samples, negative_samples
+
+# Model class
+class Transformer(nn.Module):
+    @nn.compact
+    def __call__(self, x):
+        return nn.Dense(1)(x)
+
+# Model creation functions
 def create_optimizer():
     return optax.adam(0.001)
 
 def create_train_state(model, optimizer, params):
     return train_state.TrainState.create(apply_fn=model.apply, params=params, tx=optimizer)
 
+# Training functions
 def train_step(model, state, batch):
     positive_samples, negative_samples = batch
     input_ids = [sample["input_ids"] for sample in positive_samples + negative_samples]
@@ -138,9 +131,25 @@ def train(model, state, train_dataset, epochs):
             state, loss = train_step(model, state, batch)
         print(f"Epoch {epoch}, Loss: {loss / len(train_dataset)}")
 
+# Model saving function
 def save_model(model, output_dir):
     jax2tf.convert(model).save(output_dir)
 
+# Data loading functions
+def prepare_datasets(model_args, data_args, epoch):
+    train_data = load_data("train.json")
+    test_data = load_data("test.json")
+    train_data = process_data(train_data, model_args.chat_template)
+    test_data = process_data(test_data, model_args.chat_template)
+    return train_data, test_data
+
+def create_data_loaders(model_args, data_args, epoch):
+    train_data, test_data = prepare_datasets(model_args, data_args, epoch)
+    train_dataset = Dataset(train_data, data_args.per_device_train_batch_size, 5)
+    test_dataset = Dataset(test_data, data_args.per_device_eval_batch_size, 5)
+    return train_dataset, test_dataset
+
+# Main function
 def run_pipeline(model_args, data_args, training_args):
     model = Transformer()
     params = model.init(jax.random.PRNGKey(0), jax.numpy.zeros((1, 1)))
