@@ -1,19 +1,20 @@
 import json
 import os
 import random
-import tensorflow as tf
-from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras.utils import to_categorical
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import Normalizer
 import numpy as np
 import nltk
 from nltk.tokenize import word_tokenize
 from transformers import AutoTokenizer
+from pytorch_lightning import LightningModule
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+import torchvision
 
 nltk.download('punkt')
 
-class TripletDataset:
+class TripletDataset(Dataset):
     def __init__(self, dataset_path, snippet_folder_path):
         self.dataset_path = dataset_path
         self.snippet_folder_path = snippet_folder_path
@@ -61,88 +62,68 @@ class TripletDataset:
                 padding='max_length',
                 truncation=True,
                 return_attention_mask=True,
-                return_tensors='np'
+                return_tensors='pt'
             )
             encoded_triplet[f"{key}_input_ids"] = encoded_text['input_ids'].flatten()
             encoded_triplet[f"{key}_attention_mask"] = encoded_text['attention_mask'].flatten()
         return encoded_triplet
 
-    def get_dataset(self):
+    def __len__(self):
+        dataset = self.load_dataset()
+        return len(dataset) * self.num_negatives_per_positive
+
+    def __getitem__(self, index):
         dataset = self.load_dataset()
         instance_id_map = {item['instance_id']: item['problem_statement'] for item in dataset}
-        dataset_generator = self._create_triplet_dataset_generator(instance_id_map)
-        return tf.data.Dataset.from_generator(
-            lambda: dataset_generator,
-            output_types={
-                'anchor_input_ids': tf.int32,
-                'anchor_attention_mask': tf.int32,
-                'positive_input_ids': tf.int32,
-                'positive_attention_mask': tf.int32,
-                'negative_input_ids': tf.int32,
-                'negative_attention_mask': tf.int32
-            }
-        ).batch(self.batch_size).prefetch(tf.data.AUTOTUNE)
-
-    def _create_triplet_dataset_generator(self, instance_id_map):
-        for folder in os.listdir(self.snippet_folder_path):
-            folder_path = os.path.join(self.snippet_folder_path, folder)
-            if os.path.isdir(folder_path):
-                snippet_file = os.path.join(folder_path, 'snippet.json')
-                snippets = self.load_json_file(snippet_file)
-                if snippets:
-                    bug_snippets, non_bug_snippets = self.separate_snippets(snippets)
-                    problem_statement = instance_id_map.get(folder)
-                    if problem_statement:
-                        triplets = self.create_triplets(problem_statement, bug_snippets, non_bug_snippets)
-                        for triplet in triplets:
-                            yield self.encode_triplet(triplet)
+        folder = os.listdir(self.snippet_folder_path)[index // self.num_negatives_per_positive]
+        folder_path = os.path.join(self.snippet_folder_path, folder)
+        snippet_file = os.path.join(folder_path, 'snippet.json')
+        snippets = self.load_json_file(snippet_file)
+        bug_snippets, non_bug_snippets = self.separate_snippets(snippets)
+        problem_statement = instance_id_map.get(folder)
+        triplets = self.create_triplets(problem_statement, bug_snippets, non_bug_snippets)
+        triplet = triplets[index % self.num_negatives_per_positive]
+        return self.encode_triplet(triplet)
 
 
-class TripletModel(tf.keras.Model):
+class TripletModel(LightningModule):
     def __init__(self):
         super(TripletModel, self).__init__()
-        self.embedding = tf.keras.layers.Embedding(input_dim=30522, output_dim=128, input_length=512)
-        self.dropout = tf.keras.layers.Dropout(0.2)
-        self.fc = tf.keras.layers.Dense(64, activation='relu')
+        self.embedding = nn.Embedding(30522, 128)
+        self.dropout = nn.Dropout(0.2)
+        self.fc = nn.Linear(128, 64)
+        self.relu = nn.ReLU()
 
-    def call(self, inputs):
-        anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _ = inputs
+    def forward(self, anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _):
         anchor_outputs = self._get_outputs(anchor_input_ids)
         positive_outputs = self._get_outputs(positive_input_ids)
         negative_outputs = self._get_outputs(negative_input_ids)
-        return tf.concat([anchor_outputs, positive_outputs, negative_outputs], axis=0)
+        return torch.cat([anchor_outputs, positive_outputs, negative_outputs], dim=0)
 
     def _get_outputs(self, input_ids):
         outputs = self.embedding(input_ids)
         outputs = self.dropout(outputs)
-        outputs = tf.reduce_mean(outputs, axis=1)
+        outputs = torch.mean(outputs, dim=1)
         outputs = self.fc(outputs)
+        outputs = self.relu(outputs)
         return outputs
 
+    def training_step(self, batch, batch_idx):
+        anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _ = batch
+        outputs = self(anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _)
+        loss = torch.mean(torch.norm(outputs[:64] - outputs[64:128], dim=1) - torch.norm(outputs[:64] - outputs[128:], dim=1) + 1)
+        return {'loss': loss}
 
-def train_model(model, dataset, epochs):
-    loss_fn = lambda y_true, y_pred: tf.reduce_mean(tf.norm(y_pred[:64] - y_pred[64:128], axis=1) - tf.norm(y_pred[:64] - y_pred[128:], axis=1) + 1)
-    optimizer = tf.keras.optimizers.Adam(1e-5)
-    for epoch in range(epochs):
-        total_loss = 0
-        for batch in dataset:
-            with tf.GradientTape() as tape:
-                outputs = model([batch['anchor_input_ids'], batch['anchor_attention_mask'],
-                                 batch['positive_input_ids'], batch['positive_attention_mask'],
-                                 batch['negative_input_ids'], batch['negative_attention_mask']])
-                loss = loss_fn(tf.zeros((outputs.shape[0],)), outputs)
-
-            gradients = tape.gradient(loss, model.trainable_variables)
-            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-            total_loss += loss
-        print(f"Epoch {epoch + 1}, Loss: {total_loss / len(dataset)}")
+    def configure_optimizers(self):
+        return optim.Adam(self.parameters(), lr=1e-5)
 
 
 def main(dataset_path, snippet_folder_path):
     dataset = TripletDataset(dataset_path, snippet_folder_path)
-    data = dataset.get_dataset()
+    dataloader = DataLoader(dataset, batch_size=dataset.batch_size)
     model = TripletModel()
-    train_model(model, data, epochs=5)
+    trainer = torch.trainer.Trainer(max_epochs=5)
+    trainer.fit(model, dataloader)
 
 
 if __name__ == "__main__":
