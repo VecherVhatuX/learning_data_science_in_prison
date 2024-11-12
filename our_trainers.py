@@ -7,10 +7,10 @@ import random
 class EmbeddingModel(models.Model):
     def __init__(self, num_embeddings, embedding_dim):
         super().__init__()
-        self.embedding = layers.Embedding(num_embeddings, embedding_dim)
+        self.embedding = layers.Embedding(input_dim=num_embeddings, output_dim=embedding_dim)
         self.pooling = layers.GlobalAveragePooling1D()
 
-    def call(self, input_ids, attention_mask=None):
+    def call(self, input_ids):
         embeddings = self.embedding(input_ids)
         pooled_embeddings = self.pooling(embeddings)
         return pooled_embeddings
@@ -21,19 +21,19 @@ class TripletDataset:
         self.labels = labels
         self.batch_size = batch_size
         self.num_negatives = num_negatives
-        self.indices = list(range(len(samples)))
+        self.indices = np.arange(len(samples))
 
     def __len__(self):
-        return len(self.samples) // self.batch_size
+        return -(-len(self.samples) // self.batch_size)  # ceiling division
 
     def __getitem__(self, idx):
         batch = np.random.choice(self.indices, self.batch_size, replace=False)
         anchor_idx = batch
-        positive_idx = [np.random.choice([i for i, label in enumerate(self.labels) if label == self.labels[anchor]], 1)[0] for anchor in anchor_idx]
+        positive_idx = np.array([np.random.choice(np.where(self.labels == self.labels[anchor])[0]) for anchor in anchor_idx])
         while np.any(positive_idx == anchor_idx):
-            positive_idx = [np.random.choice([i for i, label in enumerate(self.labels) if label == self.labels[anchor]], 1)[0] for anchor in anchor_idx]
+            positive_idx = np.array([np.random.choice(np.where(self.labels == self.labels[anchor])[0]) for anchor in anchor_idx])
 
-        negative_indices = [np.random.choice([i for i, label in enumerate(self.labels) if label != self.labels[anchor]], self.num_negatives) for anchor in anchor_idx]
+        negative_indices = [np.random.choice(np.where(self.labels != self.labels[anchor])[0], self.num_negatives, replace=False) for anchor in anchor_idx]
         negative_indices = [np.setdiff1d(negative_idx, [anchor]) for anchor, negative_idx in zip(anchor_idx, negative_indices)]
 
         return {
@@ -43,16 +43,21 @@ class TripletDataset:
         }
 
     def on_epoch_end(self):
-        random.shuffle(self.indices)
+        np.random.shuffle(self.indices)
 
 def normalize_embeddings(embeddings):
     return embeddings / tf.norm(embeddings, axis=1, keepdims=True)
 
-def triplet_margin_loss(anchor_embeddings, positive_embeddings, negative_embeddings, margin):
-    return tf.reduce_mean(tf.maximum(tf.constant(margin, dtype=tf.float32) + 
-                                     tf.reduce_sum(tf.square(anchor_embeddings - positive_embeddings), axis=1) - 
-                                     tf.reduce_sum(tf.square(anchor_embeddings - negative_embeddings[:, 0, :]), axis=1), 
-                                     tf.constant(0.0, dtype=tf.float32)))
+class TripletLoss(tf.keras.losses.Loss):
+    def __init__(self, margin):
+        super().__init__()
+        self.margin = margin
+
+    def call(self, anchor_embeddings, positive_embeddings, negative_embeddings):
+        return tf.reduce_mean(tf.maximum(self.margin + 
+                                         tf.reduce_sum(tf.square(anchor_embeddings - positive_embeddings), axis=1) - 
+                                         tf.reduce_sum(tf.square(anchor_embeddings - negative_embeddings[:, 0, :]), axis=1), 
+                                         0.0))
 
 class TripletLossTrainer(models.Model):
     def __init__(self, model, margin, learning_rate):
@@ -60,6 +65,7 @@ class TripletLossTrainer(models.Model):
         self.model = model
         self.margin = margin
         self.optimizer = SGD(learning_rate=learning_rate)
+        self.loss_fn = TripletLoss(margin)
 
     def compile(self, run_eagerly=True, **kwargs):
         super().compile(run_eagerly=run_eagerly, **kwargs)
@@ -70,15 +76,11 @@ class TripletLossTrainer(models.Model):
             positive_input_ids = inputs["positive_input_ids"]
             negative_input_ids = inputs["negative_input_ids"]
 
-            anchor_embeddings = self.model(anchor_input_ids)
-            positive_embeddings = self.model(positive_input_ids)
-            negative_embeddings = self.model(negative_input_ids)
+            anchor_embeddings = normalize_embeddings(self.model(anchor_input_ids))
+            positive_embeddings = normalize_embeddings(self.model(positive_input_ids))
+            negative_embeddings = normalize_embeddings(self.model(negative_input_ids))
 
-            anchor_embeddings = normalize_embeddings(anchor_embeddings)
-            positive_embeddings = normalize_embeddings(positive_embeddings)
-            negative_embeddings = normalize_embeddings(negative_embeddings)
-
-            loss = triplet_margin_loss(anchor_embeddings, positive_embeddings, negative_embeddings, self.margin)
+            loss = self.loss_fn(anchor_embeddings, positive_embeddings, negative_embeddings)
 
         gradients = tape.gradient(loss, self.model.trainable_variables)
         self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
