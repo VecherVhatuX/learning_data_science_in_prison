@@ -2,7 +2,6 @@ import tensorflow as tf
 from tensorflow.keras import layers, models
 from tensorflow.keras.optimizers import SGD
 import numpy as np
-import random
 
 class EmbeddingModel(models.Model):
     def __init__(self, num_embeddings, embedding_dim):
@@ -15,7 +14,7 @@ class EmbeddingModel(models.Model):
         pooled_embeddings = self.pooling(embeddings)
         return pooled_embeddings
 
-class TripletDataset:
+class TripletDataset(tf.keras.utils.Sequence):
     def __init__(self, samples, labels, batch_size, num_negatives):
         self.samples = samples
         self.labels = labels
@@ -97,7 +96,7 @@ def main():
     model = EmbeddingModel(100, 10)
     dataset = TripletDataset(samples, labels, batch_size, num_negatives)
     trainer = TripletLossTrainer(model, 1.0, 1e-4)
-    trainer.compile()
+    trainer.compile(run_eagerly=True)
     trainer.fit(dataset, epochs=epochs)
     trainer.model.save_weights("model.h5")
 
