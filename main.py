@@ -4,18 +4,15 @@ import yaml
 from dataclasses import dataclass, field
 from typing import Optional
 from functools import partial
-import jax
-from jax.experimental import jax2tf
-import flax
-import flax.linen as nn
-from flax.core import FrozenDict
-from flax.training import train_state
-from flax.training import common_utils
-import optax
-import tensorflow as tf
-from tensorflow import keras
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from torch.optim import Adam
+from torch import Tensor
 import json
 import random
+import numpy as np
+from transformers import AutoTokenizer, T5ForConditionalGeneration
 
 # Data classes
 @dataclass
@@ -61,7 +58,7 @@ class TrainingConfig:
     seed: int = field(default=42, metadata={"help": "Random seed."})
     resume_from_checkpoint: Optional[str] = field(default=None, metadata={"help": "Resume training from checkpoint."})
 
-class Dataset:
+class Dataset(Dataset):
     def __init__(self, data, batch_size, num_negative_samples):
         self.data = data
         self.batch_size = batch_size
@@ -83,54 +80,56 @@ class Dataset:
         random.shuffle(self.indices)
 
 class Transformer(nn.Module):
-    @nn.compact
-    def __call__(self, x):
-        return nn.Dense(1)(x)
+    def __init__(self):
+        super(Transformer, self).__init__()
+        self.model = T5ForConditionalGeneration.from_pretrained("t5-base")
 
-def create_optimizer():
-    return optax.adam(0.001)
+    def forward(self, input_ids, attention_mask, labels):
+        outputs = self.model(input_ids, attention_mask=attention_mask, labels=labels)
+        return outputs.loss
 
-def create_train_state(model, optimizer, params):
-    return train_state.TrainState.create(apply_fn=model.apply, params=params, tx=optimizer)
+def create_optimizer(model):
+    return Adam(model.parameters(), lr=0.001)
 
-def train_step(model, state, batch):
+def train_step(model, device, batch):
     positive_samples, negative_samples = batch
-    input_ids = [sample["input_ids"] for sample in positive_samples + negative_samples]
-    attention_mask = [sample["attention_mask"] for sample in positive_samples + negative_samples]
-    labels = [sample["labels"] for sample in positive_samples + negative_samples]
-    loss_fn = lambda params: jax.numpy.mean((model.apply(params, input_ids, attention_mask) - labels) ** 2)
-    grads = jax.grad(loss_fn)(state.params)
-    state = state.apply_gradients(grads=grads)
-    return state, loss_fn(state.params)
+    input_ids = torch.tensor([sample["input_ids"] for sample in positive_samples + negative_samples], dtype=torch.long).to(device)
+    attention_mask = torch.tensor([sample["attention_mask"] for sample in positive_samples + negative_samples], dtype=torch.long).to(device)
+    labels = torch.tensor([sample["labels"] for sample in positive_samples + negative_samples], dtype=torch.long).to(device)
+    model.zero_grad()
+    loss = model(input_ids, attention_mask, labels)
+    loss.backward()
+    optimizer = create_optimizer(model)
+    optimizer.step()
+    return loss.item()
 
-def train(model, state, train_dataset, epochs):
+def train(model, device, train_dataset, epochs):
     for epoch in range(epochs):
         train_dataset.epoch_shuffle()
-        for batch in train_dataset:
-            state, loss = train_step(model, state, batch)
-        print(f"Epoch {epoch}, Loss: {loss / len(train_dataset)}")
+        for batch in DataLoader(train_dataset, batch_size=1, shuffle=False):
+            loss = train_step(model, device, batch)
+        print(f"Epoch {epoch}, Loss: {loss}")
 
 def save_model(model, output_dir):
-    jax2tf.convert(model).save(output_dir)
+    torch.save(model.state_dict(), output_dir)
 
 def load_data(file_name):
     return json.load(open(file_name))
 
 def process_data(examples, chat_template):
-    tokenizer = keras.preprocessing.text.Tokenizer()
-    tokenizer.fit_on_texts(examples["input"])
+    tokenizer = AutoTokenizer.from_pretrained("t5-base")
     apply_chat_template = chat_template != "none"
     if apply_chat_template:
         inputs = []
         labels = []
         for example in examples:
-            inputs.append(f"{example['input']} {tokenizer.sep}")
-            labels.append(f"{example['output']} {tokenizer.sep}")
-        examples["input_ids"] = tokenizer.texts_to_sequences(inputs)
-        examples["labels"] = tokenizer.texts_to_sequences(labels)
+            inputs.append(f"{example['input']} {tokenizer.sep_token}")
+            labels.append(f"{example['output']} {tokenizer.sep_token}")
+        examples["input_ids"] = tokenizer(inputs, return_tensors="pt", padding=True, truncation=True).input_ids
+        examples["labels"] = tokenizer(labels, return_tensors="pt", padding=True, truncation=True).input_ids
     else:
-        examples["input_ids"] = tokenizer.texts_to_sequences(examples["input"])
-        examples["labels"] = tokenizer.texts_to_sequences(examples["output"])
+        examples["input_ids"] = tokenizer([example["input"] for example in examples], return_tensors="pt", padding=True, truncation=True).input_ids
+        examples["labels"] = tokenizer([example["output"] for example in examples], return_tensors="pt", padding=True, truncation=True).input_ids
     return examples
 
 def prepare_datasets(model_args, data_args, epoch):
@@ -147,13 +146,11 @@ def create_data_loaders(model_args, data_args, epoch):
     return train_dataset, test_dataset
 
 def run_pipeline(model_args, data_args, training_args):
-    model = Transformer()
-    params = model.init(jax.random.PRNGKey(0), jax.numpy.zeros((1, 1)))
-    optimizer = create_optimizer()
-    state = create_train_state(model, optimizer, params)
+    device = torch.device("cuda" if torch.cuda.is_available() and not training_args.no_cuda else "cpu")
+    model = Transformer().to(device)
     for epoch in range(training_args.num_train_epochs):
         train_dataset, eval_dataset = create_data_loaders(model_args, data_args, epoch)
-        train(model, state, train_dataset, 1)
+        train(model, device, train_dataset, 1)
     save_model(model, training_args.output_dir)
 
 if __name__ == "__main__":
