@@ -21,6 +21,7 @@ class TripletDataset:
         self.num_negatives_per_positive = 3
         self.max_length = 512
         self.tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
+        self.batch_size = 16
 
     def create_instance_id_map(self, dataset):
         return {item['instance_id']: item['problem_statement'] for item in dataset}
@@ -99,24 +100,6 @@ class TripletDataset:
         )['attention_mask'].flatten()
         return encoded_triplet
 
-    def create_triplet_dataset(self):
-        dataset = self.load_dataset_file()
-        instance_id_map = self.create_instance_id_map(dataset)
-        triplet_data = []
-        for folder in os.listdir(self.snippet_folder_path):
-            folder_path = os.path.join(self.snippet_folder_path, folder)
-            if os.path.isdir(folder_path):
-                snippet_file = os.path.join(folder_path, 'snippet.json')
-                snippets = self.read_json_file(snippet_file)
-                if snippets:
-                    bug_snippets, non_bug_snippets = self.separate_snippets(snippets)
-                    problem_statement = instance_id_map.get(folder)
-                    if problem_statement:
-                        triplets = self.create_triplets(problem_statement, bug_snippets, non_bug_snippets)
-                        triplet_data.extend(triplets)
-        print(f"Number of triplets: {len(triplet_data)}")
-        return triplet_data
-
     def create_triplet_dataset_generator(self):
         dataset = self.load_dataset_file()
         instance_id_map = self.create_instance_id_map(dataset)
@@ -132,6 +115,17 @@ class TripletDataset:
                         triplets = self.create_triplets(problem_statement, bug_snippets, non_bug_snippets)
                         for triplet in triplets:
                             yield self.encode_triplet(triplet)
+
+    def get_dataset(self):
+        dataset_generator = self.create_triplet_dataset_generator()
+        dataset = tf.data.Dataset.from_generator(lambda: dataset_generator, 
+                                                 output_types={'anchor_input_ids': tf.int32, 
+                                                               'anchor_attention_mask': tf.int32, 
+                                                               'positive_input_ids': tf.int32, 
+                                                               'positive_attention_mask': tf.int32, 
+                                                               'negative_input_ids': tf.int32, 
+                                                               'negative_attention_mask': tf.int32}).batch(self.batch_size).prefetch(tf.data.AUTOTUNE)
+        return dataset
 
 class TripletModel(tf.keras.Model):
     def __init__(self):
@@ -178,17 +172,9 @@ def train_model(model, dataset, epochs):
 
 def main(dataset_path, snippet_folder_path):
     dataset = TripletDataset(dataset_path, snippet_folder_path)
-    dataset_generator = dataset.create_triplet_dataset_generator()
-    dataset = tf.data.Dataset.from_generator(lambda: dataset_generator, 
-                                             output_types={'anchor_input_ids': tf.int32, 
-                                                           'anchor_attention_mask': tf.int32, 
-                                                           'positive_input_ids': tf.int32, 
-                                                           'positive_attention_mask': tf.int32, 
-                                                           'negative_input_ids': tf.int32, 
-                                                           'negative_attention_mask': tf.int32}).batch(16).prefetch(tf.data.AUTOTUNE)
-
+    data = dataset.get_dataset()
     model = TripletModel()
-    train_model(model, dataset, epochs=5)
+    train_model(model, data, epochs=5)
 
 if __name__ == "__main__":
     dataset_path = 'datasets/SWE-bench_oracle.npy'
