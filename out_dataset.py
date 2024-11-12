@@ -41,12 +41,15 @@ class TripletDataset:
         return [os.path.join(folder_path, f) for f in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, f))]
 
     def separate_snippets(self, snippets):
-        return [item['snippet'] for item in snippets if item.get('is_bug', False) and item.get('snippet')], \
-               [item['snippet'] for item in snippets if not item.get('is_bug', False) and item.get('snippet')]
+        return (
+            [item['snippet'] for item in snippets if item.get('is_bug', False) and item.get('snippet')],
+            [item['snippet'] for item in snippets if not item.get('is_bug', False) and item.get('snippet')]
+        )
 
     def create_triplets(self, problem_statement, positive_snippets, negative_snippets):
-        return [{'anchor': problem_statement, 'positive': positive_doc, 'negative': random.choice(negative_snippets)} 
-                for positive_doc in positive_snippets for _ in range(min(self.num_negatives_per_positive, len(negative_snippets)))]
+        return [{'anchor': problem_statement, 'positive': positive_doc, 'negative': random.choice(negative_snippets)}
+                for positive_doc in positive_snippets
+                for _ in range(min(self.num_negatives_per_positive, len(negative_snippets)))]
 
     def encode_triplet(self, triplet):
         encoded_triplet = {}
@@ -118,14 +121,19 @@ class TripletDataset:
 
     def get_dataset(self):
         dataset_generator = self.create_triplet_dataset_generator()
-        dataset = tf.data.Dataset.from_generator(lambda: dataset_generator, 
-                                                 output_types={'anchor_input_ids': tf.int32, 
-                                                               'anchor_attention_mask': tf.int32, 
-                                                               'positive_input_ids': tf.int32, 
-                                                               'positive_attention_mask': tf.int32, 
-                                                               'negative_input_ids': tf.int32, 
-                                                               'negative_attention_mask': tf.int32}).batch(self.batch_size).prefetch(tf.data.AUTOTUNE)
+        dataset = tf.data.Dataset.from_generator(
+            lambda: dataset_generator,
+            output_types={
+                'anchor_input_ids': tf.int32,
+                'anchor_attention_mask': tf.int32,
+                'positive_input_ids': tf.int32,
+                'positive_attention_mask': tf.int32,
+                'negative_input_ids': tf.int32,
+                'negative_attention_mask': tf.int32
+            }
+        ).batch(self.batch_size).prefetch(tf.data.AUTOTUNE)
         return dataset
+
 
 class TripletModel(tf.keras.Model):
     def __init__(self):
@@ -153,6 +161,7 @@ class TripletModel(tf.keras.Model):
 
         return tf.concat([anchor_outputs, positive_outputs, negative_outputs], axis=0)
 
+
 def train_model(model, dataset, epochs):
     loss_fn = lambda y_true, y_pred: tf.reduce_mean(tf.norm(y_pred[:64] - y_pred[64:128], axis=1) - tf.norm(y_pred[:64] - y_pred[128:], axis=1) + 1)
     optimizer = tf.keras.optimizers.Adam(1e-5)
@@ -160,15 +169,16 @@ def train_model(model, dataset, epochs):
         total_loss = 0
         for batch in dataset:
             with tf.GradientTape() as tape:
-                outputs = model([batch['anchor_input_ids'], batch['anchor_attention_mask'], 
-                                 batch['positive_input_ids'], batch['positive_attention_mask'], 
+                outputs = model([batch['anchor_input_ids'], batch['anchor_attention_mask'],
+                                 batch['positive_input_ids'], batch['positive_attention_mask'],
                                  batch['negative_input_ids'], batch['negative_attention_mask']])
                 loss = loss_fn(tf.zeros((outputs.shape[0],)), outputs)
 
             gradients = tape.gradient(loss, model.trainable_variables)
             optimizer.apply_gradients(zip(gradients, model.trainable_variables))
             total_loss += loss
-        print(f"Epoch {epoch+1}, Loss: {total_loss / len(dataset)}")
+        print(f"Epoch {epoch + 1}, Loss: {total_loss / len(dataset)}")
+
 
 def main(dataset_path, snippet_folder_path):
     dataset = TripletDataset(dataset_path, snippet_folder_path)
@@ -176,8 +186,8 @@ def main(dataset_path, snippet_folder_path):
     model = TripletModel()
     train_model(model, data, epochs=5)
 
+
 if __name__ == "__main__":
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
-
     main(dataset_path, snippet_folder_path)
