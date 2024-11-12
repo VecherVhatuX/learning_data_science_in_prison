@@ -23,10 +23,7 @@ class TripletDataset:
         self.tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
 
     def create_instance_id_map(self, dataset):
-        instance_id_map = {}
-        for item in dataset:
-            instance_id_map[item['instance_id']] = item['problem_statement']
-        return instance_id_map
+        return {item['instance_id']: item['problem_statement'] for item in dataset}
 
     def load_dataset_file(self):
         return np.load(self.dataset_path, allow_pickle=True)
@@ -40,21 +37,15 @@ class TripletDataset:
             return []
 
     def get_subfolder_paths(self, folder_path):
-        subfolders = [f for f in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, f))]
-        return [os.path.join(folder_path, f) for f in subfolders]
+        return [os.path.join(folder_path, f) for f in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, f))]
 
     def separate_snippets(self, snippets):
-        bug_snippets = [item['snippet'] for item in snippets if item.get('is_bug', False) and item.get('snippet')]
-        non_bug_snippets = [item['snippet'] for item in snippets if not item.get('is_bug', False) and item.get('snippet')]
-        return bug_snippets, non_bug_snippets
+        return [item['snippet'] for item in snippets if item.get('is_bug', False) and item.get('snippet')], \
+               [item['snippet'] for item in snippets if not item.get('is_bug', False) and item.get('snippet')]
 
     def create_triplets(self, problem_statement, positive_snippets, negative_snippets):
-        triplets = []
-        for positive_doc in positive_snippets:
-            negative_docs = random.sample(negative_snippets, min(self.num_negatives_per_positive, len(negative_snippets)))
-            for negative_doc in negative_docs:
-                triplets.append({'anchor': problem_statement, 'positive': positive_doc, 'negative': negative_doc})
-        return triplets
+        return [{'anchor': problem_statement, 'positive': positive_doc, 'negative': random.choice(negative_snippets)} 
+                for positive_doc in positive_snippets for _ in range(min(self.num_negatives_per_positive, len(negative_snippets)))]
 
     def encode_triplet(self, triplet):
         encoded_triplet = {}
@@ -175,7 +166,9 @@ def train_model(model, dataset, epochs):
         total_loss = 0
         for batch in dataset:
             with tf.GradientTape() as tape:
-                outputs = model(batch)
+                outputs = model([batch['anchor_input_ids'], batch['anchor_attention_mask'], 
+                                 batch['positive_input_ids'], batch['positive_attention_mask'], 
+                                 batch['negative_input_ids'], batch['negative_attention_mask']])
                 loss = loss_fn(tf.zeros((outputs.shape[0],)), outputs)
 
             gradients = tape.gradient(loss, model.trainable_variables)
