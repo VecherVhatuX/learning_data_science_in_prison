@@ -5,7 +5,7 @@ import dataclasses
 import typing
 import tensorflow as tf
 from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input, Dense
+from tensorflow.keras.layers import Input, Dense, Embedding
 from tensorflow.keras.optimizers import Adam
 import numpy as np
 import random
@@ -98,52 +98,58 @@ class BaseModel(Model):
     def __init__(self):
         super().__init__()
         self.model = tf.keras.layers.Embedding(input_dim=1000, output_dim=128, input_length=100)
-        self.dense = tf.keras.layers.Dense(128, activation="relu")
+        self.dense1 = tf.keras.layers.Dense(128, activation="relu")
+        self.dense2 = tf.keras.layers.Dense(128, activation="relu")
         self.output_layer = tf.keras.layers.Dense(1000, activation="softmax")
 
     def call(self, inputs):
         x = self.model(inputs["input_ids"])
         x = tf.reduce_mean(x, axis=1)
-        x = self.dense(x)
+        x = self.dense1(x)
+        x = self.dense2(x)
         return self.output_layer(x)
 
-def create_model():
-    return BaseModel()
+class Trainer:
+    def __init__(self, model, optimizer, train_loader, epochs, save_path):
+        self.model = model
+        self.optimizer = optimizer
+        self.train_loader = train_loader
+        self.epochs = epochs
+        self.save_path = save_path
 
-def create_optimizer(model):
-    return Adam(learning_rate=0.001)
+    def train_step(self, batch):
+        with tf.GradientTape() as tape:
+            predictions = self.model(batch)
+            loss = tf.reduce_mean(tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)(batch["labels"], predictions))
+        gradients = tape.gradient(loss, self.model.trainable_variables)
+        self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+        return loss
 
-def train_step(model, optimizer, batch):
-    with tf.GradientTape() as tape:
-        predictions = model(batch)
-        loss = tf.reduce_mean(tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)(batch["labels"], predictions))
-    gradients = tape.gradient(loss, model.trainable_variables)
-    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-    return loss
-
-def train(model, train_loader, optimizer, epochs, save_path):
-    for epoch in range(epochs):
-        train_loader.shuffle()
-        total_loss = 0
-        for batch in train_loader:
-            loss = train_step(model, optimizer, batch)
-            total_loss += loss
-        print(f"Epoch {epoch+1}, Loss: {total_loss / len(train_loader)}")
-        if epoch % 5 == 0:
-            model.save_weights(os.path.join(save_path, f"model_epoch_{epoch+1}.h5"))
+    def train(self):
+        for epoch in range(self.epochs):
+            self.train_loader.shuffle()
+            total_loss = 0
+            for batch in self.train_loader:
+                loss = self.train_step(batch)
+                total_loss += loss
+            print(f"Epoch {epoch+1}, Loss: {total_loss / len(self.train_loader)}")
+            if epoch % 5 == 0:
+                self.model.save_weights(os.path.join(self.save_path, f"model_epoch_{epoch+1}.h5"))
 
 def run_pipeline(model_args, data_args, training_args):
-    model = create_model()
-    optimizer = create_optimizer(model)
+    model = BaseModel()
+    optimizer = Adam(learning_rate=0.001)
     train_loader, _ = create_data_loaders(model_args, data_args)
-    train(model, train_loader, optimizer, training_args.num_train_epochs, training_args.output_dir)
+    trainer = Trainer(model, optimizer, train_loader, training_args.num_train_epochs, training_args.output_dir)
+    trainer.train()
 
 def resume_pipeline(model_args, data_args, training_args, checkpoint_path):
     model = BaseModel()
     model.load_weights(checkpoint_path)
-    optimizer = create_optimizer(model)
+    optimizer = Adam(learning_rate=0.001)
     train_loader, _ = create_data_loaders(model_args, data_args)
-    train(model, train_loader, optimizer, training_args.num_train_epochs, training_args.output_dir)
+    trainer = Trainer(model, optimizer, train_loader, training_args.num_train_epochs, training_args.output_dir)
+    trainer.train()
 
 if __name__ == "__main__":
     model_args = ModelConfig(model_identifier="t5-base", chat_template="none")
