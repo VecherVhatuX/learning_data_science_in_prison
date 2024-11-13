@@ -120,12 +120,31 @@ class TripletModel(LightningModule):
     def configure_optimizers(self):
         return optim.Adam(self.parameters(), lr=LEARNING_RATE)
 
+    def validation_step(self, batch, batch_idx):
+        anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _ = batch
+        outputs = self(anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _)
+        loss = torch.mean(torch.norm(outputs[:BATCH_SIZE] - outputs[BATCH_SIZE:2*BATCH_SIZE], dim=1) - torch.norm(outputs[:BATCH_SIZE] - outputs[2*BATCH_SIZE:], dim=1) + 1)
+        return {'val_loss': loss}
+
+    def test_step(self, batch, batch_idx):
+        anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _ = batch
+        outputs = self(anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _)
+        loss = torch.mean(torch.norm(outputs[:BATCH_SIZE] - outputs[BATCH_SIZE:2*BATCH_SIZE], dim=1) - torch.norm(outputs[:BATCH_SIZE] - outputs[2*BATCH_SIZE:], dim=1) + 1)
+        return {'test_loss': loss}
+
 def train(dataset_path, snippet_folder_path):
     dataset = TripletDataset(dataset_path, snippet_folder_path)
     dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
     model = TripletModel()
-    trainer = Trainer(max_epochs=MAX_EPOCHS)
+    trainer = Trainer(max_epochs=MAX_EPOCHS, 
+                      log_every_n_steps=10, 
+                      flush_logs_every_n_steps=100, 
+                      checkpoint_callback=True)
     trainer.fit(model, dataloader)
+
+def evaluate(model, dataloader):
+    trainer = Trainer()
+    return trainer.test(model, dataloader)
 
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
