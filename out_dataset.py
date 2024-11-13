@@ -13,7 +13,7 @@ import tensorflow as tf
 import pickle
 import json
 
-# Constants
+# Hyperparameters and configuration
 INSTANCE_ID_FIELD = 'instance_id'
 MAX_LENGTH = 512
 BATCH_SIZE = 16
@@ -25,6 +25,7 @@ LEARNING_RATE = 1e-5
 MAX_EPOCHS = 5
 
 def load_dataset(dataset_path):
+    """Loads the dataset from a given path."""
     try:
         return np.load(dataset_path, allow_pickle=True)
     except FileNotFoundError:
@@ -32,6 +33,7 @@ def load_dataset(dataset_path):
         return []
 
 def load_json_file(file_path):
+    """Loads JSON data from a given file."""
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             return json.load(f)
@@ -40,20 +42,24 @@ def load_json_file(file_path):
         return []
 
 def get_subfolder_paths(folder_path):
+    """Returns a list of subfolder paths within a given folder."""
     return [os.path.join(folder_path, f) for f in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, f))]
 
 def separate_snippets(snippets):
+    """Separates bug snippets from non-bug snippets."""
     return (
         [item['snippet'] for item in snippets if item.get('is_bug', False) and item.get('snippet')],
         [item['snippet'] for item in snippets if not item.get('is_bug', False) and item.get('snippet')]
     )
 
 def create_triplets(problem_statement, positive_snippets, negative_snippets, num_negatives_per_positive):
+    """Creates triplets for training."""
     return [{'anchor': problem_statement, 'positive': positive_doc, 'negative': random.choice(negative_snippets)}
             for positive_doc in positive_snippets
             for _ in range(min(num_negatives_per_positive, len(negative_snippets)))]
 
 def encode_triplet(triplet):
+    """Encodes a triplet using TF-IDF."""
     vectorizer = TfidfVectorizer(max_features=MAX_LENGTH)
     encoded_triplet = {}
     for key, text in triplet.items():
@@ -63,6 +69,7 @@ def encode_triplet(triplet):
 
 class TripletDataset:
     def __init__(self, dataset_path, snippet_folder_path):
+        """Initializes the triplet dataset."""
         self.dataset_path = dataset_path
         self.snippet_folder_path = snippet_folder_path
         self.dataset = load_dataset(dataset_path)
@@ -83,9 +90,11 @@ class TripletDataset:
 
 class TripletModel:
     def __init__(self):
+        """Initializes the triplet model."""
         self.model = self._build_model()
 
     def _build_model(self):
+        """Builds the triplet model architecture."""
         input_anchor = Input(shape=(MAX_LENGTH,), name='anchor_input_ids')
         input_positive = Input(shape=(MAX_LENGTH,), name='positive_input_ids')
         input_negative = Input(shape=(MAX_LENGTH,), name='negative_input_ids')
@@ -108,11 +117,13 @@ class TripletModel:
         return Model(inputs=[input_anchor, input_positive, input_negative], outputs=[anchor_embedding, positive_embedding, negative_embedding])
 
     def _triplet_loss(self, y_true, y_pred):
+        """Computes the triplet loss."""
         anchor, positive, negative = y_pred
         loss = tf.maximum(0.0, tf.reduce_mean(tf.square(anchor - positive)) - tf.reduce_mean(tf.square(anchor - negative)) + 1.0)
         return loss
 
     def train(self, dataset, batch_size, epochs):
+        """Trains the model."""
         checkpoint = ModelCheckpoint('triplet_model.h5', monitor='loss', verbose=1, save_best_only=True, mode='min')
         early_stopping = EarlyStopping(monitor='loss', patience=5, mode='min')
         self.model.compile(loss=self._triplet_loss, optimizer=Adam(lr=LEARNING_RATE))
@@ -122,6 +133,7 @@ class TripletModel:
                        epochs=epochs, batch_size=batch_size, callbacks=[checkpoint, early_stopping])
 
     def evaluate(self, dataset, batch_size):
+        """Evaluates the model."""
         self.model.compile(loss=self._triplet_loss, optimizer=Adam(lr=LEARNING_RATE))
         loss = self.model.evaluate([np.array([item['anchor_input_ids'] for item in dataset]), 
                                     np.array([item['positive_input_ids'] for item in dataset]), 
@@ -130,6 +142,7 @@ class TripletModel:
         return loss
 
 def main():
+    """Runs the main function."""
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
     dataset = TripletDataset(dataset_path, snippet_folder_path)
