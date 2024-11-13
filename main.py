@@ -81,8 +81,7 @@ class Model(nn.Module):
         self.model = AutoModelForSeq2SeqLM.from_pretrained("t5-base")
 
     def forward(self, input_ids, attention_mask, labels):
-        output = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-        return output.loss
+        return self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels).loss
 
 class ModelManager:
     def __init__(self, model_args, training_args):
@@ -154,6 +153,7 @@ class Trainer:
         attention_mask = torch.cat([sample["attention_mask"] for sample in positive_samples + negative_samples])
         labels = torch.cat([sample["labels"] for sample in positive_samples + negative_samples])
         self.optimizer.zero_grad()
+        self.model.zero_grad()
         loss = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
         loss.backward()
         self.optimizer.step()
@@ -168,7 +168,7 @@ class Trainer:
                 total_loss += loss
             print(f"Epoch {epoch+1}, Loss: {total_loss / len(self.train_dataset)}")
             if epoch % 5 == 0:
-                self.model.save_model(save_path)
+                torch.save(self.model.state_dict(), os.path.join(save_path, f"model_epoch_{epoch+1}.pth"))
 
 def run_pipeline(model_args, data_args, training_args):
     model_manager = ModelManager(model_args, training_args)
