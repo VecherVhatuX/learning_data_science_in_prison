@@ -56,10 +56,17 @@ class TrainingConfig:
 class DatasetBase(Dataset):
     def __init__(self, data, model_args, num_negative_samples=0):
         self.data = data
-        self.input_ids = np.array([example["input"] if model_args.chat_template == "none" else f"{example['input']} " for example in data])
-        self.labels = np.array([example["output"] if model_args.chat_template == "none" else f"{example['output']} " for example in data])
-        self.attention_mask = np.array([1]*len(self.input_ids))
+        self.model_args = model_args
         self.num_negative_samples = num_negative_samples
+        self.input_ids = np.array([self._process_input(example) for example in data])
+        self.labels = np.array([self._process_output(example) for example in data])
+        self.attention_mask = np.array([1]*len(self.input_ids))
+
+    def _process_input(self, example):
+        return example["input"] if self.model_args.chat_template == "none" else f"{example['input']} "
+
+    def _process_output(self, example):
+        return example["output"] if self.model_args.chat_template == "none" else f"{example['output']} "
 
     def __len__(self):
         return len(self.input_ids)
