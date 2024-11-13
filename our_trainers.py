@@ -19,18 +19,22 @@ class CustomDataset(Dataset):
         batch = indices[idx * self.batch_size:(idx + 1) * self.batch_size]
 
         anchor_idx = batch
-        positive_idx = []
-        negative_indices = []
+        positive_idx = torch.tensor([], dtype=torch.long)
+        negative_indices = torch.tensor([], dtype=torch.long)
+
         for anchor in anchor_idx:
             idx = torch.where(self.labels == self.labels[anchor])[0]
-            positive_idx.append(torch.randint(0, len(idx[idx != anchor]), (1,)))
+            positive_idx = torch.cat((positive_idx, torch.randint(0, len(idx[idx != anchor]), (1,))))
             idx = torch.where(self.labels != self.labels[anchor])[0]
             negative_idx = torch.randperm(len(idx))[:self.num_negatives]
-            negative_indices.append(idx[negative_idx])
+            negative_indices = torch.cat((negative_indices, idx[negative_idx]))
 
         anchor_input_ids = self.samples[anchor_idx]
-        positive_input_ids = self.samples[positive_idx]
-        negative_input_ids = [self.samples[negative_idx] for negative_idx in negative_indices]
+        if len(positive_idx) > 0:
+            positive_input_ids = self.samples[positive_idx]
+        else:
+            positive_input_ids = torch.tensor([], dtype=torch.long)
+        negative_input_ids = self.samples[negative_indices].view(self.batch_size, self.num_negatives, -1)
 
         return {
             'anchor_input_ids': anchor_input_ids,
@@ -59,16 +63,14 @@ class TripletModel(nn.Module):
         positive_embeddings = self.pooling(positive_embeddings).squeeze(1)
         positive_embeddings = positive_embeddings / torch.norm(positive_embeddings, dim=1, keepdim=True)
 
-        negative_embeddings = []
-        for negative_input_ids in negative_input_ids:
-            negative_embedding = self.embedding(negative_input_ids)
-            negative_embedding = self.pooling(negative_embedding).squeeze(1)
-            negative_embedding = negative_embedding / torch.norm(negative_embedding, dim=1, keepdim=True)
-            negative_embeddings.append(negative_embedding)
+        negative_embeddings = self.embedding(negative_input_ids)
+        negative_embeddings = self.pooling(negative_embeddings).squeeze(1)
+        negative_embeddings = negative_embeddings / torch.norm(negative_embeddings, dim=1, keepdim=True)
 
-        return anchor_embeddings, positive_embeddings, torch.stack(negative_embeddings)
+        return anchor_embeddings, positive_embeddings, negative_embeddings[:, 0, :]
 
 def main():
+    torch.manual_seed(42)
     samples = torch.randint(0, 100, (100, 10))
     labels = torch.randint(0, 2, (100,))
     batch_size = 32
@@ -85,10 +87,11 @@ def main():
         for i, data in enumerate(data_loader):
             optimizer.zero_grad()
             anchor_embeddings, positive_embeddings, negative_embeddings = model(data)
-            loss = model.criterion(anchor_embeddings, positive_embeddings, negative_embeddings[:, 0, :])
-            loss.backward()
-            optimizer.step()
-            running_loss += loss.item()
+            if len(positive_embeddings) > 0:
+                loss = model.criterion(anchor_embeddings, positive_embeddings, negative_embeddings)
+                loss.backward()
+                optimizer.step()
+                running_loss += loss.item()
         print('Epoch: %d, Loss: %.3f' % (epoch+1, running_loss/(i+1)))
 
     torch.save(model.state_dict(), 'model.pth')
