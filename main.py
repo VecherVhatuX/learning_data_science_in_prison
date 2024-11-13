@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+import random
 
 @dataclass
 class ModelConfig:
@@ -54,157 +55,115 @@ class TrainingConfig:
     seed: int = field(default=42)
     resume_from_checkpoint: Optional[str] = field(default=None)
 
-class Dataset(Dataset):
-    """Custom dataset class"""
-    def __init__(self, data, batch_size, num_negative_samples):
-        self.data = data
-        self.batch_size = batch_size
-        self.num_negative_samples = num_negative_samples
-        self.indices = list(range(len(data)))
+def load_data(file_name):
+    return json.load(open(file_name))
 
-    def __len__(self):
-        return len(self.data) // self.batch_size
+def process_data(examples, model_args):
+    tokenizer = AutoTokenizer.from_pretrained("t5-base")
+    apply_chat_template = model_args.chat_template != "none"
+    if apply_chat_template:
+        inputs = []
+        labels = []
+        for example in examples:
+            inputs.append(f"{example['input']} {tokenizer.sep_token}")
+            labels.append(f"{example['output']} {tokenizer.sep_token}")
+        examples["input_ids"] = tokenizer(inputs, return_tensors="pt", padding=True, truncation=True).input_ids
+        examples["labels"] = tokenizer(labels, return_tensors="pt", padding=True, truncation=True).input_ids
+        examples["attention_mask"] = tokenizer(inputs, return_tensors="pt", padding=True, truncation=True).attention_mask
+    else:
+        examples["input_ids"] = tokenizer([example["input"] for example in examples], return_tensors="pt", padding=True, truncation=True).input_ids
+        examples["labels"] = tokenizer([example["output"] for example in examples], return_tensors="pt", padding=True, truncation=True).input_ids
+        examples["attention_mask"] = tokenizer([example["input"] for example in examples], return_tensors="pt", padding=True, truncation=True).attention_mask
+    return examples
 
-    def __getitem__(self, idx):
-        batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
-        batch = [self.data[i] for i in batch_indices]
-        positive_samples = [sample for sample in batch if sample["label"] == 1]
-        negative_samples = [sample for sample in batch if sample["label"] == 0]
-        return positive_samples, negative_samples
+def prepare_datasets(model_args, data_args):
+    train_data = load_data("train.json")
+    test_data = load_data("test.json")
+    train_data = process_data(train_data, model_args)
+    test_data = process_data(test_data, model_args)
+    return train_data, test_data
 
-    def epoch_shuffle(self):
-        import random
-        random.shuffle(self.indices)
+def create_dataset(data, batch_size, num_negative_samples):
+    class Dataset(Dataset):
+        def __init__(self, data, batch_size, num_negative_samples):
+            self.data = data
+            self.batch_size = batch_size
+            self.num_negative_samples = num_negative_samples
+            self.indices = list(range(len(data)))
 
-class Base(torch.nn.Module):
-    """Base model class"""
+        def __len__(self):
+            return len(self.data) // self.batch_size
+
+        def __getitem__(self, idx):
+            batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
+            batch = [self.data[i] for i in batch_indices]
+            positive_samples = [sample for sample in batch if sample["label"] == 1]
+            negative_samples = [sample for sample in batch if sample["label"] == 0]
+            return positive_samples, negative_samples
+
+        def epoch_shuffle(self):
+            random.shuffle(self.indices)
+
+    return Dataset(data, batch_size, num_negative_samples)
+
+def create_data_loaders(model_args, data_args):
+    train_data, test_data = prepare_datasets(model_args, data_args)
+    train_dataset = create_dataset(train_data, data_args.per_device_train_batch_size, 5)
+    test_dataset = create_dataset(test_data, data_args.per_device_eval_batch_size, 5)
+    return DataLoader(train_dataset, batch_size=None), DataLoader(test_dataset, batch_size=None)
+
+class BaseModel(nn.Module):
     def __init__(self):
-        super(Base, self).__init__()
+        super().__init__()
         self.model = AutoModelForSeq2SeqLM.from_pretrained("t5-base")
 
     def forward(self, input_ids, attention_mask, labels):
         return self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels).loss
 
-class BaseModel(Base):
-    """Base model class"""
-    def __init__(self):
-        super().__init__()
+def create_model():
+    return BaseModel()
 
-class Model(BaseModel):
-    """Model class"""
-    pass
+def create_optimizer(model):
+    return optim.Adam(model.parameters(), lr=0.001)
 
-class ModelHandler:
-    """Model handler class"""
-    def __init__(self, model_args, training_args):
-        self.model_args = model_args
-        self.training_args = training_args
+def train_step(model, optimizer, batch):
+    positive_samples, negative_samples = batch
+    input_ids = torch.cat([sample["input_ids"] for sample in positive_samples + negative_samples])
+    attention_mask = torch.cat([sample["attention_mask"] for sample in positive_samples + negative_samples])
+    labels = torch.cat([sample["labels"] for sample in positive_samples + negative_samples])
+    optimizer.zero_grad()
+    model.zero_grad()
+    loss = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+    loss.backward()
+    optimizer.step()
+    return loss.item()
 
-    def create_model(self):
-        return Model()
-
-    def create_optimizer(self, model):
-        return optim.Adam(model.parameters(), lr=0.001)
-
-    def save_model(self, model, path):
-        torch.save(model.state_dict(), path)
-
-    def load_model(self, path):
-        model = Model()
-        model.load_state_dict(torch.load(path))
-        return model
-
-class DataHandler:
-    """Data handler class"""
-    def __init__(self, model_args, data_args):
-        self.model_args = model_args
-        self.data_args = data_args
-
-    def load_data(self, file_name):
-        return json.load(open(file_name))
-
-    def process_data(self, examples):
-        tokenizer = AutoTokenizer.from_pretrained("t5-base")
-        apply_chat_template = self.model_args.chat_template != "none"
-        if apply_chat_template:
-            inputs = []
-            labels = []
-            for example in examples:
-                inputs.append(f"{example['input']} {tokenizer.sep_token}")
-                labels.append(f"{example['output']} {tokenizer.sep_token}")
-            examples["input_ids"] = tokenizer(inputs, return_tensors="pt", padding=True, truncation=True).input_ids
-            examples["labels"] = tokenizer(labels, return_tensors="pt", padding=True, truncation=True).input_ids
-            examples["attention_mask"] = tokenizer(inputs, return_tensors="pt", padding=True, truncation=True).attention_mask
-        else:
-            examples["input_ids"] = tokenizer([example["input"] for example in examples], return_tensors="pt", padding=True, truncation=True).input_ids
-            examples["labels"] = tokenizer([example["output"] for example in examples], return_tensors="pt", padding=True, truncation=True).input_ids
-            examples["attention_mask"] = tokenizer([example["input"] for example in examples], return_tensors="pt", padding=True, truncation=True).attention_mask
-        return examples
-
-    def prepare_datasets(self):
-        train_data = self.load_data("train.json")
-        test_data = self.load_data("test.json")
-        train_data = self.process_data(train_data)
-        test_data = self.process_data(test_data)
-        return train_data, test_data
-
-    def create_data_loaders(self):
-        train_data, test_data = self.prepare_datasets()
-        train_dataset = Dataset(train_data, self.data_args.per_device_train_batch_size, 5)
-        test_dataset = Dataset(test_data, self.data_args.per_device_eval_batch_size, 5)
-        return DataLoader(train_dataset, batch_size=None), DataLoader(test_dataset, batch_size=None)
-
-class Trainer:
-    """Trainer class"""
-    def __init__(self, model, train_dataset, optimizer):
-        self.model = model
-        self.train_dataset = train_dataset
-        self.optimizer = optimizer
-
-    def train_step(self, batch):
-        positive_samples, negative_samples = batch
-        input_ids = torch.cat([sample["input_ids"] for sample in positive_samples + negative_samples])
-        attention_mask = torch.cat([sample["attention_mask"] for sample in positive_samples + negative_samples])
-        labels = torch.cat([sample["labels"] for sample in positive_samples + negative_samples])
-        self.optimizer.zero_grad()
-        self.model.zero_grad()
-        loss = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-        loss.backward()
-        self.optimizer.step()
-        return loss.item()
-
-    def train(self, epochs, save_path):
-        for epoch in range(epochs):
-            self.train_dataset.dataset.epoch_shuffle()
-            total_loss = 0
-            for batch in self.train_dataset:
-                loss = self.train_step(batch)
-                total_loss += loss
-            print(f"Epoch {epoch+1}, Loss: {total_loss / len(self.train_dataset)}")
-            if epoch % 5 == 0:
-                torch.save(self.model.state_dict(), os.path.join(save_path, f"model_epoch_{epoch+1}.pth"))
+def train(model, train_dataset, optimizer, epochs, save_path):
+    for epoch in range(epochs):
+        train_dataset.dataset.epoch_shuffle()
+        total_loss = 0
+        for batch in train_dataset:
+            loss = train_step(model, optimizer, batch)
+            total_loss += loss
+        print(f"Epoch {epoch+1}, Loss: {total_loss / len(train_dataset)}")
+        if epoch % 5 == 0:
+            torch.save(model.state_dict(), os.path.join(save_path, f"model_epoch_{epoch+1}.pth"))
 
 def run_pipeline(model_args, data_args, training_args):
-    model_handler = ModelHandler(model_args, training_args)
-    data_handler = DataHandler(model_args, data_args)
-    model = model_handler.create_model()
-    optimizer = model_handler.create_optimizer(model)
-    train_dataset, _ = data_handler.create_data_loaders()
-    trainer = Trainer(model, train_dataset, optimizer)
-    trainer.train(training_args.num_train_epochs, training_args.output_dir)
+    model = create_model()
+    optimizer = create_optimizer(model)
+    train_dataset, _ = create_data_loaders(model_args, data_args)
+    train(model, train_dataset, optimizer, training_args.num_train_epochs, training_args.output_dir)
 
 def resume_pipeline(model_args, data_args, training_args, checkpoint_path):
-    model_handler = ModelHandler(model_args, training_args)
-    data_handler = DataHandler(model_args, data_args)
-    model = model_handler.load_model(checkpoint_path)
-    optimizer = model_handler.create_optimizer(model)
-    train_dataset, _ = data_handler.create_data_loaders()
-    trainer = Trainer(model, train_dataset, optimizer)
-    trainer.train(training_args.num_train_epochs, training_args.output_dir)
+    model = BaseModel()
+    model.load_state_dict(torch.load(checkpoint_path))
+    optimizer = create_optimizer(model)
+    train_dataset, _ = create_data_loaders(model_args, data_args)
+    train(model, train_dataset, optimizer, training_args.num_train_epochs, training_args.output_dir)
 
 if __name__ == "__main__":
     model_args = ModelConfig(model_identifier="t5-base", chat_template="none")
     data_args = TrainingDataConfig(dataset_name="timdettmers/openassistant-guanaco")
     training_args = TrainingConfig(output_dir="./results", num_train_epochs=3, per_device_train_batch_size=16)
-
     run_pipeline(model_args, data_args, training_args)
