@@ -100,6 +100,9 @@ class TripletDataset(DatasetBase):
             "attention_mask": self.attention_mask[idx]
         }
 
+    def on_epoch_end(self):
+        self.data = np.random.permutation(self.data)
+
 class BaseModel(nn.Module):
     def __init__(self):
         super(BaseModel, self).__init__()
@@ -146,6 +149,7 @@ class T5Model(BaseModel):
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
+            train_loader.dataset.on_epoch_end()
             print(f"Epoch {epoch+1}, Loss: {loss.item()}")
 
     @classmethod
