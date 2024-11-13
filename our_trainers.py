@@ -49,7 +49,7 @@ class BatchCreator:
         }
 
 
-class TripletData:
+class TripletData(tf.data.Dataset):
     def __init__(self, samples, labels, batch_size, num_negatives):
         self.data_shuffler = DataShuffler(samples, labels, batch_size, num_negatives)
         self.index_sampler = IndexSampler(labels, num_negatives)
@@ -75,7 +75,7 @@ class EmbeddingModel(tf.keras.Model):
         self.embedding = layers.Embedding(num_embeddings, embedding_dim)
         self.pooling = layers.GlobalAveragePooling1D()
 
-    def call(self, x):
+    def call(self, x, training=False):
         x = self.embedding(x)
         x = self.pooling(x)
         return x
@@ -84,8 +84,9 @@ class EmbeddingModel(tf.keras.Model):
         return embeddings / tf.norm(embeddings, axis=1, keepdims=True)
 
 
-class TripletLossModel:
+class TripletLossModel(tf.keras.Model):
     def __init__(self, model):
+        super(TripletLossModel, self).__init__()
         self.model = model
 
     def triplet_loss(self, anchor_embeddings, positive_embeddings, negative_embeddings, margin):
@@ -97,6 +98,7 @@ class TripletLossModel:
     def compile(self, optimizer, margin):
         self.optimizer = optimizer
         self.margin = margin
+        self.loss_fn = tf.keras.losses.MeanSquaredError()
 
     def train_step(self, batch):
         with tf.GradientTape() as tape:
@@ -112,19 +114,6 @@ class TripletLossModel:
         return {"loss": loss}
 
 
-def train_model(model, dataset, epochs):
-    for epoch in range(epochs):
-        total_loss = 0
-        for batch in dataset:
-            loss = model.train_step(batch).get("loss")
-            total_loss += loss.numpy()
-        print(f"Epoch {epoch+1}, Loss: {total_loss / len(dataset)}")
-
-
-def persist_model(model, filename):
-    model.model.save_weights(filename)
-
-
 def main():
     samples = np.random.randint(0, 100, (100, 10))
     labels = np.random.randint(0, 2, 100)
@@ -137,8 +126,13 @@ def main():
     triplet_model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=1e-4), margin=1.0)
     dataset = TripletData(samples, labels, batch_size, num_negatives)
 
-    train_model(triplet_model, dataset, epochs)
-    persist_model(triplet_model, "model")
+    for epoch in range(epochs):
+        total_loss = 0
+        for batch in dataset:
+            loss = triplet_model.train_step(batch).get("loss")
+            total_loss += loss.numpy()
+        print(f"Epoch {epoch+1}, Loss: {total_loss / len(dataset)}")
+    model.save_weights("model")
 
 
 if __name__ == "__main__":
