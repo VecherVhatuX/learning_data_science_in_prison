@@ -81,7 +81,7 @@ def main():
     num_negatives = 5
     epochs = 10
 
-    model = TripletLossModel(100, 10)
+    model = TripletLossModel(101, 10)
     dataset = TripletData(samples, labels, batch_size, num_negatives)
     optimizer = tf.keras.optimizers.SGD(learning_rate=1e-4)
     margin = 1.0
