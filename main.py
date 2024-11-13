@@ -56,8 +56,8 @@ class TrainingConfig:
 class CustomDataset(Dataset):
     def __init__(self, data, model_args):
         self.data = data
-        self.input_ids = np.array([example["input"] for example in data] if model_args.chat_template == "none" else [f"{example['input']} " for example in data])
-        self.labels = np.array([example["output"] for example in data] if model_args.chat_template == "none" else [f"{example['output']} " for example in data])
+        self.input_ids = np.array([example["input"] if model_args.chat_template == "none" else f"{example['input']} " for example in data])
+        self.labels = np.array([example["output"] if model_args.chat_template == "none" else f"{example['output']} " for example in data])
         self.attention_mask = np.array([1]*len(self.input_ids))
 
     def __len__(self):
@@ -66,20 +66,23 @@ class CustomDataset(Dataset):
     def __getitem__(self, idx):
         return {"input_ids": self.input_ids[idx], "labels": self.labels[idx], "attention_mask": self.attention_mask[idx]}
 
-def load_data(file_name):
-    with open(file_name, 'r') as f:
-        return json.load(f)
+    @staticmethod
+    def load_data(file_name):
+        with open(file_name, 'r') as f:
+            return json.load(f)
 
-def prepare_datasets(model_args, data_args):
-    train_data = load_data("train.json")
-    test_data = load_data("test.json")
-    return CustomDataset(train_data, model_args), CustomDataset(test_data, model_args)
+    @classmethod
+    def prepare_datasets(cls, model_args, data_args):
+        train_data = cls.load_data("train.json")
+        test_data = cls.load_data("test.json")
+        return cls(train_data, model_args), cls(test_data, model_args)
 
-def create_data_loaders(model_args, data_args):
-    train_data, test_data = prepare_datasets(model_args, data_args)
-    train_loader = DataLoader(train_data, batch_size=data_args.per_device_train_batch_size, shuffle=True)
-    test_loader = DataLoader(test_data, batch_size=data_args.per_device_eval_batch_size, shuffle=False)
-    return train_loader, test_loader
+    @classmethod
+    def create_data_loaders(cls, model_args, data_args):
+        train_data, test_data = cls.prepare_datasets(model_args, data_args)
+        train_loader = DataLoader(train_data, batch_size=data_args.per_device_train_batch_size, shuffle=True)
+        test_loader = DataLoader(test_data, batch_size=data_args.per_device_eval_batch_size, shuffle=False)
+        return train_loader, test_loader
 
 class BaseModel(nn.Module):
     def __init__(self):
@@ -101,43 +104,47 @@ class T5Model(BaseModel):
         x = self.fc3(x)
         return x
 
-def train_step(model, batch, device):
-    input_ids = batch["input_ids"].view(1, -1).to(device)
-    labels = batch["labels"].view(1, -1).to(device)
-    attention_mask = batch["attention_mask"].view(1, -1).to(device)
-    outputs = model(input_ids)
-    loss_fn = nn.MSELoss()
-    loss = loss_fn(outputs, labels)
-    return loss
+    @staticmethod
+    def train_step(model, batch, device):
+        input_ids = batch["input_ids"].view(1, -1).to(device)
+        labels = batch["labels"].view(1, -1).to(device)
+        attention_mask = batch["attention_mask"].view(1, -1).to(device)
+        outputs = model(input_ids)
+        loss_fn = nn.MSELoss()
+        loss = loss_fn(outputs, labels)
+        return loss
 
-def train(model, device, train_loader, num_epochs):
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-    for epoch in tqdm(range(num_epochs)):
-        for batch in train_loader:
-            loss = train_step(model, batch, device)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-        print(f"Epoch {epoch+1}, Loss: {loss.item()}")
+    @classmethod
+    def train(cls, model, device, train_loader, num_epochs):
+        optimizer = optim.Adam(model.parameters(), lr=0.001)
+        for epoch in tqdm(range(num_epochs)):
+            for batch in train_loader:
+                loss = cls.train_step(model, batch, device)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+            print(f"Epoch {epoch+1}, Loss: {loss.item()}")
 
-def run_pipeline(model_args, data_args, training_args):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = T5Model()
-    model.to(device)
-    train_loader, _ = create_data_loaders(model_args, data_args)
-    train(model, device, train_loader, training_args.num_train_epochs)
+    @classmethod
+    def run_pipeline(cls, model_args, data_args, training_args):
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = cls()
+        model.to(device)
+        train_loader, _ = CustomDataset.create_data_loaders(model_args, data_args)
+        cls.train(model, device, train_loader, training_args.num_train_epochs)
 
-def resume_pipeline(model_args, data_args, training_args, checkpoint_path):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = T5Model()
-    model.to(device)
-    checkpoint = torch.load(checkpoint_path)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    train_loader, _ = create_data_loaders(model_args, data_args)
-    train(model, device, train_loader, training_args.num_train_epochs)
+    @classmethod
+    def resume_pipeline(cls, model_args, data_args, training_args, checkpoint_path):
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = cls()
+        model.to(device)
+        checkpoint = torch.load(checkpoint_path)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        train_loader, _ = CustomDataset.create_data_loaders(model_args, data_args)
+        cls.train(model, device, train_loader, training_args.num_train_epochs)
 
 if __name__ == "__main__":
     model_args = ModelConfig(model_identifier="t5-base", chat_template="none")
     data_args = TrainingDataConfig(dataset_name="timdettmers/openassistant-guanaco")
     training_args = TrainingConfig(output_dir="./results", num_train_epochs=3, per_device_train_batch_size=16)
-    run_pipeline(model_args, data_args, training_args)
+    T5Model.run_pipeline(model_args, data_args, training_args)
