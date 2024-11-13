@@ -11,6 +11,7 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
 @dataclass
 class ModelConfig:
+    """Configuration for the model"""
     model_identifier: str = field(default="t5-base")
     chat_template: Optional[str] = field(default="none")
     lora_alpha: Optional[int] = field(default=16)
@@ -31,6 +32,7 @@ class ModelConfig:
 
 @dataclass
 class TrainingDataConfig:
+    """Configuration for the training data"""
     dataset_name: Optional[str] = field(default="timdettmers/openassistant-guanaco")
     append_concat_token: Optional[bool] = field(default=False)
     add_special_tokens: Optional[bool] = field(default=False)
@@ -39,6 +41,7 @@ class TrainingDataConfig:
 
 @dataclass
 class TrainingConfig:
+    """Configuration for the training process"""
     output_dir: str = field(default="./results")
     num_train_epochs: int = field(default=3)
     per_device_train_batch_size: int = field(default=16)
@@ -52,6 +55,7 @@ class TrainingConfig:
     resume_from_checkpoint: Optional[str] = field(default=None)
 
 class Dataset(Dataset):
+    """Custom dataset class"""
     def __init__(self, data, batch_size, num_negative_samples):
         self.data = data
         self.batch_size = batch_size
@@ -73,6 +77,7 @@ class Dataset(Dataset):
         random.shuffle(self.indices)
 
 class Base(torch.nn.Module):
+    """Base model class"""
     def __init__(self):
         super(Base, self).__init__()
         self.model = AutoModelForSeq2SeqLM.from_pretrained("t5-base")
@@ -81,13 +86,16 @@ class Base(torch.nn.Module):
         return self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels).loss
 
 class BaseModel(Base):
+    """Base model class"""
     def __init__(self):
         super().__init__()
 
 class Model(BaseModel):
+    """Model class"""
     pass
 
 class ModelHandler:
+    """Model handler class"""
     def __init__(self, model_args, training_args):
         self.model_args = model_args
         self.training_args = training_args
@@ -107,6 +115,7 @@ class ModelHandler:
         return model
 
 class DataHandler:
+    """Data handler class"""
     def __init__(self, model_args, data_args):
         self.model_args = model_args
         self.data_args = data_args
@@ -146,6 +155,7 @@ class DataHandler:
         return DataLoader(train_dataset, batch_size=None), DataLoader(test_dataset, batch_size=None)
 
 class Trainer:
+    """Trainer class"""
     def __init__(self, model, train_dataset, optimizer):
         self.model = model
         self.train_dataset = train_dataset
@@ -198,4 +208,3 @@ if __name__ == "__main__":
     training_args = TrainingConfig(output_dir="./results", num_train_epochs=3, per_device_train_batch_size=16)
 
     run_pipeline(model_args, data_args, training_args)
-    #resume_pipeline(model_args, data_args, training_args, "./results/model.pth")
