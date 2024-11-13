@@ -4,15 +4,12 @@ import yaml
 from dataclasses import dataclass, field
 from typing import Optional
 from functools import partial
-import jax
-import jax.numpy as jnp
-from jax.experimental.jax2tf import convert
-from flax import linen as nn
-from flax.training import train_state, checkpoints
-from flax.datasets import Dataset
-from flax.serialization import to_bytes
-from jax.experimental import jax2tf
-from transformers import AutoTokenizer
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+import json
 
 # Data classes
 @dataclass
@@ -57,13 +54,12 @@ class TrainingConfig:
     seed: int = field(default=42, metadata={"help": "Random seed."})
     resume_from_checkpoint: Optional[str] = field(default=None, metadata={"help": "Resume training from checkpoint."})
 
-class Dataset(Dataset):
+class MyDataset(Dataset):
     def __init__(self, data, batch_size, num_negative_samples):
         self.data = data
         self.batch_size = batch_size
         self.num_negative_samples = num_negative_samples
         self.indices = list(range(len(data)))
-        self.epoch = 0
 
     def __len__(self):
         return len(self.data) // self.batch_size
@@ -76,14 +72,17 @@ class Dataset(Dataset):
         return positive_samples, negative_samples
 
     def epoch_shuffle(self):
-        jax.random.shuffle(jax.random.PRNGKey(42), self.indices)
-        self.epoch += 1
+        import random
+        random.shuffle(self.indices)
 
-class Transformer(nn.Module):
-    @nn.compact
-    def __call__(self, input_ids, attention_mask, labels):
-        model = jax.experimental.jax2tf.call_tf(System="tensorflow://transformers/t5-base/1", args=(input_ids, attention_mask, labels))
-        return model
+class Model(nn.Module):
+    def __init__(self):
+        super(Model, self).__init__()
+        self.model = AutoModelForSeq2SeqLM.from_pretrained("t5-base")
+
+    def forward(self, input_ids, attention_mask, labels):
+        output = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+        return output.loss
 
 class ModelManager:
     def __init__(self, model_args, training_args):
@@ -91,18 +90,18 @@ class ModelManager:
         self.training_args = training_args
 
     def create_model(self):
-        return Transformer()
+        return Model()
 
     def create_optimizer(self, model):
-        return optax.adam(learning_rate=0.001, params=model)
+        return optim.Adam(model.parameters(), lr=0.001)
 
     def save_model(self, model, path):
-        with open(path, 'wb') as f:
-            f.write(to_bytes(model))
+        torch.save(model.state_dict(), path)
 
     def load_model(self, path):
-        with open(path, 'rb') as f:
-            return jax.experimental.jax2tf.restore(path)
+        model = Model()
+        model.load_state_dict(torch.load(path))
+        return model
 
 class DatasetManager:
     def __init__(self, model_args, data_args):
@@ -121,13 +120,13 @@ class DatasetManager:
             for example in examples:
                 inputs.append(f"{example['input']} {tokenizer.sep_token}")
                 labels.append(f"{example['output']} {tokenizer.sep_token}")
-            examples["input_ids"] = tokenizer(inputs, return_tensors="np", padding=True, truncation=True).input_ids
-            examples["labels"] = tokenizer(labels, return_tensors="np", padding=True, truncation=True).input_ids
-            examples["attention_mask"] = tokenizer(inputs, return_tensors="np", padding=True, truncation=True).attention_mask
+            examples["input_ids"] = tokenizer(inputs, return_tensors="pt", padding=True, truncation=True).input_ids
+            examples["labels"] = tokenizer(labels, return_tensors="pt", padding=True, truncation=True).input_ids
+            examples["attention_mask"] = tokenizer(inputs, return_tensors="pt", padding=True, truncation=True).attention_mask
         else:
-            examples["input_ids"] = tokenizer([example["input"] for example in examples], return_tensors="np", padding=True, truncation=True).input_ids
-            examples["labels"] = tokenizer([example["output"] for example in examples], return_tensors="np", padding=True, truncation=True).input_ids
-            examples["attention_mask"] = tokenizer([example["input"] for example in examples], return_tensors="np", padding=True, truncation=True).attention_mask
+            examples["input_ids"] = tokenizer([example["input"] for example in examples], return_tensors="pt", padding=True, truncation=True).input_ids
+            examples["labels"] = tokenizer([example["output"] for example in examples], return_tensors="pt", padding=True, truncation=True).input_ids
+            examples["attention_mask"] = tokenizer([example["input"] for example in examples], return_tensors="pt", padding=True, truncation=True).attention_mask
         return examples
 
     def prepare_datasets(self):
@@ -139,9 +138,9 @@ class DatasetManager:
 
     def create_data_loaders(self):
         train_data, test_data = self.prepare_datasets()
-        train_dataset = Dataset(train_data, self.data_args.per_device_train_batch_size, 5)
-        test_dataset = Dataset(test_data, self.data_args.per_device_eval_batch_size, 5)
-        return train_dataset, test_dataset
+        train_dataset = MyDataset(train_data, self.data_args.per_device_train_batch_size, 5)
+        test_dataset = MyDataset(test_data, self.data_args.per_device_eval_batch_size, 5)
+        return DataLoader(train_dataset, batch_size=None), DataLoader(test_dataset, batch_size=None)
 
 class Trainer:
     def __init__(self, model, train_dataset, optimizer):
@@ -151,19 +150,23 @@ class Trainer:
 
     def train_step(self, batch):
         positive_samples, negative_samples = batch
-        input_ids = jnp.array([sample["input_ids"][0].tolist() for sample in positive_samples + negative_samples])
-        attention_mask = jnp.array([sample["attention_mask"][0].tolist() for sample in positive_samples + negative_samples])
-        labels = jnp.array([sample["labels"][0].tolist() for sample in positive_samples + negative_samples])
-        grads = jax.grad(self.model.apply, has_aux=False)(self.model, input_ids, attention_mask, labels)
-        return grads
+        input_ids = torch.cat([sample["input_ids"] for sample in positive_samples + negative_samples])
+        attention_mask = torch.cat([sample["attention_mask"] for sample in positive_samples + negative_samples])
+        labels = torch.cat([sample["labels"] for sample in positive_samples + negative_samples])
+        self.optimizer.zero_grad()
+        loss = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+        loss.backward()
+        self.optimizer.step()
+        return loss.item()
 
     def train(self, epochs, save_path):
         for epoch in range(epochs):
-            self.train_dataset.epoch_shuffle()
+            self.train_dataset.dataset.epoch_shuffle()
+            total_loss = 0
             for batch in self.train_dataset:
-                grads = self.train_step(batch)
-                self.optimizer.update(grads)
-            print(f"Epoch {epoch+1}")
+                loss = self.train_step(batch)
+                total_loss += loss
+            print(f"Epoch {epoch+1}, Loss: {total_loss / len(self.train_dataset)}")
             if epoch % 5 == 0:
                 self.model.save_model(save_path)
 
