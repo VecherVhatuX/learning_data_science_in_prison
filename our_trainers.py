@@ -2,19 +2,22 @@ import tensorflow as tf
 from tensorflow.keras import layers
 import numpy as np
 
-class TripletDataGenerator:
+class Dataset:
     def __init__(self, samples, labels, batch_size, num_negatives):
         self.samples = samples
         self.labels = labels
         self.batch_size = batch_size
         self.num_negatives = num_negatives
         self.indices = np.arange(len(samples))
+        self.on_epoch_end()
+
+    def on_epoch_end(self):
+        np.random.shuffle(self.indices)
 
     def __len__(self):
         return (len(self.samples) + self.batch_size - 1) // self.batch_size
 
     def __getitem__(self, idx):
-        np.random.shuffle(self.indices)
         start_idx = idx * self.batch_size
         end_idx = min((idx + 1) * self.batch_size, len(self.samples))
         batch = self.indices[start_idx:end_idx]
@@ -84,20 +87,18 @@ def main():
     epochs = 10
 
     model = TripletModel(101, 10, num_negatives)
-    dataset = TripletDataGenerator(samples, labels, batch_size, num_negatives)
-    dataset = tf.data.Dataset.from_generator(lambda: dataset, output_types=dataset[0].dtype, output_shapes={k: v.shape for k, v in dataset[0].items()})
+    dataset = Dataset(samples, labels, batch_size, num_negatives)
 
     optimizer = tf.keras.optimizers.SGD(learning_rate=1e-4)
     for epoch in range(epochs):
-        total_loss = 0
         for batch in dataset:
             with tf.GradientTape() as tape:
                 _ = model(batch, training=True)
                 loss = sum(model.losses)
             gradients = tape.gradient(loss, model.trainable_variables)
             optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-            total_loss += loss.numpy()
-        print(f"Epoch {epoch+1}, Loss: {total_loss / len(dataset)}")
+        dataset.on_epoch_end()
+        print(f"Epoch {epoch+1}, Loss: {loss.numpy()}")
     model.save_weights("model")
 
 
