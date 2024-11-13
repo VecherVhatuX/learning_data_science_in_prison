@@ -1,60 +1,57 @@
 import os
 import sys
-import yaml
+import json
 from dataclasses import dataclass, field
 from typing import Optional
-from functools import partial
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-import json
 
-# Data classes
 @dataclass
 class ModelConfig:
-    model_identifier: str = field(default="t5-base", metadata={"help": "Pre-trained model identifier from Hugging Face."})
-    chat_template: Optional[str] = field(default="none", metadata={"help": "Format for chat template. Options: chatml, zephyr, none."})
+    model_identifier: str = field(default="t5-base")
+    chat_template: Optional[str] = field(default="none")
     lora_alpha: Optional[int] = field(default=16)
     lora_dropout: Optional[float] = field(default=0.1)
     lora_rank: Optional[int] = field(default=64)
-    lora_target_layers: Optional[str] = field(default="q_proj,k_proj,v_proj,o_proj,down_proj,up_proj,gate_proj", metadata={"help": "Target layers for LoRA."})
-    nested_quant: Optional[bool] = field(default=False, metadata={"help": "Enable nested quantization for 4-bit base models."})
-    bnb_4bit_compute_dtype: Optional[str] = field(default="float16", metadata={"help": "Compute data type for 4-bit base models."})
-    bnb_4bit_quant_storage_dtype: Optional[str] = field(default="uint8", metadata={"help": "Quantization storage data type for 4-bit base models."})
-    bnb_4bit_quant_type: Optional[str] = field(default="nf4", metadata={"help": "Quantization type for 4-bit base models. Options: fp4, nf4."})
-    use_flash_attention: Optional[bool] = field(default=False, metadata={"help": "Enable flash attention for training."})
-    use_peft_lora: Optional[bool] = field(default=False, metadata={"help": "Enable PEFT LoRA for training."})
-    use_8bit_quantization: Optional[bool] = field(default=False, metadata={"help": "Enable 8-bit quantization."})
-    use_4bit_quantization: Optional[bool] = field(default=False, metadata={"help": "Enable 4-bit quantization."})
-    use_reentrant: Optional[bool] = field(default=False, metadata={"help": "Enable reentrant gradient checkpointing."})
-    use_unsloth: Optional[bool] = field(default=False, metadata={"help": "Enable UnSloth for training."})
-    use_triplet_loss_trainer: Optional[bool] = field(default=False, metadata={"help": "Use TripletLossTrainer for training."})
+    lora_target_layers: Optional[str] = field(default="q_proj,k_proj,v_proj,o_proj,down_proj,up_proj,gate_proj")
+    nested_quant: Optional[bool] = field(default=False)
+    bnb_4bit_compute_dtype: Optional[str] = field(default="float16")
+    bnb_4bit_quant_storage_dtype: Optional[str] = field(default="uint8")
+    bnb_4bit_quant_type: Optional[str] = field(default="nf4")
+    use_flash_attention: Optional[bool] = field(default=False)
+    use_peft_lora: Optional[bool] = field(default=False)
+    use_8bit_quantization: Optional[bool] = field(default=False)
+    use_4bit_quantization: Optional[bool] = field(default=False)
+    use_reentrant: Optional[bool] = field(default=False)
+    use_unsloth: Optional[bool] = field(default=False)
+    use_triplet_loss_trainer: Optional[bool] = field(default=False)
 
 @dataclass
 class TrainingDataConfig:
-    dataset_name: Optional[str] = field(default="timdettmers/openassistant-guanaco", metadata={"help": "Dataset name."})
-    append_concat_token: Optional[bool] = field(default=False, metadata={"help": "Append EOS token to each sample."})
-    add_special_tokens: Optional[bool] = field(default=False, metadata={"help": "Add special tokens to each sample."})
-    splits: Optional[str] = field(default="train,test", metadata={"help": "Comma-separated list of dataset splits."})
-    tokenized_dataset_path: Optional[str] = field(default=None, metadata={"help": "Path to tokenized dataset."})
+    dataset_name: Optional[str] = field(default="timdettmers/openassistant-guanaco")
+    append_concat_token: Optional[bool] = field(default=False)
+    add_special_tokens: Optional[bool] = field(default=False)
+    splits: Optional[str] = field(default="train,test")
+    tokenized_dataset_path: Optional[str] = field(default=None)
 
 @dataclass
 class TrainingConfig:
-    output_dir: str = field(default="./results", metadata={"help": "Output directory for training results."})
-    num_train_epochs: int = field(default=3, metadata={"help": "Number of training epochs."})
-    per_device_train_batch_size: int = field(default=16, metadata={"help": "Batch size per device for training."})
-    per_device_eval_batch_size: int = field(default=64, metadata={"help": "Batch size per device for evaluation."})
-    warmup_steps: int = field(default=500, metadata={"help": "Number of warmup steps."})
-    weight_decay: float = field(default=0.01, metadata={"help": "Weight decay."})
-    logging_dir: str = field(default="./logs", metadata={"help": "TensorBoard log directory."})
-    save_steps: int = field(default=500, metadata={"help": "Save checkpoint every X steps."})
-    save_total_limit: int = field(default=2, metadata={"help": "Total number of checkpoints to save."})
-    seed: int = field(default=42, metadata={"help": "Random seed."})
-    resume_from_checkpoint: Optional[str] = field(default=None, metadata={"help": "Resume training from checkpoint."})
+    output_dir: str = field(default="./results")
+    num_train_epochs: int = field(default=3)
+    per_device_train_batch_size: int = field(default=16)
+    per_device_eval_batch_size: int = field(default=64)
+    warmup_steps: int = field(default=500)
+    weight_decay: float = field(default=0.01)
+    logging_dir: str = field(default="./logs")
+    save_steps: int = field(default=500)
+    save_total_limit: int = field(default=2)
+    seed: int = field(default=42)
+    resume_from_checkpoint: Optional[str] = field(default=None)
 
-class MyDataset(Dataset):
+class Dataset(Dataset):
     def __init__(self, data, batch_size, num_negative_samples):
         self.data = data
         self.batch_size = batch_size
@@ -75,15 +72,22 @@ class MyDataset(Dataset):
         import random
         random.shuffle(self.indices)
 
-class Model(nn.Module):
+class Base(torch.nn.Module):
     def __init__(self):
-        super(Model, self).__init__()
+        super(Base, self).__init__()
         self.model = AutoModelForSeq2SeqLM.from_pretrained("t5-base")
 
     def forward(self, input_ids, attention_mask, labels):
         return self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels).loss
 
-class ModelManager:
+class BaseModel(Base):
+    def __init__(self):
+        super().__init__()
+
+class Model(BaseModel):
+    pass
+
+class ModelHandler:
     def __init__(self, model_args, training_args):
         self.model_args = model_args
         self.training_args = training_args
@@ -102,7 +106,7 @@ class ModelManager:
         model.load_state_dict(torch.load(path))
         return model
 
-class DatasetManager:
+class DataHandler:
     def __init__(self, model_args, data_args):
         self.model_args = model_args
         self.data_args = data_args
@@ -137,8 +141,8 @@ class DatasetManager:
 
     def create_data_loaders(self):
         train_data, test_data = self.prepare_datasets()
-        train_dataset = MyDataset(train_data, self.data_args.per_device_train_batch_size, 5)
-        test_dataset = MyDataset(test_data, self.data_args.per_device_eval_batch_size, 5)
+        train_dataset = Dataset(train_data, self.data_args.per_device_train_batch_size, 5)
+        test_dataset = Dataset(test_data, self.data_args.per_device_eval_batch_size, 5)
         return DataLoader(train_dataset, batch_size=None), DataLoader(test_dataset, batch_size=None)
 
 class Trainer:
@@ -171,20 +175,20 @@ class Trainer:
                 torch.save(self.model.state_dict(), os.path.join(save_path, f"model_epoch_{epoch+1}.pth"))
 
 def run_pipeline(model_args, data_args, training_args):
-    model_manager = ModelManager(model_args, training_args)
-    dataset_manager = DatasetManager(model_args, data_args)
-    model = model_manager.create_model()
-    optimizer = model_manager.create_optimizer(model)
-    train_dataset, _ = dataset_manager.create_data_loaders()
+    model_handler = ModelHandler(model_args, training_args)
+    data_handler = DataHandler(model_args, data_args)
+    model = model_handler.create_model()
+    optimizer = model_handler.create_optimizer(model)
+    train_dataset, _ = data_handler.create_data_loaders()
     trainer = Trainer(model, train_dataset, optimizer)
     trainer.train(training_args.num_train_epochs, training_args.output_dir)
 
 def resume_pipeline(model_args, data_args, training_args, checkpoint_path):
-    model_manager = ModelManager(model_args, training_args)
-    dataset_manager = DatasetManager(model_args, data_args)
-    model = model_manager.load_model(checkpoint_path)
-    optimizer = model_manager.create_optimizer(model)
-    train_dataset, _ = dataset_manager.create_data_loaders()
+    model_handler = ModelHandler(model_args, training_args)
+    data_handler = DataHandler(model_args, data_args)
+    model = model_handler.load_model(checkpoint_path)
+    optimizer = model_handler.create_optimizer(model)
+    train_dataset, _ = data_handler.create_data_loaders()
     trainer = Trainer(model, train_dataset, optimizer)
     trainer.train(training_args.num_train_epochs, training_args.output_dir)
 
