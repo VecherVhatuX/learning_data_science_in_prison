@@ -101,12 +101,12 @@ class ModelManager:
     def create_optimizer(self, model):
         return Adam(model.parameters(), lr=0.001)
 
-    def save_model(self, model):
-        torch.save(model.state_dict(), self.training_args.output_dir)
+    def save_model(self, model, path):
+        torch.save(model.state_dict(), path)
 
     def load_model(self, path):
         model = Transformer()
-        model.load_state_dict(torch.load(path))
+        model.load_state_dict(torch.load(path, map_location=torch.device('cpu')))
         model.to(self.device)
         return model
 
@@ -129,9 +129,11 @@ class DatasetManager:
                 labels.append(f"{example['output']} {tokenizer.sep_token}")
             examples["input_ids"] = tokenizer(inputs, return_tensors="pt", padding=True, truncation=True).input_ids
             examples["labels"] = tokenizer(labels, return_tensors="pt", padding=True, truncation=True).input_ids
+            examples["attention_mask"] = tokenizer(inputs, return_tensors="pt", padding=True, truncation=True).attention_mask
         else:
             examples["input_ids"] = tokenizer([example["input"] for example in examples], return_tensors="pt", padding=True, truncation=True).input_ids
             examples["labels"] = tokenizer([example["output"] for example in examples], return_tensors="pt", padding=True, truncation=True).input_ids
+            examples["attention_mask"] = tokenizer([example["input"] for example in examples], return_tensors="pt", padding=True, truncation=True).attention_mask
         return examples
 
     def prepare_datasets(self):
@@ -156,21 +158,23 @@ class Trainer:
 
     def train_step(self, batch):
         positive_samples, negative_samples = batch
-        input_ids = torch.tensor([sample["input_ids"][0] for sample in positive_samples + negative_samples], dtype=torch.long).to(self.device)
-        attention_mask = torch.tensor([sample["attention_mask"][0] for sample in positive_samples + negative_samples], dtype=torch.long).to(self.device)
-        labels = torch.tensor([sample["labels"][0] for sample in positive_samples + negative_samples], dtype=torch.long).to(self.device)
+        input_ids = torch.tensor([sample["input_ids"][0].tolist() for sample in positive_samples + negative_samples], dtype=torch.long).to(self.device)
+        attention_mask = torch.tensor([sample["attention_mask"][0].tolist() for sample in positive_samples + negative_samples], dtype=torch.long).to(self.device)
+        labels = torch.tensor([sample["labels"][0].tolist() for sample in positive_samples + negative_samples], dtype=torch.long).to(self.device)
         self.model.zero_grad()
         loss = self.model(input_ids, attention_mask, labels)
         loss.backward()
         self.optimizer.step()
         return loss.item()
 
-    def train(self, epochs):
+    def train(self, epochs, save_path):
         for epoch in range(epochs):
             self.train_dataset.epoch_shuffle()
             for batch in DataLoader(self.train_dataset, batch_size=1, shuffle=False):
                 loss = self.train_step(batch)
             print(f"Epoch {epoch+1}, Loss: {loss}")
+            if epoch % 5 == 0:
+                torch.save(self.model.state_dict(), save_path)
 
 def run_pipeline(model_args, data_args, training_args):
     model_manager = ModelManager(model_args, training_args)
@@ -179,8 +183,7 @@ def run_pipeline(model_args, data_args, training_args):
     optimizer = model_manager.create_optimizer(model)
     train_dataset, _ = dataset_manager.create_data_loaders()
     trainer = Trainer(model, model_manager.device, train_dataset, optimizer)
-    trainer.train(training_args.num_train_epochs)
-    model_manager.save_model(model)
+    trainer.train(training_args.num_train_epochs, training_args.output_dir)
 
 def resume_pipeline(model_args, data_args, training_args, checkpoint_path):
     model_manager = ModelManager(model_args, training_args)
@@ -189,12 +192,12 @@ def resume_pipeline(model_args, data_args, training_args, checkpoint_path):
     optimizer = model_manager.create_optimizer(model)
     train_dataset, _ = dataset_manager.create_data_loaders()
     trainer = Trainer(model, model_manager.device, train_dataset, optimizer)
-    trainer.train(training_args.num_train_epochs)
+    trainer.train(training_args.num_train_epochs, training_args.output_dir)
 
 if __name__ == "__main__":
     model_args = ModelConfig(model_identifier="t5-base", chat_template="none")
     data_args = TrainingDataConfig(dataset_name="timdettmers/openassistant-guanaco")
     training_args = TrainingConfig(output_dir="./results", num_train_epochs=3, per_device_train_batch_size=16)
 
-    #run_pipeline(model_args, data_args, training_args)
-    resume_pipeline(model_args, data_args, training_args, "./results/model.pth")
+    run_pipeline(model_args, data_args, training_args)
+    #resume_pipeline(model_args, data_args, training_args, "./results/model.pth")
