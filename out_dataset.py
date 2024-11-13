@@ -96,12 +96,13 @@ class TripletModel(LightningModule):
         self.dropout = nn.Dropout(DROPOUT)
         self.fc = nn.Linear(EMBEDDING_DIM, FC_DIM)
         self.relu = nn.ReLU()
+        self.loss_fn = nn.TripletMarginLoss(margin=1.0, reduction='mean')
 
     def forward(self, anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _):
         anchor_outputs = self._get_outputs(anchor_input_ids)
         positive_outputs = self._get_outputs(positive_input_ids)
         negative_outputs = self._get_outputs(negative_input_ids)
-        return torch.cat([anchor_outputs, positive_outputs, negative_outputs], dim=0)
+        return anchor_outputs, positive_outputs, negative_outputs
 
     def _get_outputs(self, input_ids):
         outputs = self.embedding(input_ids)
@@ -113,8 +114,8 @@ class TripletModel(LightningModule):
 
     def training_step(self, batch, batch_idx):
         anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _ = batch
-        outputs = self(anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _)
-        loss = torch.mean(torch.norm(outputs[:BATCH_SIZE] - outputs[BATCH_SIZE:2*BATCH_SIZE], dim=1) - torch.norm(outputs[:BATCH_SIZE] - outputs[2*BATCH_SIZE:], dim=1) + 1)
+        anchor_outputs, positive_outputs, negative_outputs = self(anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _)
+        loss = self.loss_fn(anchor_outputs, positive_outputs, negative_outputs)
         return {'loss': loss}
 
     def configure_optimizers(self):
@@ -122,14 +123,14 @@ class TripletModel(LightningModule):
 
     def validation_step(self, batch, batch_idx):
         anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _ = batch
-        outputs = self(anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _)
-        loss = torch.mean(torch.norm(outputs[:BATCH_SIZE] - outputs[BATCH_SIZE:2*BATCH_SIZE], dim=1) - torch.norm(outputs[:BATCH_SIZE] - outputs[2*BATCH_SIZE:], dim=1) + 1)
+        anchor_outputs, positive_outputs, negative_outputs = self(anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _)
+        loss = self.loss_fn(anchor_outputs, positive_outputs, negative_outputs)
         return {'val_loss': loss}
 
     def test_step(self, batch, batch_idx):
         anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _ = batch
-        outputs = self(anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _)
-        loss = torch.mean(torch.norm(outputs[:BATCH_SIZE] - outputs[BATCH_SIZE:2*BATCH_SIZE], dim=1) - torch.norm(outputs[:BATCH_SIZE] - outputs[2*BATCH_SIZE:], dim=1) + 1)
+        anchor_outputs, positive_outputs, negative_outputs = self(anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _)
+        loss = self.loss_fn(anchor_outputs, positive_outputs, negative_outputs)
         return {'test_loss': loss}
 
 def train(model, dataloader):
