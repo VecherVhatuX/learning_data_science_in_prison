@@ -4,15 +4,15 @@ import yaml
 from dataclasses import dataclass, field
 from typing import Optional
 from functools import partial
-import torch
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-from torch.optim import Adam
-from torch import Tensor
-import json
-import random
-import numpy as np
-from transformers import AutoTokenizer, T5ForConditionalGeneration
+import jax
+import jax.numpy as jnp
+from jax.experimental.jax2tf import convert
+from flax import linen as nn
+from flax.training import train_state, checkpoints
+from flax.datasets import Dataset
+from flax.serialization import to_bytes
+from jax.experimental import jax2tf
+from transformers import AutoTokenizer
 
 # Data classes
 @dataclass
@@ -54,11 +54,10 @@ class TrainingConfig:
     logging_dir: str = field(default="./logs", metadata={"help": "TensorBoard log directory."})
     save_steps: int = field(default=500, metadata={"help": "Save checkpoint every X steps."})
     save_total_limit: int = field(default=2, metadata={"help": "Total number of checkpoints to save."})
-    no_cuda: bool = field(default=False, metadata={"help": "Disable CUDA."})
     seed: int = field(default=42, metadata={"help": "Random seed."})
     resume_from_checkpoint: Optional[str] = field(default=None, metadata={"help": "Resume training from checkpoint."})
 
-class Dataset(torch.utils.data.Dataset):
+class Dataset(Dataset):
     def __init__(self, data, batch_size, num_negative_samples):
         self.data = data
         self.batch_size = batch_size
@@ -73,42 +72,37 @@ class Dataset(torch.utils.data.Dataset):
         batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
         batch = [self.data[i] for i in batch_indices]
         positive_samples = [sample for sample in batch if sample["label"] == 1]
-        negative_samples = random.sample([sample for sample in batch if sample["label"] == 0], self.num_negative_samples)
+        negative_samples = [sample for sample in batch if sample["label"] == 0]
         return positive_samples, negative_samples
 
     def epoch_shuffle(self):
-        random.shuffle(self.indices)
+        jax.random.shuffle(jax.random.PRNGKey(42), self.indices)
         self.epoch += 1
 
 class Transformer(nn.Module):
-    def __init__(self):
-        super(Transformer, self).__init__()
-        self.model = T5ForConditionalGeneration.from_pretrained("t5-base")
-
-    def forward(self, input_ids, attention_mask, labels):
-        outputs = self.model(input_ids, attention_mask=attention_mask, labels=labels)
-        return outputs.loss
+    @nn.compact
+    def __call__(self, input_ids, attention_mask, labels):
+        model = jax.experimental.jax2tf.call_tf(System="tensorflow://transformers/t5-base/1", args=(input_ids, attention_mask, labels))
+        return model
 
 class ModelManager:
     def __init__(self, model_args, training_args):
         self.model_args = model_args
         self.training_args = training_args
-        self.device = torch.device("cuda" if torch.cuda.is_available() and not training_args.no_cuda else "cpu")
 
     def create_model(self):
-        return Transformer().to(self.device)
+        return Transformer()
 
     def create_optimizer(self, model):
-        return Adam(model.parameters(), lr=0.001)
+        return optax.adam(learning_rate=0.001, params=model)
 
     def save_model(self, model, path):
-        torch.save(model.state_dict(), path)
+        with open(path, 'wb') as f:
+            f.write(to_bytes(model))
 
     def load_model(self, path):
-        model = Transformer()
-        model.load_state_dict(torch.load(path, map_location=torch.device('cpu')))
-        model.to(self.device)
-        return model
+        with open(path, 'rb') as f:
+            return jax.experimental.jax2tf.restore(path)
 
 class DatasetManager:
     def __init__(self, model_args, data_args):
@@ -127,13 +121,13 @@ class DatasetManager:
             for example in examples:
                 inputs.append(f"{example['input']} {tokenizer.sep_token}")
                 labels.append(f"{example['output']} {tokenizer.sep_token}")
-            examples["input_ids"] = tokenizer(inputs, return_tensors="pt", padding=True, truncation=True).input_ids
-            examples["labels"] = tokenizer(labels, return_tensors="pt", padding=True, truncation=True).input_ids
-            examples["attention_mask"] = tokenizer(inputs, return_tensors="pt", padding=True, truncation=True).attention_mask
+            examples["input_ids"] = tokenizer(inputs, return_tensors="np", padding=True, truncation=True).input_ids
+            examples["labels"] = tokenizer(labels, return_tensors="np", padding=True, truncation=True).input_ids
+            examples["attention_mask"] = tokenizer(inputs, return_tensors="np", padding=True, truncation=True).attention_mask
         else:
-            examples["input_ids"] = tokenizer([example["input"] for example in examples], return_tensors="pt", padding=True, truncation=True).input_ids
-            examples["labels"] = tokenizer([example["output"] for example in examples], return_tensors="pt", padding=True, truncation=True).input_ids
-            examples["attention_mask"] = tokenizer([example["input"] for example in examples], return_tensors="pt", padding=True, truncation=True).attention_mask
+            examples["input_ids"] = tokenizer([example["input"] for example in examples], return_tensors="np", padding=True, truncation=True).input_ids
+            examples["labels"] = tokenizer([example["output"] for example in examples], return_tensors="np", padding=True, truncation=True).input_ids
+            examples["attention_mask"] = tokenizer([example["input"] for example in examples], return_tensors="np", padding=True, truncation=True).attention_mask
         return examples
 
     def prepare_datasets(self):
@@ -150,31 +144,28 @@ class DatasetManager:
         return train_dataset, test_dataset
 
 class Trainer:
-    def __init__(self, model, device, train_dataset, optimizer):
+    def __init__(self, model, train_dataset, optimizer):
         self.model = model
-        self.device = device
         self.train_dataset = train_dataset
         self.optimizer = optimizer
 
     def train_step(self, batch):
         positive_samples, negative_samples = batch
-        input_ids = torch.tensor([sample["input_ids"][0].tolist() for sample in positive_samples + negative_samples], dtype=torch.long).to(self.device)
-        attention_mask = torch.tensor([sample["attention_mask"][0].tolist() for sample in positive_samples + negative_samples], dtype=torch.long).to(self.device)
-        labels = torch.tensor([sample["labels"][0].tolist() for sample in positive_samples + negative_samples], dtype=torch.long).to(self.device)
-        self.model.zero_grad()
-        loss = self.model(input_ids, attention_mask, labels)
-        loss.backward()
-        self.optimizer.step()
-        return loss.item()
+        input_ids = jnp.array([sample["input_ids"][0].tolist() for sample in positive_samples + negative_samples])
+        attention_mask = jnp.array([sample["attention_mask"][0].tolist() for sample in positive_samples + negative_samples])
+        labels = jnp.array([sample["labels"][0].tolist() for sample in positive_samples + negative_samples])
+        grads = jax.grad(self.model.apply, has_aux=False)(self.model, input_ids, attention_mask, labels)
+        return grads
 
     def train(self, epochs, save_path):
         for epoch in range(epochs):
             self.train_dataset.epoch_shuffle()
-            for batch in DataLoader(self.train_dataset, batch_size=1, shuffle=False):
-                loss = self.train_step(batch)
-            print(f"Epoch {epoch+1}, Loss: {loss}")
+            for batch in self.train_dataset:
+                grads = self.train_step(batch)
+                self.optimizer.update(grads)
+            print(f"Epoch {epoch+1}")
             if epoch % 5 == 0:
-                torch.save(self.model.state_dict(), save_path)
+                self.model.save_model(save_path)
 
 def run_pipeline(model_args, data_args, training_args):
     model_manager = ModelManager(model_args, training_args)
@@ -182,7 +173,7 @@ def run_pipeline(model_args, data_args, training_args):
     model = model_manager.create_model()
     optimizer = model_manager.create_optimizer(model)
     train_dataset, _ = dataset_manager.create_data_loaders()
-    trainer = Trainer(model, model_manager.device, train_dataset, optimizer)
+    trainer = Trainer(model, train_dataset, optimizer)
     trainer.train(training_args.num_train_epochs, training_args.output_dir)
 
 def resume_pipeline(model_args, data_args, training_args, checkpoint_path):
@@ -191,7 +182,7 @@ def resume_pipeline(model_args, data_args, training_args, checkpoint_path):
     model = model_manager.load_model(checkpoint_path)
     optimizer = model_manager.create_optimizer(model)
     train_dataset, _ = dataset_manager.create_data_loaders()
-    trainer = Trainer(model, model_manager.device, train_dataset, optimizer)
+    trainer = Trainer(model, train_dataset, optimizer)
     trainer.train(training_args.num_train_epochs, training_args.output_dir)
 
 if __name__ == "__main__":
