@@ -54,33 +54,26 @@ class TrainingConfig:
     resume_from_checkpoint: str = None
 
 class CustomDataset(Dataset):
-    def __init__(self, data):
+    def __init__(self, data, model_args):
         self.data = data
+        self.input_ids = np.array([example["input"] for example in data] if model_args.chat_template == "none" else [f"{example['input']} " for example in data])
+        self.labels = np.array([example["output"] for example in data] if model_args.chat_template == "none" else [f"{example['output']} " for example in data])
+        self.attention_mask = np.array([1]*len(self.input_ids))
 
     def __len__(self):
-        return len(self.data["input_ids"])
+        return len(self.input_ids)
 
     def __getitem__(self, idx):
-        return {key: val[idx] for key, val in self.data.items()}
+        return {"input_ids": self.input_ids[idx], "labels": self.labels[idx], "attention_mask": self.attention_mask[idx]}
 
 def load_data(file_name):
     with open(file_name, 'r') as f:
         return json.load(f)
 
-def process_data(examples, model_args):
-    if model_args.chat_template != "none":
-        inputs = [f"{example['input']} " for example in examples]
-        labels = [f"{example['output']} " for example in examples]
-        return {"input_ids": np.array(inputs), "labels": np.array(labels), "attention_mask": np.array([1]*len(inputs))}
-    else:
-        return {"input_ids": np.array([example["input"] for example in examples]), "labels": np.array([example["output"] for example in examples]), "attention_mask": np.array([1]*len(examples))}
-
 def prepare_datasets(model_args, data_args):
     train_data = load_data("train.json")
     test_data = load_data("test.json")
-    train_data = process_data(train_data, model_args)
-    test_data = process_data(test_data, model_args)
-    return CustomDataset(train_data), CustomDataset(test_data)
+    return CustomDataset(train_data, model_args), CustomDataset(test_data, model_args)
 
 def create_data_loaders(model_args, data_args):
     train_data, test_data = prepare_datasets(model_args, data_args)
@@ -109,10 +102,9 @@ class T5Model(BaseModel):
         return x
 
 def train_step(model, batch, device):
-    input_ids = batch["input_ids"].to(device)
-    labels = batch["labels"].to(device)
-    attention_mask = batch["attention_mask"].to(device)
-    input_ids = input_ids.view(input_ids.shape[0], -1)
+    input_ids = batch["input_ids"].view(1, -1).to(device)
+    labels = batch["labels"].view(1, -1).to(device)
+    attention_mask = batch["attention_mask"].view(1, -1).to(device)
     outputs = model(input_ids)
     loss_fn = nn.MSELoss()
     loss = loss_fn(outputs, labels)
