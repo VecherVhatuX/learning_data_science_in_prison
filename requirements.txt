@@ -1,7 +1,7 @@
 plaintext
-torch==1.13.1
-torchvision==0.15.1
-torchaudio==0.14.1
+torch==1.14.0
+torchvision==0.15.2
+torchaudio==0.14.2
 
 # Core dependencies
 transformers==4.48.0
