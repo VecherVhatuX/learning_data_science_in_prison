@@ -1,13 +1,16 @@
 import os
-import sys
 import json
 from dataclasses import dataclass
 from typing import Dict
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
-from transformers import AutoModelForSequenceClassification
+import jax
+import jax.numpy as jnp
+from flax import linen as nn
+from flax.training import train_state
+from flax.core import FrozenDict
+from flax import serialization
+from flax import jax_utils
+import optax
+from tqdm import tqdm
 
 @dataclass
 class ModelConfig:
@@ -51,7 +54,7 @@ class TrainingConfig:
     seed: int = 42
     resume_from_checkpoint: str = None
 
-class CustomDataset(Dataset):
+class CustomDataset:
     def __init__(self, data):
         self.data = data
 
@@ -69,9 +72,9 @@ def process_data(examples, model_args):
     if model_args.chat_template != "none":
         inputs = [f"{example['input']} " for example in examples]
         labels = [f"{example['output']} " for example in examples]
-        return {"input_ids": torch.tensor(inputs), "labels": torch.tensor(labels), "attention_mask": torch.tensor([1]*len(inputs))}
+        return {"input_ids": jnp.array(inputs), "labels": jnp.array(labels), "attention_mask": jnp.array([1]*len(inputs))}
     else:
-        return {"input_ids": torch.tensor([example["input"] for example in examples]), "labels": torch.tensor([example["output"] for example in examples]), "attention_mask": torch.tensor([1]*len(examples))}
+        return {"input_ids": jnp.array([example["input"] for example in examples]), "labels": jnp.array([example["output"] for example in examples]), "attention_mask": jnp.array([1]*len(examples))}
 
 def prepare_datasets(model_args, data_args):
     train_data = load_data("train.json")
@@ -82,65 +85,62 @@ def prepare_datasets(model_args, data_args):
 
 def create_data_loaders(model_args, data_args):
     train_data, test_data = prepare_datasets(model_args, data_args)
-    train_loader = DataLoader(train_data, batch_size=data_args.per_device_train_batch_size, shuffle=True)
-    test_loader = DataLoader(test_data, batch_size=data_args.per_device_eval_batch_size, shuffle=False)
+    train_loader = jax_utils.prefetch_to_device([train_data[i] for i in range(len(train_data))], batch_size=data_args.per_device_train_batch_size, shuffle=True)
+    test_loader = jax_utils.prefetch_to_device([test_data[i] for i in range(len(test_data))], batch_size=data_args.per_device_eval_batch_size, shuffle=False)
     return train_loader, test_loader
 
 class BaseModel(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.model = AutoModelForSequenceClassification.from_pretrained(model_args.model_identifier)
-        self.fc1 = nn.Linear(128, 128)
-        self.fc2 = nn.Linear(128, 128)
-        self.output_layer = nn.Linear(128, 1000)
+    @nn.compact
+    def __call__(self, x):
+        raise NotImplementedError
 
-    def forward(self, x):
-        outputs = self.model(x["input_ids"], attention_mask=x["attention_mask"])
-        x = torch.mean(outputs.last_hidden_state, dim=1)
-        x = torch.relu(self.fc1(x))
-        x = torch.relu(self.fc2(x))
-        return self.output_layer(x)
+class T5Model(BaseModel):
+    @nn.compact
+    def __call__(self, x):
+        from t5x import models
+        model = models.T5Base()
+        outputs = model(x["input_ids"], attention_mask=x["attention_mask"])
+        x = jnp.mean(outputs.last_hidden_state, axis=1)
+        x = nn.relu(nn.Dense(128)(x))
+        x = nn.relu(nn.Dense(128)(x))
+        return nn.Dense(1000)(x)
 
-class Trainer:
-    def __init__(self, model, optimizer, train_loader, epochs, save_path):
-        self.model = model
-        self.optimizer = optimizer
-        self.train_loader = train_loader
-        self.epochs = epochs
-        self.save_path = save_path
+def create_train_state(rng, model, learning_rate):
+    params = model.init(rng, jnp.ones((1, 1)))["params"]
+    tx = optax.adam(learning_rate)
+    state = train_state.TrainState.create(
+        apply_fn=model.apply, params=params, tx=tx)
+    return state
 
-    def train_step(self, batch):
-        self.optimizer.zero_grad()
-        outputs = self.model(batch)
-        loss = nn.CrossEntropyLoss()(outputs, batch["labels"])
-        loss.backward()
-        self.optimizer.step()
+def train_step(state, batch, rng):
+    def loss_fn(params):
+        outputs = state.apply_fn({"params": params}, batch["input_ids"], attention_mask=batch["attention_mask"])
+        loss = jnp.mean((outputs - batch["labels"]) ** 2)
         return loss
+    grads = jax.grad(loss_fn)(state.params)
+    state = state.apply_gradients(grads=grads)
+    return state
 
-    def train(self):
-        for epoch in range(self.epochs):
-            total_loss = 0
-            for batch in self.train_loader:
-                loss = self.train_step(batch)
-                total_loss += loss.item()
-            print(f"Epoch {epoch+1}, Loss: {total_loss / len(self.train_loader)}")
-            if epoch % 5 == 0:
-                torch.save(self.model.state_dict(), os.path.join(self.save_path, f"model_epoch_{epoch+1}.pth"))
+def train(state, rng, train_loader, num_epochs):
+    for epoch in tqdm(range(num_epochs)):
+        for batch in train_loader:
+            state = train_step(state, batch, rng)
+        print(f"Epoch {epoch+1}, Loss: {state.params['Dense_0']['kernel']}")
 
 def run_pipeline(model_args, data_args, training_args):
-    model = BaseModel()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    rng = jax.random.PRNGKey(42)
+    model = T5Model()
+    state = create_train_state(rng, model, 0.001)
     train_loader, _ = create_data_loaders(model_args, data_args)
-    trainer = Trainer(model, optimizer, train_loader, training_args.num_train_epochs, training_args.output_dir)
-    trainer.train()
+    train(state, rng, train_loader, training_args.num_train_epochs)
 
 def resume_pipeline(model_args, data_args, training_args, checkpoint_path):
-    model = BaseModel()
-    model.load_state_dict(torch.load(checkpoint_path))
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    rng = jax.random.PRNGKey(42)
+    model = T5Model()
+    state = create_train_state(rng, model, 0.001)
+    state = train_state.TrainState.restore_checkpoint(checkpoint_path, target=None)
     train_loader, _ = create_data_loaders(model_args, data_args)
-    trainer = Trainer(model, optimizer, train_loader, training_args.num_train_epochs, training_args.output_dir)
-    trainer.train()
+    train(state, rng, train_loader, training_args.num_train_epochs)
 
 if __name__ == "__main__":
     model_args = ModelConfig(model_identifier="t5-base", chat_template="none")
