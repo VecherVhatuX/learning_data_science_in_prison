@@ -7,6 +7,7 @@ from tensorflow.keras.optimizers import Adam
 import json
 import numpy as np
 from typing import List, Tuple
+from transformers import AutoTokenizer
 
 class Config:
     INSTANCE_ID_FIELD = 'instance_id'
@@ -18,6 +19,33 @@ class Config:
     DROPOUT = 0.2
     LEARNING_RATE = 1e-5
     MAX_EPOCHS = 5
+
+class TripletModel(tf.keras.Model):
+    def __init__(self):
+        super(TripletModel, self).__init__()
+        self.distilbert = tf.keras.layers.Lambda(lambda x: tf.keras.applications.distilbert_encode(x, training=False))
+        self.embedding = tf.keras.Sequential([
+            tf.keras.layers.Dense(Config.EMBEDDING_DIM),
+            tf.keras.layers.ReLU(),
+            tf.keras.layers.Dropout(Config.DROPOUT),
+            tf.keras.layers.Dense(Config.FC_DIM),
+            tf.keras.layers.ReLU(),
+            tf.keras.layers.Dropout(Config.DROPOUT)
+        ])
+
+    def call(self, inputs):
+        anchor_input_ids, anchor_attention_mask, positive_input_ids, positive_attention_mask, negative_input_ids, negative_attention_mask = inputs
+        anchor_output = self.distilbert([anchor_input_ids, anchor_attention_mask])
+        positive_output = self.distilbert([positive_input_ids, positive_attention_mask])
+        negative_output = self.distilbert([negative_input_ids, negative_attention_mask])
+        anchor_embedding = self.embedding(anchor_output)
+        positive_embedding = self.embedding(positive_output)
+        negative_embedding = self.embedding(negative_output)
+        return anchor_embedding, positive_embedding, negative_embedding
+
+    def triplet_loss(self, anchor, positive, negative):
+        loss = tf.maximum(tf.zeros_like(anchor), tf.reduce_sum((anchor - positive) ** 2) - tf.reduce_sum((anchor - negative) ** 2) + 1.0)
+        return tf.reduce_mean(loss)
 
 class TripletDataset:
     def __init__(self, triplets, tokenizer):
@@ -92,33 +120,6 @@ def create_triplet_dataset(dataset_path: str, snippet_folder_path: str) -> List:
                 for i, problem_statement in enumerate(problem_statements)]
     return [item for sublist in triplets for item in sublist]
 
-class TripletModel(tf.keras.Model):
-    def __init__(self):
-        super(TripletModel, self).__init__()
-        self.distilbert = tf.keras.layers.Lambda(lambda x: tf.keras.applications.distilbert_encode(x, training=False))
-        self.embedding = tf.keras.Sequential([
-            tf.keras.layers.Dense(Config.EMBEDDING_DIM),
-            tf.keras.layers.ReLU(),
-            tf.keras.layers.Dropout(Config.DROPOUT),
-            tf.keras.layers.Dense(Config.FC_DIM),
-            tf.keras.layers.ReLU(),
-            tf.keras.layers.Dropout(Config.DROPOUT)
-        ])
-
-    def call(self, inputs):
-        anchor_input_ids, anchor_attention_mask, positive_input_ids, positive_attention_mask, negative_input_ids, negative_attention_mask = inputs
-        anchor_output = self.distilbert([anchor_input_ids, anchor_attention_mask])
-        positive_output = self.distilbert([positive_input_ids, positive_attention_mask])
-        negative_output = self.distilbert([negative_input_ids, negative_attention_mask])
-        anchor_embedding = self.embedding(anchor_output)
-        positive_embedding = self.embedding(positive_output)
-        negative_embedding = self.embedding(negative_output)
-        return anchor_embedding, positive_embedding, negative_embedding
-
-    def triplet_loss(self, anchor, positive, negative):
-        loss = tf.maximum(tf.zeros_like(anchor), tf.reduce_sum((anchor - positive) ** 2) - tf.reduce_sum((anchor - negative) ** 2) + 1.0)
-        return tf.reduce_mean(loss)
-
 def train(model, dataset, optimizer):
     total_loss = 0
     for batch in dataset:
@@ -138,15 +139,18 @@ def evaluate(model, dataset):
         total_loss += loss
     return total_loss / len(dataset)
 
-def main():
-    dataset_path = 'datasets/SWE-bench_oracle.npy'
-    snippet_folder_path = 'datasets/10_10_after_fix_pytest'
-    from transformers import AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
+def load_data(dataset_path: str, snippet_folder_path: str, tokenizer):
     triplets = create_triplet_dataset(dataset_path, snippet_folder_path)
     train_triplets, test_triplets = triplets[:int(0.8 * len(triplets))], triplets[int(0.8 * len(triplets)):]
     train_dataset = tf.data.Dataset.from_tensor_slices(train_triplets).map(lambda x: TripletDataset([x], tokenizer).__getitem__(0)).batch(Config.BATCH_SIZE)
     test_dataset = tf.data.Dataset.from_tensor_slices(test_triplets).map(lambda x: TripletDataset([x], tokenizer).__getitem__(0)).batch(Config.BATCH_SIZE)
+    return train_dataset, test_dataset
+
+def main():
+    dataset_path = 'datasets/SWE-bench_oracle.npy'
+    snippet_folder_path = 'datasets/10_10_after_fix_pytest'
+    tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
+    train_dataset, test_dataset = load_data(dataset_path, snippet_folder_path, tokenizer)
     model = TripletModel()
     optimizer = Adam(learning_rate=Config.LEARNING_RATE)
     for epoch in range(Config.MAX_EPOCHS):
