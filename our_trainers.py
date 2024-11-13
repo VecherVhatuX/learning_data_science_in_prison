@@ -2,25 +2,20 @@ import tensorflow as tf
 from tensorflow.keras import layers
 import numpy as np
 
-class Dataset:
+class CustomDataset(tf.keras.utils.Sequence):
     def __init__(self, samples, labels, batch_size, num_negatives):
         self.samples = samples
         self.labels = labels
         self.batch_size = batch_size
         self.num_negatives = num_negatives
         self.indices = np.arange(len(samples))
-        self.on_epoch_end()
-
-    def on_epoch_end(self):
-        np.random.shuffle(self.indices)
 
     def __len__(self):
         return (len(self.samples) + self.batch_size - 1) // self.batch_size
 
     def __getitem__(self, idx):
-        start_idx = idx * self.batch_size
-        end_idx = min((idx + 1) * self.batch_size, len(self.samples))
-        batch = self.indices[start_idx:end_idx]
+        indices = np.random.permutation(self.indices)
+        batch = indices[idx * self.batch_size:(idx + 1) * self.batch_size]
 
         anchor_idx = batch
         positive_idx = []
@@ -32,15 +27,18 @@ class Dataset:
             negative_idx = np.setdiff1d(np.random.choice(idx, self.num_negatives, replace=False), [anchor])
             negative_indices.append(negative_idx)
 
-        anchor_input_ids = tf.constant(self.samples[anchor_idx])
-        positive_input_ids = tf.constant(self.samples[positive_idx])
-        negative_input_ids = tf.stack([tf.constant(self.samples[negative_idx]) for negative_idx in negative_indices])
+        anchor_input_ids = self.samples[anchor_idx]
+        positive_input_ids = self.samples[positive_idx]
+        negative_input_ids = [self.samples[negative_idx] for negative_idx in negative_indices]
 
         return {
             'anchor_input_ids': anchor_input_ids,
             'positive_input_ids': positive_input_ids,
             'negative_input_ids': negative_input_ids
         }
+
+    def on_epoch_end(self):
+        np.random.shuffle(self.indices)
 
 
 class TripletModel(tf.keras.Model):
@@ -49,8 +47,9 @@ class TripletModel(tf.keras.Model):
         self.embedding = layers.Embedding(num_embeddings, embedding_dim)
         self.pooling = layers.GlobalAveragePooling1D()
         self.num_negatives = num_negatives
+        self.loss_tracker = tf.keras.metrics.Mean(name="loss")
 
-    def call(self, inputs):
+    def call(self, inputs, training=None):
         anchor_input_ids = inputs['anchor_input_ids']
         positive_input_ids = inputs['positive_input_ids']
         negative_input_ids = inputs['negative_input_ids']
@@ -64,7 +63,7 @@ class TripletModel(tf.keras.Model):
         positive_embeddings = positive_embeddings / tf.norm(positive_embeddings, axis=1, keepdims=True)
 
         negative_embeddings = []
-        for negative_input_ids in tf.unstack(negative_input_ids, axis=0):
+        for negative_input_ids in negative_input_ids:
             negative_embeddings.append(self.embedding(negative_input_ids))
             negative_embeddings[-1] = self.pooling(negative_embeddings[-1])
             negative_embeddings[-1] = negative_embeddings[-1] / tf.norm(negative_embeddings[-1], axis=1, keepdims=True)
@@ -74,9 +73,19 @@ class TripletModel(tf.keras.Model):
                                          tf.reduce_sum((anchor_embeddings - positive_embeddings) ** 2, axis=1) - 
                                          tf.reduce_sum((anchor_embeddings - negative_embeddings[:, 0, :]) ** 2, axis=1), 
                                          0.0))
-
-        self.add_loss(loss)
+        self.loss_tracker.update_state(loss)
         return anchor_embeddings
+
+    def train_step(self, data):
+        with tf.GradientTape() as tape:
+            _ = self(data, training=True)
+        gradients = tape.gradient(self.loss_tracker.result(), self.trainable_variables)
+        optimizer = tf.keras.optimizers.SGD(learning_rate=1e-4)
+        optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+        return {"loss": self.loss_tracker.result()}
+
+    def test_step(self, data):
+        return self.train_step(data)
 
 
 def main():
@@ -87,18 +96,10 @@ def main():
     epochs = 10
 
     model = TripletModel(101, 10, num_negatives)
-    dataset = Dataset(samples, labels, batch_size, num_negatives)
+    dataset = CustomDataset(samples, labels, batch_size, num_negatives)
 
-    optimizer = tf.keras.optimizers.SGD(learning_rate=1e-4)
-    for epoch in range(epochs):
-        for batch in dataset:
-            with tf.GradientTape() as tape:
-                _ = model(batch, training=True)
-                loss = sum(model.losses)
-            gradients = tape.gradient(loss, model.trainable_variables)
-            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-        dataset.on_epoch_end()
-        print(f"Epoch {epoch+1}, Loss: {loss.numpy()}")
+    model.compile()
+    model.fit(dataset, epochs=epochs)
     model.save_weights("model")
 
 
