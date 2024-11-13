@@ -9,16 +9,85 @@ import json
 import numpy as np
 from typing import List, Tuple
 
-# Constants
-INSTANCE_ID_FIELD = 'instance_id'
-MAX_LENGTH = 512
-BATCH_SIZE = 16
-NUM_NEGATIVES_PER_POSITIVE = 3
-EMBEDDING_DIM = 128
-FC_DIM = 64
-DROPOUT = 0.2
-LEARNING_RATE = 1e-5
-MAX_EPOCHS = 5
+class Config:
+    INSTANCE_ID_FIELD = 'instance_id'
+    MAX_LENGTH = 512
+    BATCH_SIZE = 16
+    NUM_NEGATIVES_PER_POSITIVE = 3
+    EMBEDDING_DIM = 128
+    FC_DIM = 64
+    DROPOUT = 0.2
+    LEARNING_RATE = 1e-5
+    MAX_EPOCHS = 5
+
+class TripletDataset(Dataset):
+    def __init__(self, triplets, tokenizer):
+        self.triplets = triplets
+        self.tokenizer = tokenizer
+
+    def __len__(self):
+        return len(self.triplets)
+
+    def __getitem__(self, index):
+        triplet = self.triplets[index]
+        anchor_encoding = self.tokenizer.encode_plus(
+            triplet['anchor'],
+            max_length=Config.MAX_LENGTH,
+            padding='max_length',
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors='pt'
+        )
+        positive_encoding = self.tokenizer.encode_plus(
+            triplet['positive'],
+            max_length=Config.MAX_LENGTH,
+            padding='max_length',
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors='pt'
+        )
+        negative_encoding = self.tokenizer.encode_plus(
+            triplet['negative'],
+            max_length=Config.MAX_LENGTH,
+            padding='max_length',
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors='pt'
+        )
+        return {
+            'anchor_input_ids': anchor_encoding['input_ids'].flatten(),
+            'anchor_attention_mask': anchor_encoding['attention_mask'].flatten(),
+            'positive_input_ids': positive_encoding['input_ids'].flatten(),
+            'positive_attention_mask': positive_encoding['attention_mask'].flatten(),
+            'negative_input_ids': negative_encoding['input_ids'].flatten(),
+            'negative_attention_mask': negative_encoding['attention_mask'].flatten()
+        }
+
+class TripletModel(nn.Module):
+    def __init__(self):
+        super(TripletModel, self).__init__()
+        self.distilbert = AutoModel.from_pretrained('distilbert-base-uncased')
+        self.embedding = nn.Sequential(
+            nn.Linear(768, Config.EMBEDDING_DIM),
+            nn.ReLU(),
+            nn.Dropout(Config.DROPOUT),
+            nn.Linear(Config.EMBEDDING_DIM, Config.FC_DIM),
+            nn.ReLU(),
+            nn.Dropout(Config.DROPOUT)
+        )
+
+    def forward(self, anchor_input_ids, anchor_attention_mask, positive_input_ids, positive_attention_mask, negative_input_ids, negative_attention_mask):
+        anchor_output = self.distilbert(anchor_input_ids, attention_mask=anchor_attention_mask)
+        positive_output = self.distilbert(positive_input_ids, attention_mask=positive_attention_mask)
+        negative_output = self.distilbert(negative_input_ids, attention_mask=negative_attention_mask)
+        anchor_embedding = self.embedding(anchor_output.pooler_output)
+        positive_embedding = self.embedding(positive_output.pooler_output)
+        negative_embedding = self.embedding(negative_output.pooler_output)
+        return anchor_embedding, positive_embedding, negative_embedding
+
+    def triplet_loss(self, anchor, positive, negative):
+        loss = torch.maximum(torch.zeros_like(anchor), torch.sum((anchor - positive) ** 2) - torch.sum((anchor - negative) ** 2) + 1.0)
+        return loss.mean()
 
 def load_json_file(file_path: str) -> List:
     try:
@@ -46,82 +115,9 @@ def create_triplet_dataset(dataset_path: str, snippet_folder_path: str) -> List:
     snippets = [load_json_file(os.path.join(folder_path, 'snippet.json')) for folder_path in folder_paths]
     bug_snippets, non_bug_snippets = zip(*[separate_snippets(snippet) for snippet in snippets])
     problem_statements = [instance_id_map.get(os.path.basename(folder_path)) for folder_path in folder_paths]
-    triplets = [create_triplets(problem_statement, bug_snippets[i], non_bug_snippets[i], NUM_NEGATIVES_PER_POSITIVE) 
+    triplets = [create_triplets(problem_statement, bug_snippets[i], non_bug_snippets[i], Config.NUM_NEGATIVES_PER_POSITIVE) 
                 for i, problem_statement in enumerate(problem_statements)]
     return [item for sublist in triplets for item in sublist]
-
-def create_data_loader(triplets: List, batch_size: int, shuffle: bool) -> DataLoader:
-    class TripletDataset(Dataset):
-        def __init__(self, triplets):
-            self.triplets = triplets
-            self.tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
-
-        def __len__(self):
-            return len(self.triplets)
-
-        def __getitem__(self, index):
-            triplet = self.triplets[index]
-            anchor_encoding = self.tokenizer.encode_plus(
-                triplet['anchor'],
-                max_length=MAX_LENGTH,
-                padding='max_length',
-                truncation=True,
-                return_attention_mask=True,
-                return_tensors='pt'
-            )
-            positive_encoding = self.tokenizer.encode_plus(
-                triplet['positive'],
-                max_length=MAX_LENGTH,
-                padding='max_length',
-                truncation=True,
-                return_attention_mask=True,
-                return_tensors='pt'
-            )
-            negative_encoding = self.tokenizer.encode_plus(
-                triplet['negative'],
-                max_length=MAX_LENGTH,
-                padding='max_length',
-                truncation=True,
-                return_attention_mask=True,
-                return_tensors='pt'
-            )
-            return {
-                'anchor_input_ids': anchor_encoding['input_ids'].flatten(),
-                'anchor_attention_mask': anchor_encoding['attention_mask'].flatten(),
-                'positive_input_ids': positive_encoding['input_ids'].flatten(),
-                'positive_attention_mask': positive_encoding['attention_mask'].flatten(),
-                'negative_input_ids': negative_encoding['input_ids'].flatten(),
-                'negative_attention_mask': negative_encoding['attention_mask'].flatten()
-            }
-
-    dataset = TripletDataset(triplets)
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
-
-class TripletModel(nn.Module):
-    def __init__(self):
-        super(TripletModel, self).__init__()
-        self.distilbert = AutoModel.from_pretrained('distilbert-base-uncased')
-        self.embedding = nn.Sequential(
-            nn.Linear(768, EMBEDDING_DIM),
-            nn.ReLU(),
-            nn.Dropout(DROPOUT),
-            nn.Linear(EMBEDDING_DIM, FC_DIM),
-            nn.ReLU(),
-            nn.Dropout(DROPOUT)
-        )
-
-    def forward(self, anchor_input_ids, anchor_attention_mask, positive_input_ids, positive_attention_mask, negative_input_ids, negative_attention_mask):
-        anchor_output = self.distilbert(anchor_input_ids, attention_mask=anchor_attention_mask)
-        positive_output = self.distilbert(positive_input_ids, attention_mask=positive_attention_mask)
-        negative_output = self.distilbert(negative_input_ids, attention_mask=negative_attention_mask)
-        anchor_embedding = self.embedding(anchor_output.pooler_output)
-        positive_embedding = self.embedding(positive_output.pooler_output)
-        negative_embedding = self.embedding(negative_output.pooler_output)
-        return anchor_embedding, positive_embedding, negative_embedding
-
-    def triplet_loss(self, anchor, positive, negative):
-        loss = torch.maximum(torch.zeros_like(anchor), torch.sum((anchor - positive) ** 2) - torch.sum((anchor - negative) ** 2) + 1.0)
-        return loss.mean()
 
 def train(model, device, loader, optimizer):
     model.train()
@@ -158,17 +154,20 @@ def evaluate(model, device, loader):
     return total_loss / len(loader)
 
 def main():
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
+    tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
     triplets = create_triplet_dataset(dataset_path, snippet_folder_path)
     train_triplets, test_triplets = triplets[:int(0.8 * len(triplets))], triplets[int(0.8 * len(triplets)):]
-    train_loader = create_data_loader(train_triplets, BATCH_SIZE, shuffle=True)
-    test_loader = create_data_loader(test_triplets, BATCH_SIZE, shuffle=False)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    train_dataset = TripletDataset(train_triplets, tokenizer)
+    test_dataset = TripletDataset(test_triplets, tokenizer)
+    train_loader = DataLoader(train_dataset, batch_size=Config.BATCH_SIZE, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=Config.BATCH_SIZE, shuffle=False)
     model = TripletModel()
     model.to(device)
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    for epoch in range(MAX_EPOCHS):
+    optimizer = optim.Adam(model.parameters(), lr=Config.LEARNING_RATE)
+    for epoch in range(Config.MAX_EPOCHS):
         loss = train(model, device, train_loader, optimizer)
         print(f'Epoch {epoch+1}, Loss: {loss:.4f}')
     loss = evaluate(model, device, test_loader)
