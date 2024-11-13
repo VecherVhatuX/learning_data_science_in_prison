@@ -55,18 +55,19 @@ class TripletLossModel(tf.keras.Model):
                                          0.0))
 
     def compile(self, optimizer, margin):
-        super(TripletLossModel, self).compile()
+        super(TripletLossModel, self).compile(run_eagerly=True)
         self.optimizer = optimizer
         self.margin = margin
+        self.loss_fn = tf.keras.losses.MeanSquaredError()
 
     def train_step(self, batch):
         with tf.GradientTape() as tape:
             anchor_input_ids = batch["anchor_input_ids"]
             positive_input_ids = batch["positive_input_ids"]
             negative_input_ids = batch["negative_input_ids"]
-            anchor_embeddings = self.standardize_vectors(self(anchor_input_ids))
-            positive_embeddings = self.standardize_vectors(self(positive_input_ids))
-            negative_embeddings = self.standardize_vectors(self(negative_input_ids))
+            anchor_embeddings = self.standardize_vectors(self(anchor_input_ids, training=True))
+            positive_embeddings = self.standardize_vectors(self(positive_input_ids, training=True))
+            negative_embeddings = self.standardize_vectors(self(negative_input_ids, training=True))
             loss = self.triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, self.margin)
         gradients = tape.gradient(loss, self.trainable_variables)
         self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
