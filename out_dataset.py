@@ -1,17 +1,17 @@
-import json
 import os
 import random
 import numpy as np
-import nltk
-from nltk.tokenize import word_tokenize
-from transformers import AutoTokenizer
-from pytorch_lightning import LightningModule, Trainer
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
-
-nltk.download('punkt')
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import Normalizer
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, Dense, Dropout, Lambda
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping
+import tensorflow as tf
+import pickle
+import json
 
 # Constants
 INSTANCE_ID_FIELD = 'instance_id'
@@ -24,11 +24,10 @@ DROPOUT = 0.2
 LEARNING_RATE = 1e-5
 MAX_EPOCHS = 5
 
-class TripletDataset(Dataset):
+class TripletDataset:
     def __init__(self, dataset_path, snippet_folder_path):
         self.dataset_path = dataset_path
         self.snippet_folder_path = snippet_folder_path
-        self.tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
         self.dataset = self._load_dataset(dataset_path)
         self.instance_id_map = {item['instance_id']: item['problem_statement'] for item in self.dataset}
         self.folder_paths = self._get_subfolder_paths(snippet_folder_path)
@@ -67,18 +66,11 @@ class TripletDataset(Dataset):
                 for _ in range(min(num_negatives_per_positive, len(negative_snippets)))]
 
     def _encode_triplet(self, triplet):
+        vectorizer = TfidfVectorizer(max_features=MAX_LENGTH)
         encoded_triplet = {}
         for key, text in triplet.items():
-            encoded_text = self.tokenizer.encode_plus(
-                text=text,
-                max_length=MAX_LENGTH,
-                padding='max_length',
-                truncation=True,
-                return_attention_mask=True,
-                return_tensors='pt'
-            )
-            encoded_triplet[f"{key}_input_ids"] = encoded_text['input_ids'].flatten()
-            encoded_triplet[f"{key}_attention_mask"] = encoded_text['attention_mask'].flatten()
+            encoded_text = vectorizer.fit_transform([text])
+            encoded_triplet[f"{key}_input_ids"] = encoded_text.toarray().flatten()
         return encoded_triplet
 
     def __len__(self):
@@ -89,68 +81,67 @@ class TripletDataset(Dataset):
         triplet_index = index % NUM_NEGATIVES_PER_POSITIVE
         return self._encode_triplet(self.triplets[folder_index][triplet_index])
 
-class TripletModel(LightningModule):
+class TripletModel:
     def __init__(self):
-        super(TripletModel, self).__init__()
-        self.embedding = nn.Embedding(30522, EMBEDDING_DIM)
-        self.dropout = nn.Dropout(DROPOUT)
-        self.fc = nn.Linear(EMBEDDING_DIM, FC_DIM)
-        self.relu = nn.ReLU()
-        self.loss_fn = nn.TripletMarginLoss(margin=1.0, reduction='mean')
+        self.model = self._build_model()
 
-    def forward(self, anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _):
-        anchor_outputs = self._get_outputs(anchor_input_ids)
-        positive_outputs = self._get_outputs(positive_input_ids)
-        negative_outputs = self._get_outputs(negative_input_ids)
-        return anchor_outputs, positive_outputs, negative_outputs
+    def _build_model(self):
+        input_anchor = Input(shape=(MAX_LENGTH,), name='anchor_input_ids')
+        input_positive = Input(shape=(MAX_LENGTH,), name='positive_input_ids')
+        input_negative = Input(shape=(MAX_LENGTH,), name='negative_input_ids')
 
-    def _get_outputs(self, input_ids):
-        outputs = self.embedding(input_ids)
-        outputs = self.dropout(outputs)
-        outputs = torch.mean(outputs, dim=1)
-        outputs = self.fc(outputs)
-        outputs = self.relu(outputs)
-        return outputs
+        embedding = Dense(EMBEDDING_DIM, activation='relu')(input_anchor)
+        embedding = Dropout(DROPOUT)(embedding)
+        embedding = Dense(FC_DIM, activation='relu')(embedding)
+        anchor_embedding = Lambda(lambda x: tf.math.l2_normalize(x, axis=-1))(embedding)
 
-    def training_step(self, batch, batch_idx):
-        anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _ = batch
-        anchor_outputs, positive_outputs, negative_outputs = self(anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _)
-        loss = self.loss_fn(anchor_outputs, positive_outputs, negative_outputs)
-        return {'loss': loss}
+        embedding = Dense(EMBEDDING_DIM, activation='relu')(input_positive)
+        embedding = Dropout(DROPOUT)(embedding)
+        embedding = Dense(FC_DIM, activation='relu')(embedding)
+        positive_embedding = Lambda(lambda x: tf.math.l2_normalize(x, axis=-1))(embedding)
 
-    def configure_optimizers(self):
-        return optim.Adam(self.parameters(), lr=LEARNING_RATE)
+        embedding = Dense(EMBEDDING_DIM, activation='relu')(input_negative)
+        embedding = Dropout(DROPOUT)(embedding)
+        embedding = Dense(FC_DIM, activation='relu')(embedding)
+        negative_embedding = Lambda(lambda x: tf.math.l2_normalize(x, axis=-1))(embedding)
 
-    def validation_step(self, batch, batch_idx):
-        anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _ = batch
-        anchor_outputs, positive_outputs, negative_outputs = self(anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _)
-        loss = self.loss_fn(anchor_outputs, positive_outputs, negative_outputs)
-        return {'val_loss': loss}
+        return Model(inputs=[input_anchor, input_positive, input_negative], outputs=[anchor_embedding, positive_embedding, negative_embedding])
 
-    def test_step(self, batch, batch_idx):
-        anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _ = batch
-        anchor_outputs, positive_outputs, negative_outputs = self(anchor_input_ids, _, positive_input_ids, _, negative_input_ids, _)
-        loss = self.loss_fn(anchor_outputs, positive_outputs, negative_outputs)
-        return {'test_loss': loss}
+    def train(self, dataset, batch_size, epochs):
+        checkpoint = ModelCheckpoint('triplet_model.h5', monitor='loss', verbose=1, save_best_only=True, mode='min')
+        early_stopping = EarlyStopping(monitor='loss', patience=5, mode='min')
+        self.model.compile(loss=self._triplet_loss, optimizer=Adam(lr=LEARNING_RATE))
+        self.model.fit([np.array([item['anchor_input_ids'] for item in dataset]), 
+                        np.array([item['positive_input_ids'] for item in dataset]), 
+                        np.array([item['negative_input_ids'] for item in dataset])], 
+                       epochs=epochs, batch_size=batch_size, callbacks=[checkpoint, early_stopping])
 
-def train(model, dataloader):
-    trainer = Trainer(max_epochs=MAX_EPOCHS, 
-                      log_every_n_steps=10, 
-                      flush_logs_every_n_steps=100, 
-                      checkpoint_callback=True)
-    trainer.fit(model, dataloader)
+    def _triplet_loss(self, y_true, y_pred):
+        anchor, positive, negative = y_pred
+        loss = tf.maximum(0.0, tf.reduce_mean(tf.square(anchor - positive)) - tf.reduce_mean(tf.square(anchor - negative)) + 1.0)
+        return loss
 
-def evaluate(model, dataloader):
-    trainer = Trainer()
-    return trainer.test(model, dataloader)
+def train(model, dataset, batch_size, epochs):
+    model.train(dataset, batch_size, epochs)
+
+def evaluate(model, dataset, batch_size):
+    model.model.compile(loss=model._triplet_loss, optimizer=Adam(lr=LEARNING_RATE))
+    loss = model.model.evaluate([np.array([item['anchor_input_ids'] for item in dataset]), 
+                                 np.array([item['positive_input_ids'] for item in dataset]), 
+                                 np.array([item['negative_input_ids'] for item in dataset])], 
+                                epochs=1, batch_size=batch_size)
+    return loss
 
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
     dataset = TripletDataset(dataset_path, snippet_folder_path)
-    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+    dataset_list = [dataset[i] for i in range(len(dataset))]
+    train_dataset, test_dataset = train_test_split(dataset_list, test_size=0.2, random_state=42)
     model = TripletModel()
-    train(model, dataloader)
+    train(model, train_dataset, BATCH_SIZE, MAX_EPOCHS)
+    loss = evaluate(model, test_dataset, BATCH_SIZE)
+    print(f"Test loss: {loss}")
 
 if __name__ == "__main__":
     main()
