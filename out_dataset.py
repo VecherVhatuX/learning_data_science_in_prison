@@ -8,6 +8,7 @@ from transformers import AutoModel, AutoTokenizer
 import json
 import numpy as np
 
+# Constants
 INSTANCE_ID_FIELD = 'instance_id'
 MAX_LENGTH = 512
 BATCH_SIZE = 16
@@ -71,7 +72,8 @@ class TripletDataset(Dataset):
             'negative_attention_mask': negative_encoding['attention_mask'].flatten()
         }
 
-    def load_json_file(self, file_path):
+    @staticmethod
+    def load_json_file(file_path):
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
@@ -79,13 +81,15 @@ class TripletDataset(Dataset):
             print(f"Failed to load JSON file: {file_path}, error: {str(e)}")
             return []
 
-    def separate_snippets(self, snippets):
+    @staticmethod
+    def separate_snippets(snippets):
         return (
             [item['snippet'] for item in snippets if item.get('is_bug', False) and item.get('snippet')],
             [item['snippet'] for item in snippets if not item.get('is_bug', False) and item.get('snippet')]
         )
 
-    def create_triplets(self, problem_statement, positive_snippets, negative_snippets, num_negatives_per_positive):
+    @staticmethod
+    def create_triplets(problem_statement, positive_snippets, negative_snippets, num_negatives_per_positive):
         return [{'anchor': problem_statement, 'positive': positive_doc, 'negative': random.choice(negative_snippets)}
                 for positive_doc in positive_snippets
                 for _ in range(min(num_negatives_per_positive, len(negative_snippets)))]
