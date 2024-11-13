@@ -3,11 +3,11 @@ import sys
 import json
 from dataclasses import dataclass, field
 from typing import Optional
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+import tensorflow as tf
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, Dense
+from tensorflow.keras.optimizers import Adam
+import numpy as np
 import random
 
 @dataclass
@@ -59,22 +59,16 @@ def load_data(file_name):
     return json.load(open(file_name))
 
 def process_data(examples, model_args):
-    tokenizer = AutoTokenizer.from_pretrained("t5-base")
     apply_chat_template = model_args.chat_template != "none"
     if apply_chat_template:
         inputs = []
         labels = []
         for example in examples:
-            inputs.append(f"{example['input']} {tokenizer.sep_token}")
-            labels.append(f"{example['output']} {tokenizer.sep_token}")
-        examples["input_ids"] = tokenizer(inputs, return_tensors="pt", padding=True, truncation=True).input_ids
-        examples["labels"] = tokenizer(labels, return_tensors="pt", padding=True, truncation=True).input_ids
-        examples["attention_mask"] = tokenizer(inputs, return_tensors="pt", padding=True, truncation=True).attention_mask
+            inputs.append(f"{example['input']} ")
+            labels.append(f"{example['output']} ")
+        return {"input_ids": tf.constant(inputs), "labels": tf.constant(labels), "attention_mask": tf.constant([1]*len(inputs))}
     else:
-        examples["input_ids"] = tokenizer([example["input"] for example in examples], return_tensors="pt", padding=True, truncation=True).input_ids
-        examples["labels"] = tokenizer([example["output"] for example in examples], return_tensors="pt", padding=True, truncation=True).input_ids
-        examples["attention_mask"] = tokenizer([example["input"] for example in examples], return_tensors="pt", padding=True, truncation=True).attention_mask
-    return examples
+        return {"input_ids": tf.constant([example["input"] for example in examples]), "labels": tf.constant([example["output"] for example in examples]), "attention_mask": tf.constant([1]*len(examples))}
 
 def prepare_datasets(model_args, data_args):
     train_data = load_data("train.json")
@@ -83,71 +77,69 @@ def prepare_datasets(model_args, data_args):
     test_data = process_data(test_data, model_args)
     return train_data, test_data
 
-def create_dataset(data, batch_size, num_negative_samples):
-    class Dataset(Dataset):
-        def __init__(self, data, batch_size, num_negative_samples):
+def create_dataset(data, batch_size):
+    class Dataset(tf.data.Dataset):
+        def __init__(self, data, batch_size):
             self.data = data
             self.batch_size = batch_size
-            self.num_negative_samples = num_negative_samples
-            self.indices = list(range(len(data)))
 
         def __len__(self):
-            return len(self.data) // self.batch_size
+            return len(self.data["input_ids"]) // self.batch_size
 
         def __getitem__(self, idx):
-            batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
-            batch = [self.data[i] for i in batch_indices]
-            positive_samples = [sample for sample in batch if sample["label"] == 1]
-            negative_samples = [sample for sample in batch if sample["label"] == 0]
-            return positive_samples, negative_samples
+            batch_indices = range(idx * self.batch_size, (idx + 1) * self.batch_size)
+            batch = {key: tf.gather(val, batch_indices) for key, val in self.data.items()}
+            return batch
 
-        def epoch_shuffle(self):
-            random.shuffle(self.indices)
+        def shuffle(self, seed=None):
+            shuffled_indices = tf.random.shuffle(range(len(self.data["input_ids"])), seed=seed)
+            self.data = {key: tf.gather(val, shuffled_indices) for key, val in self.data.items()}
 
-    return Dataset(data, batch_size, num_negative_samples)
+    return Dataset(data, batch_size)
 
 def create_data_loaders(model_args, data_args):
     train_data, test_data = prepare_datasets(model_args, data_args)
-    train_dataset = create_dataset(train_data, data_args.per_device_train_batch_size, 5)
-    test_dataset = create_dataset(test_data, data_args.per_device_eval_batch_size, 5)
-    return DataLoader(train_dataset, batch_size=None), DataLoader(test_dataset, batch_size=None)
+    train_dataset = create_dataset(train_data, data_args.per_device_train_batch_size)
+    test_dataset = create_dataset(test_data, data_args.per_device_eval_batch_size)
+    return train_dataset, test_dataset
 
-class BaseModel(nn.Module):
+class BaseModel(Model):
     def __init__(self):
         super().__init__()
-        self.model = AutoModelForSeq2SeqLM.from_pretrained("t5-base")
+        self.model = tf.keras.layers.Embedding(input_dim=1000, output_dim=128, input_length=100)
+        self.dense = tf.keras.layers.Dense(128, activation="relu")
+        self.output_layer = tf.keras.layers.Dense(1000, activation="softmax")
 
-    def forward(self, input_ids, attention_mask, labels):
-        return self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels).loss
+    def call(self, inputs):
+        x = self.model(inputs["input_ids"])
+        x = tf.reduce_mean(x, axis=1)
+        x = self.dense(x)
+        return self.output_layer(x)
 
 def create_model():
     return BaseModel()
 
 def create_optimizer(model):
-    return optim.Adam(model.parameters(), lr=0.001)
+    return Adam(learning_rate=0.001)
 
 def train_step(model, optimizer, batch):
-    positive_samples, negative_samples = batch
-    input_ids = torch.cat([sample["input_ids"] for sample in positive_samples + negative_samples])
-    attention_mask = torch.cat([sample["attention_mask"] for sample in positive_samples + negative_samples])
-    labels = torch.cat([sample["labels"] for sample in positive_samples + negative_samples])
-    optimizer.zero_grad()
-    model.zero_grad()
-    loss = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-    loss.backward()
-    optimizer.step()
-    return loss.item()
+    with tf.GradientTape() as tape:
+        predictions = model(batch)
+        loss = tf.reduce_mean(tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)(batch["labels"], predictions))
+    gradients = tape.gradient(loss, model.trainable_variables)
+    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+    return loss
 
 def train(model, train_dataset, optimizer, epochs, save_path):
     for epoch in range(epochs):
-        train_dataset.dataset.epoch_shuffle()
+        train_dataset.shuffle()
         total_loss = 0
         for batch in train_dataset:
             loss = train_step(model, optimizer, batch)
             total_loss += loss
         print(f"Epoch {epoch+1}, Loss: {total_loss / len(train_dataset)}")
         if epoch % 5 == 0:
-            torch.save(model.state_dict(), os.path.join(save_path, f"model_epoch_{epoch+1}.pth"))
+            model.save_weights(os.path.join(save_path, f"model_epoch_{epoch+1}.h5"))
 
 def run_pipeline(model_args, data_args, training_args):
     model = create_model()
@@ -157,7 +149,7 @@ def run_pipeline(model_args, data_args, training_args):
 
 def resume_pipeline(model_args, data_args, training_args, checkpoint_path):
     model = BaseModel()
-    model.load_state_dict(torch.load(checkpoint_path))
+    model.load_weights(checkpoint_path)
     optimizer = create_optimizer(model)
     train_dataset, _ = create_data_loaders(model_args, data_args)
     train(model, train_dataset, optimizer, training_args.num_train_epochs, training_args.output_dir)
