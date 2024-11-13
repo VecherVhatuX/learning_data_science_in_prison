@@ -4,12 +4,13 @@ import torch.optim as optim
 import torch.utils.data as data
 import numpy as np
 
-class TripletDataGenerator:
+class Dataset(data.Dataset):
     def __init__(self, samples, labels, batch_size, num_negatives):
         self.samples = reorder_data(samples.copy())
         self.labels = labels
         self.batch_size = batch_size
         self.num_negatives = num_negatives
+        self.epoch = 0
 
     def __len__(self):
         return -(-len(self.samples) // self.batch_size)
@@ -38,6 +39,10 @@ class TripletDataGenerator:
         negative_indices = [np.setdiff1d(negative_idx, [anchor]) for anchor, negative_idx in zip(anchor_idx, negative_indices)]
         return anchor_idx, positive_idx, negative_indices
 
+    def __iter__(self):
+        self.epoch += 1
+        self.samples = reorder_data(self.samples.copy())
+        return super().__iter__()
 
 class TripletEmbeddingModel(nn.Module):
     def __init__(self, num_embeddings, embedding_dim):
@@ -99,7 +104,7 @@ def main():
     epochs = 10
 
     model = TripletEmbeddingModel(100, 10)
-    dataset = TripletDataGenerator(samples, labels, batch_size, num_negatives)
+    dataset = Dataset(samples, labels, batch_size, num_negatives)
     optimizer = optim.SGD(model.parameters(), lr=1e-4)
     margin = 1.0
 
