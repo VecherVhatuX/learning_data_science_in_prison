@@ -24,62 +24,62 @@ DROPOUT = 0.2
 LEARNING_RATE = 1e-5
 MAX_EPOCHS = 5
 
-def load_dataset(dataset_path):
-    try:
-        return np.load(dataset_path, allow_pickle=True)
-    except FileNotFoundError:
-        print(f"File not found: {dataset_path}")
-        return []
-
-def load_json_file(file_path):
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"Failed to load JSON file: {file_path}, error: {str(e)}")
-        return []
-
-def get_subfolder_paths(folder_path):
-    return [os.path.join(folder_path, f) for f in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, f))]
-
-def separate_snippets(snippets):
-    return (
-        [item['snippet'] for item in snippets if item.get('is_bug', False) and item.get('snippet')],
-        [item['snippet'] for item in snippets if not item.get('is_bug', False) and item.get('snippet')]
-    )
-
-def create_triplets(problem_statement, positive_snippets, negative_snippets, num_negatives_per_positive):
-    return [{'anchor': problem_statement, 'positive': positive_doc, 'negative': random.choice(negative_snippets)}
-            for positive_doc in positive_snippets
-            for _ in range(min(num_negatives_per_positive, len(negative_snippets)))]
-
-def encode_triplet(triplet, tokenizer, max_length):
-    encoded_triplet = {}
-    for key, text in triplet.items():
-        encoded_text = tokenizer.encode_plus(
-            text=text,
-            max_length=max_length,
-            padding='max_length',
-            truncation=True,
-            return_attention_mask=True,
-            return_tensors='pt'
-        )
-        encoded_triplet[f"{key}_input_ids"] = encoded_text['input_ids'].flatten()
-        encoded_triplet[f"{key}_attention_mask"] = encoded_text['attention_mask'].flatten()
-    return encoded_triplet
-
 class TripletDataset(Dataset):
     def __init__(self, dataset_path, snippet_folder_path):
         self.dataset_path = dataset_path
         self.snippet_folder_path = snippet_folder_path
         self.tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
-        self.dataset = load_dataset(dataset_path)
+        self.dataset = self._load_dataset(dataset_path)
         self.instance_id_map = {item['instance_id']: item['problem_statement'] for item in self.dataset}
-        self.folder_paths = get_subfolder_paths(snippet_folder_path)
-        self.snippets = [load_json_file(os.path.join(folder_path, 'snippet.json')) for folder_path in self.folder_paths]
-        self.bug_snippets, self.non_bug_snippets = zip(*[separate_snippets(snippet) for snippet in self.snippets])
+        self.folder_paths = self._get_subfolder_paths(snippet_folder_path)
+        self.snippets = [self._load_json_file(os.path.join(folder_path, 'snippet.json')) for folder_path in self.folder_paths]
+        self.bug_snippets, self.non_bug_snippets = zip(*[self._separate_snippets(snippet) for snippet in self.snippets])
         self.problem_statements = [self.instance_id_map.get(os.path.basename(folder_path)) for folder_path in self.folder_paths]
-        self.triplets = [create_triplets(problem_statement, bug_snippets, non_bug_snippets, NUM_NEGATIVES_PER_POSITIVE) for problem_statement, bug_snippets, non_bug_snippets in zip(self.problem_statements, self.bug_snippets, self.non_bug_snippets)]
+        self.triplets = [self._create_triplets(problem_statement, bug_snippets, non_bug_snippets, NUM_NEGATIVES_PER_POSITIVE) for problem_statement, bug_snippets, non_bug_snippets in zip(self.problem_statements, self.bug_snippets, self.non_bug_snippets)]
+
+    def _load_dataset(self, dataset_path):
+        try:
+            return np.load(dataset_path, allow_pickle=True)
+        except FileNotFoundError:
+            print(f"File not found: {dataset_path}")
+            return []
+
+    def _load_json_file(self, file_path):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Failed to load JSON file: {file_path}, error: {str(e)}")
+            return []
+
+    def _get_subfolder_paths(self, folder_path):
+        return [os.path.join(folder_path, f) for f in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, f))]
+
+    def _separate_snippets(self, snippets):
+        return (
+            [item['snippet'] for item in snippets if item.get('is_bug', False) and item.get('snippet')],
+            [item['snippet'] for item in snippets if not item.get('is_bug', False) and item.get('snippet')]
+        )
+
+    def _create_triplets(self, problem_statement, positive_snippets, negative_snippets, num_negatives_per_positive):
+        return [{'anchor': problem_statement, 'positive': positive_doc, 'negative': random.choice(negative_snippets)}
+                for positive_doc in positive_snippets
+                for _ in range(min(num_negatives_per_positive, len(negative_snippets)))]
+
+    def _encode_triplet(self, triplet):
+        encoded_triplet = {}
+        for key, text in triplet.items():
+            encoded_text = self.tokenizer.encode_plus(
+                text=text,
+                max_length=MAX_LENGTH,
+                padding='max_length',
+                truncation=True,
+                return_attention_mask=True,
+                return_tensors='pt'
+            )
+            encoded_triplet[f"{key}_input_ids"] = encoded_text['input_ids'].flatten()
+            encoded_triplet[f"{key}_attention_mask"] = encoded_text['attention_mask'].flatten()
+        return encoded_triplet
 
     def __len__(self):
         return len(self.dataset) * NUM_NEGATIVES_PER_POSITIVE
@@ -87,7 +87,7 @@ class TripletDataset(Dataset):
     def __getitem__(self, index):
         folder_index = index // NUM_NEGATIVES_PER_POSITIVE
         triplet_index = index % NUM_NEGATIVES_PER_POSITIVE
-        return encode_triplet(self.triplets[folder_index][triplet_index], self.tokenizer, MAX_LENGTH)
+        return self._encode_triplet(self.triplets[folder_index][triplet_index])
 
 class TripletModel(LightningModule):
     def __init__(self):
