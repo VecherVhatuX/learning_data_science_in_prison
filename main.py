@@ -2,14 +2,13 @@ import os
 import json
 from dataclasses import dataclass
 from typing import Dict
-import jax
-import jax.numpy as jnp
-from flax import linen as nn
-from flax.training import train_state
-from flax.core import FrozenDict
-from flax import serialization
-from flax import jax_utils
-import optax
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+import torchvision
+from torchvision import transforms
+import numpy as np
 from tqdm import tqdm
 
 @dataclass
@@ -54,7 +53,7 @@ class TrainingConfig:
     seed: int = 42
     resume_from_checkpoint: str = None
 
-class CustomDataset:
+class CustomDataset(Dataset):
     def __init__(self, data):
         self.data = data
 
@@ -72,9 +71,9 @@ def process_data(examples, model_args):
     if model_args.chat_template != "none":
         inputs = [f"{example['input']} " for example in examples]
         labels = [f"{example['output']} " for example in examples]
-        return {"input_ids": jnp.array(inputs), "labels": jnp.array(labels), "attention_mask": jnp.array([1]*len(inputs))}
+        return {"input_ids": np.array(inputs), "labels": np.array(labels), "attention_mask": np.array([1]*len(inputs))}
     else:
-        return {"input_ids": jnp.array([example["input"] for example in examples]), "labels": jnp.array([example["output"] for example in examples]), "attention_mask": jnp.array([1]*len(examples))}
+        return {"input_ids": np.array([example["input"] for example in examples]), "labels": np.array([example["output"] for example in examples]), "attention_mask": np.array([1]*len(examples))}
 
 def prepare_datasets(model_args, data_args):
     train_data = load_data("train.json")
@@ -85,62 +84,65 @@ def prepare_datasets(model_args, data_args):
 
 def create_data_loaders(model_args, data_args):
     train_data, test_data = prepare_datasets(model_args, data_args)
-    train_loader = jax_utils.prefetch_to_device([train_data[i] for i in range(len(train_data))], batch_size=data_args.per_device_train_batch_size, shuffle=True)
-    test_loader = jax_utils.prefetch_to_device([test_data[i] for i in range(len(test_data))], batch_size=data_args.per_device_eval_batch_size, shuffle=False)
+    train_loader = DataLoader(train_data, batch_size=data_args.per_device_train_batch_size, shuffle=True)
+    test_loader = DataLoader(test_data, batch_size=data_args.per_device_eval_batch_size, shuffle=False)
     return train_loader, test_loader
 
 class BaseModel(nn.Module):
-    @nn.compact
-    def __call__(self, x):
+    def __init__(self):
+        super(BaseModel, self).__init__()
+
+    def forward(self, x):
         raise NotImplementedError
 
 class T5Model(BaseModel):
-    @nn.compact
-    def __call__(self, x):
-        from t5x import models
-        model = models.T5Base()
-        outputs = model(x["input_ids"], attention_mask=x["attention_mask"])
-        x = jnp.mean(outputs.last_hidden_state, axis=1)
-        x = nn.relu(nn.Dense(128)(x))
-        x = nn.relu(nn.Dense(128)(x))
-        return nn.Dense(1000)(x)
+    def __init__(self):
+        super(T5Model, self).__init__()
+        self.fc1 = nn.Linear(128, 128)
+        self.fc2 = nn.Linear(128, 128)
+        self.fc3 = nn.Linear(128, 1000)
 
-def create_train_state(rng, model, learning_rate):
-    params = model.init(rng, jnp.ones((1, 1)))["params"]
-    tx = optax.adam(learning_rate)
-    state = train_state.TrainState.create(
-        apply_fn=model.apply, params=params, tx=tx)
-    return state
+    def forward(self, x):
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
 
-def train_step(state, batch, rng):
-    def loss_fn(params):
-        outputs = state.apply_fn({"params": params}, batch["input_ids"], attention_mask=batch["attention_mask"])
-        loss = jnp.mean((outputs - batch["labels"]) ** 2)
-        return loss
-    grads = jax.grad(loss_fn)(state.params)
-    state = state.apply_gradients(grads=grads)
-    return state
+def train_step(model, batch, device):
+    input_ids = batch["input_ids"].to(device)
+    labels = batch["labels"].to(device)
+    attention_mask = batch["attention_mask"].to(device)
+    input_ids = input_ids.view(input_ids.shape[0], -1)
+    outputs = model(input_ids)
+    loss_fn = nn.MSELoss()
+    loss = loss_fn(outputs, labels)
+    return loss
 
-def train(state, rng, train_loader, num_epochs):
+def train(model, device, train_loader, num_epochs):
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
     for epoch in tqdm(range(num_epochs)):
         for batch in train_loader:
-            state = train_step(state, batch, rng)
-        print(f"Epoch {epoch+1}, Loss: {state.params['Dense_0']['kernel']}")
+            loss = train_step(model, batch, device)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+        print(f"Epoch {epoch+1}, Loss: {loss.item()}")
 
 def run_pipeline(model_args, data_args, training_args):
-    rng = jax.random.PRNGKey(42)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = T5Model()
-    state = create_train_state(rng, model, 0.001)
+    model.to(device)
     train_loader, _ = create_data_loaders(model_args, data_args)
-    train(state, rng, train_loader, training_args.num_train_epochs)
+    train(model, device, train_loader, training_args.num_train_epochs)
 
 def resume_pipeline(model_args, data_args, training_args, checkpoint_path):
-    rng = jax.random.PRNGKey(42)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = T5Model()
-    state = create_train_state(rng, model, 0.001)
-    state = train_state.TrainState.restore_checkpoint(checkpoint_path, target=None)
+    model.to(device)
+    checkpoint = torch.load(checkpoint_path)
+    model.load_state_dict(checkpoint['model_state_dict'])
     train_loader, _ = create_data_loaders(model_args, data_args)
-    train(state, rng, train_loader, training_args.num_train_epochs)
+    train(model, device, train_loader, training_args.num_train_epochs)
 
 if __name__ == "__main__":
     model_args = ModelConfig(model_identifier="t5-base", chat_template="none")
