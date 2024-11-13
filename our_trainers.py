@@ -9,13 +9,12 @@ class CustomDataset(Dataset):
         self.labels = torch.tensor(labels, dtype=torch.long)
         self.batch_size = batch_size
         self.num_negatives = num_negatives
-        self.indices = torch.arange(len(samples))
 
     def __len__(self):
         return (len(self.samples) + self.batch_size - 1) // self.batch_size
 
     def __getitem__(self, idx):
-        indices = torch.randperm(self.indices)
+        indices = torch.randperm(len(self.samples))
         batch = indices[idx * self.batch_size:(idx + 1) * self.batch_size]
 
         anchor_idx = batch
@@ -79,7 +78,7 @@ def main():
 
     model = TripletModel(101, 10, num_negatives)
     dataset = CustomDataset(samples, labels, batch_size, num_negatives)
-    data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    data_loader = DataLoader(dataset, batch_size=1, shuffle=False)
 
     optimizer = optim.SGD(model.parameters(), lr=1e-4)
     for epoch in range(epochs):
