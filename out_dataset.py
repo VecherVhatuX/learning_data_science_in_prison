@@ -7,6 +7,7 @@ from torch.utils.data import Dataset, DataLoader
 from transformers import AutoModel, AutoTokenizer
 import json
 import numpy as np
+from typing import List, Tuple
 
 # Constants
 INSTANCE_ID_FIELD = 'instance_id'
@@ -19,80 +20,82 @@ DROPOUT = 0.2
 LEARNING_RATE = 1e-5
 MAX_EPOCHS = 5
 
-class TripletDataset(Dataset):
-    def __init__(self, dataset_path, snippet_folder_path):
-        self.dataset_path = dataset_path
-        self.snippet_folder_path = snippet_folder_path
-        self.dataset = np.load(dataset_path, allow_pickle=True)
-        self.instance_id_map = {item['instance_id']: item['problem_statement'] for item in self.dataset}
-        self.folder_paths = [os.path.join(snippet_folder_path, f) for f in os.listdir(snippet_folder_path) if os.path.isdir(os.path.join(snippet_folder_path, f))]
-        self.snippets = [self.load_json_file(os.path.join(folder_path, 'snippet.json')) for folder_path in self.folder_paths]
-        self.bug_snippets, self.non_bug_snippets = zip(*[self.separate_snippets(snippet) for snippet in self.snippets])
-        self.problem_statements = [self.instance_id_map.get(os.path.basename(folder_path)) for folder_path in self.folder_paths]
-        self.triplets = [self.create_triplets(problem_statement, bug_snippets, non_bug_snippets, NUM_NEGATIVES_PER_POSITIVE) for problem_statement, bug_snippets, non_bug_snippets in zip(self.problem_statements, self.bug_snippets, self.non_bug_snippets)]
-        self.tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
+def load_json_file(file_path: str) -> List:
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Failed to load JSON file: {file_path}, error: {str(e)}")
+        return []
 
-    def __len__(self):
-        return len(self.dataset) * NUM_NEGATIVES_PER_POSITIVE
+def separate_snippets(snippets: List) -> Tuple[List, List]:
+    return (
+        [item['snippet'] for item in snippets if item.get('is_bug', False) and item.get('snippet')],
+        [item['snippet'] for item in snippets if not item.get('is_bug', False) and item.get('snippet')]
+    )
 
-    def __getitem__(self, index):
-        folder_index = index // NUM_NEGATIVES_PER_POSITIVE
-        triplet_index = index % NUM_NEGATIVES_PER_POSITIVE
-        triplet = self.triplets[folder_index][triplet_index]
-        anchor_encoding = self.tokenizer.encode_plus(
-            triplet['anchor'],
-            max_length=MAX_LENGTH,
-            padding='max_length',
-            truncation=True,
-            return_attention_mask=True,
-            return_tensors='pt'
-        )
-        positive_encoding = self.tokenizer.encode_plus(
-            triplet['positive'],
-            max_length=MAX_LENGTH,
-            padding='max_length',
-            truncation=True,
-            return_attention_mask=True,
-            return_tensors='pt'
-        )
-        negative_encoding = self.tokenizer.encode_plus(
-            triplet['negative'],
-            max_length=MAX_LENGTH,
-            padding='max_length',
-            truncation=True,
-            return_attention_mask=True,
-            return_tensors='pt'
-        )
-        return {
-            'anchor_input_ids': anchor_encoding['input_ids'].flatten(),
-            'anchor_attention_mask': anchor_encoding['attention_mask'].flatten(),
-            'positive_input_ids': positive_encoding['input_ids'].flatten(),
-            'positive_attention_mask': positive_encoding['attention_mask'].flatten(),
-            'negative_input_ids': negative_encoding['input_ids'].flatten(),
-            'negative_attention_mask': negative_encoding['attention_mask'].flatten()
-        }
+def create_triplets(problem_statement: str, positive_snippets: List, negative_snippets: List, num_negatives_per_positive: int) -> List:
+    return [{'anchor': problem_statement, 'positive': positive_doc, 'negative': random.choice(negative_snippets)}
+            for positive_doc in positive_snippets
+            for _ in range(min(num_negatives_per_positive, len(negative_snippets)))]
 
-    @staticmethod
-    def load_json_file(file_path):
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"Failed to load JSON file: {file_path}, error: {str(e)}")
-            return []
+def create_triplet_dataset(dataset_path: str, snippet_folder_path: str) -> List:
+    dataset = np.load(dataset_path, allow_pickle=True)
+    instance_id_map = {item['instance_id']: item['problem_statement'] for item in dataset}
+    folder_paths = [os.path.join(snippet_folder_path, f) for f in os.listdir(snippet_folder_path) if os.path.isdir(os.path.join(snippet_folder_path, f))]
+    snippets = [load_json_file(os.path.join(folder_path, 'snippet.json')) for folder_path in folder_paths]
+    bug_snippets, non_bug_snippets = zip(*[separate_snippets(snippet) for snippet in snippets])
+    problem_statements = [instance_id_map.get(os.path.basename(folder_path)) for folder_path in folder_paths]
+    triplets = [create_triplets(problem_statement, bug_snippets[i], non_bug_snippets[i], NUM_NEGATIVES_PER_POSITIVE) 
+                for i, problem_statement in enumerate(problem_statements)]
+    return [item for sublist in triplets for item in sublist]
 
-    @staticmethod
-    def separate_snippets(snippets):
-        return (
-            [item['snippet'] for item in snippets if item.get('is_bug', False) and item.get('snippet')],
-            [item['snippet'] for item in snippets if not item.get('is_bug', False) and item.get('snippet')]
-        )
+def create_data_loader(triplets: List, batch_size: int, shuffle: bool) -> DataLoader:
+    class TripletDataset(Dataset):
+        def __init__(self, triplets):
+            self.triplets = triplets
+            self.tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
 
-    @staticmethod
-    def create_triplets(problem_statement, positive_snippets, negative_snippets, num_negatives_per_positive):
-        return [{'anchor': problem_statement, 'positive': positive_doc, 'negative': random.choice(negative_snippets)}
-                for positive_doc in positive_snippets
-                for _ in range(min(num_negatives_per_positive, len(negative_snippets)))]
+        def __len__(self):
+            return len(self.triplets)
+
+        def __getitem__(self, index):
+            triplet = self.triplets[index]
+            anchor_encoding = self.tokenizer.encode_plus(
+                triplet['anchor'],
+                max_length=MAX_LENGTH,
+                padding='max_length',
+                truncation=True,
+                return_attention_mask=True,
+                return_tensors='pt'
+            )
+            positive_encoding = self.tokenizer.encode_plus(
+                triplet['positive'],
+                max_length=MAX_LENGTH,
+                padding='max_length',
+                truncation=True,
+                return_attention_mask=True,
+                return_tensors='pt'
+            )
+            negative_encoding = self.tokenizer.encode_plus(
+                triplet['negative'],
+                max_length=MAX_LENGTH,
+                padding='max_length',
+                truncation=True,
+                return_attention_mask=True,
+                return_tensors='pt'
+            )
+            return {
+                'anchor_input_ids': anchor_encoding['input_ids'].flatten(),
+                'anchor_attention_mask': anchor_encoding['attention_mask'].flatten(),
+                'positive_input_ids': positive_encoding['input_ids'].flatten(),
+                'positive_attention_mask': positive_encoding['attention_mask'].flatten(),
+                'negative_input_ids': negative_encoding['input_ids'].flatten(),
+                'negative_attention_mask': negative_encoding['attention_mask'].flatten()
+            }
+
+    dataset = TripletDataset(triplets)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
 
 class TripletModel(nn.Module):
     def __init__(self):
@@ -157,12 +160,10 @@ def evaluate(model, device, loader):
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
-    dataset = TripletDataset(dataset_path, snippet_folder_path)
-    train_indices, test_indices = torch.utils.data.random_split(range(len(dataset)), [int(0.8 * len(dataset)), len(dataset) - int(0.8 * len(dataset))])
-    train_dataset = torch.utils.data.Subset(dataset, train_indices)
-    test_dataset = torch.utils.data.Subset(dataset, test_indices)
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    triplets = create_triplet_dataset(dataset_path, snippet_folder_path)
+    train_triplets, test_triplets = triplets[:int(0.8 * len(triplets))], triplets[int(0.8 * len(triplets)):]
+    train_loader = create_data_loader(train_triplets, BATCH_SIZE, shuffle=True)
+    test_loader = create_data_loader(test_triplets, BATCH_SIZE, shuffle=False)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = TripletModel()
     model.to(device)
