@@ -1,5 +1,5 @@
 import tensorflow as tf
-from tensorflow.keras import layers
+from tensorflow.keras import layers, optimizers, losses, metrics
 import numpy as np
 
 class CustomDataset(tf.keras.utils.Sequence):
@@ -48,8 +48,9 @@ class TripletModel(tf.keras.Model):
         self.pooling = layers.GlobalAveragePooling1D()
         self.num_negatives = num_negatives
         self.loss_tracker = tf.keras.metrics.Mean(name="loss")
+        self.optimizer = tf.keras.optimizers.SGD(learning_rate=1e-4)
 
-    def call(self, inputs, training=None):
+    def call(self, inputs):
         anchor_input_ids = inputs['anchor_input_ids']
         positive_input_ids = inputs['positive_input_ids']
         negative_input_ids = inputs['negative_input_ids']
@@ -69,23 +70,29 @@ class TripletModel(tf.keras.Model):
             negative_embeddings[-1] = negative_embeddings[-1] / tf.norm(negative_embeddings[-1], axis=1, keepdims=True)
         negative_embeddings = tf.stack(negative_embeddings)
 
+        return anchor_embeddings, positive_embeddings, negative_embeddings
+
+    def triplet_loss(self, anchor_embeddings, positive_embeddings, negative_embeddings):
         loss = tf.reduce_mean(tf.maximum(1.0 + 
                                          tf.reduce_sum((anchor_embeddings - positive_embeddings) ** 2, axis=1) - 
                                          tf.reduce_sum((anchor_embeddings - negative_embeddings[:, 0, :]) ** 2, axis=1), 
                                          0.0))
-        self.loss_tracker.update_state(loss)
-        return anchor_embeddings
+        return loss
 
     def train_step(self, data):
         with tf.GradientTape() as tape:
-            _ = self(data, training=True)
-        gradients = tape.gradient(self.loss_tracker.result(), self.trainable_variables)
-        optimizer = tf.keras.optimizers.SGD(learning_rate=1e-4)
-        optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+            anchor_embeddings, positive_embeddings, negative_embeddings = self(data, training=True)
+            loss = self.triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
+        gradients = tape.gradient(loss, self.trainable_variables)
+        self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+        self.loss_tracker.update_state(loss)
         return {"loss": self.loss_tracker.result()}
 
     def test_step(self, data):
-        return self.train_step(data)
+        anchor_embeddings, positive_embeddings, negative_embeddings = self(data, training=False)
+        loss = self.triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
+        self.loss_tracker.update_state(loss)
+        return {"loss": self.loss_tracker.result()}
 
 
 def main():
@@ -99,7 +106,7 @@ def main():
     dataset = CustomDataset(samples, labels, batch_size, num_negatives)
 
     model.compile()
-    model.fit(dataset, epochs=epochs)
+    history = model.fit(dataset, epochs=epochs, validation_data=dataset)
     model.save_weights("model")
 
 
