@@ -16,24 +16,20 @@ class TripletDataset(Dataset):
     def __getitem__(self, idx):
         indices = torch.randperm(len(self.samples))
         batch = indices[idx * self.batch_size:(idx + 1) * self.batch_size]
-
         anchor_idx = batch
-        positive_idx = torch.tensor([], dtype=torch.long)
-        negative_indices = torch.tensor([], dtype=torch.long)
 
+        positive_idx = []
+        negative_indices = []
         for anchor in anchor_idx:
             idx = torch.where(self.labels == self.labels[anchor])[0]
-            positive_idx = torch.cat((positive_idx, torch.randint(0, len(idx[idx != anchor]), (1,))))
+            positive_idx.append(torch.randint(0, len(idx[idx != anchor]), (1,)).item())
             idx = torch.where(self.labels != self.labels[anchor])[0]
             negative_idx = torch.randperm(len(idx))[:self.num_negatives]
-            negative_indices = torch.cat((negative_indices, idx[negative_idx]))
+            negative_indices.extend(idx[negative_idx])
 
         anchor_input_ids = self.samples[anchor_idx]
-        if len(positive_idx) > 0:
-            positive_input_ids = self.samples[positive_idx]
-        else:
-            positive_input_ids = torch.tensor([], dtype=torch.long)
-        negative_input_ids = self.samples[negative_indices].view(self.batch_size, self.num_negatives, -1)
+        positive_input_ids = self.samples[torch.tensor(positive_idx, dtype=torch.long)]
+        negative_input_ids = self.samples[torch.tensor(negative_indices, dtype=torch.long)].view(self.batch_size, self.num_negatives, -1)
 
         return {
             'anchor_input_ids': anchor_input_ids,
@@ -49,24 +45,22 @@ class TripletModel(nn.Module):
         self.num_negatives = num_negatives
         self.criterion = nn.TripletMarginLoss(margin=1.0, reduction='mean')
 
+    def embed(self, input_ids):
+        embeddings = self.embedding(input_ids)
+        embeddings = self.pooling(embeddings).squeeze(1)
+        embeddings = embeddings / torch.norm(embeddings, dim=1, keepdim=True)
+        return embeddings
+
     def forward(self, inputs):
         anchor_input_ids = inputs['anchor_input_ids']
         positive_input_ids = inputs['positive_input_ids']
         negative_input_ids = inputs['negative_input_ids']
 
-        anchor_embeddings = self.embedding(anchor_input_ids)
-        anchor_embeddings = self.pooling(anchor_embeddings).squeeze(1)
-        anchor_embeddings = anchor_embeddings / torch.norm(anchor_embeddings, dim=1, keepdim=True)
+        anchor_embeddings = self.embed(anchor_input_ids)
+        positive_embeddings = self.embed(positive_input_ids)
+        negative_embeddings = self.embed(negative_input_ids[:, 0, :])
 
-        positive_embeddings = self.embedding(positive_input_ids)
-        positive_embeddings = self.pooling(positive_embeddings).squeeze(1)
-        positive_embeddings = positive_embeddings / torch.norm(positive_embeddings, dim=1, keepdim=True)
-
-        negative_embeddings = self.embedding(negative_input_ids)
-        negative_embeddings = self.pooling(negative_embeddings).squeeze(1)
-        negative_embeddings = negative_embeddings / torch.norm(negative_embeddings, dim=1, keepdim=True)
-
-        return anchor_embeddings, positive_embeddings, negative_embeddings[:, 0, :]
+        return anchor_embeddings, positive_embeddings, negative_embeddings
 
 def train(model, data_loader, optimizer, epochs):
     for epoch in range(epochs):
@@ -79,7 +73,23 @@ def train(model, data_loader, optimizer, epochs):
                 loss.backward()
                 optimizer.step()
                 running_loss += loss.item()
-        print('Epoch: %d, Loss: %.3f' % (epoch+1, running_loss/(i+1)))
+        print(f'Epoch: {epoch+1}, Loss: {running_loss/(i+1):.3f}')
+
+def evaluate(model, data_loader):
+    model.eval()
+    total_loss = 0.0
+    with torch.no_grad():
+        for i, data in enumerate(data_loader):
+            anchor_embeddings, positive_embeddings, negative_embeddings = model(data)
+            if len(positive_embeddings) > 0:
+                loss = model.criterion(anchor_embeddings, positive_embeddings, negative_embeddings)
+                total_loss += loss.item()
+    print(f'Validation Loss: {total_loss / (i+1):.3f}')
+
+def predict(model, input_ids):
+    model.eval()
+    with torch.no_grad():
+        return model.embed(input_ids)
 
 def main():
     torch.manual_seed(42)
@@ -97,25 +107,6 @@ def main():
     train(model, data_loader, optimizer, epochs)
 
     torch.save(model.state_dict(), 'model.pth')
-
-def evaluate(model, data_loader):
-    model.eval()
-    total_loss = 0.0
-    with torch.no_grad():
-        for i, data in enumerate(data_loader):
-            anchor_embeddings, positive_embeddings, negative_embeddings = model(data)
-            if len(positive_embeddings) > 0:
-                loss = model.criterion(anchor_embeddings, positive_embeddings, negative_embeddings)
-                total_loss += loss.item()
-    print('Validation Loss: %.3f' % (total_loss / (i+1)))
-
-def predict(model, input_ids):
-    model.eval()
-    with torch.no_grad():
-        embeddings = model.embedding(input_ids)
-        embeddings = model.pooling(embeddings).squeeze(1)
-        embeddings = embeddings / torch.norm(embeddings, dim=1, keepdim=True)
-        return embeddings
 
 if __name__ == "__main__":
     main()
