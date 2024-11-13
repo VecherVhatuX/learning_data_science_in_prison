@@ -26,11 +26,18 @@ class IndexSampler:
         self.num_negatives = num_negatives
 
     def sample_positive(self, anchor_idx):
-        return np.array([np.random.choice(np.where(self.labels == self.labels[anchor])[0]) for anchor in anchor_idx])
+        positive_idx = []
+        for anchor in anchor_idx:
+            idx = np.where(self.labels == self.labels[anchor])[0]
+            positive_idx.append(np.random.choice(idx[idx != anchor]))
+        return np.array(positive_idx)
 
     def sample_negative(self, anchor_idx):
-        negative_indices = [np.random.choice(np.where(self.labels != self.labels[anchor])[0], self.num_negatives, replace=False) for anchor in anchor_idx]
-        negative_indices = [np.setdiff1d(negative_idx, [anchor]) for anchor, negative_idx in zip(anchor_idx, negative_indices)]
+        negative_indices = []
+        for anchor in anchor_idx:
+            idx = np.where(self.labels != self.labels[anchor])[0]
+            negative_idx = np.setdiff1d(np.random.choice(idx, self.num_negatives, replace=False), [anchor])
+            negative_indices.append(negative_idx)
         return negative_indices
 
 
@@ -62,9 +69,6 @@ class TripletData(tf.data.Dataset):
         self.data_shuffler.shuffle()
         batch = self.data_shuffler.get_batch(idx)
         positive_idx = self.index_sampler.sample_positive(batch)
-        while np.any(positive_idx == batch):
-            positive_idx = self.index_sampler.sample_positive(batch)
-
         negative_indices = self.index_sampler.sample_negative(batch)
         return self.batch_creator.create_batch(batch, positive_idx, negative_indices)
 
@@ -76,7 +80,7 @@ class EmbeddingModel(tf.keras.Model):
         self.pooling = layers.GlobalAveragePooling1D()
 
     def call(self, x, training=False):
-        x = self.embedding(x)
+        x = self.embedding(x, training=training)
         x = self.pooling(x)
         return x
 
