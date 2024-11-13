@@ -149,7 +149,8 @@ class T5Model(BaseModel):
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-            train_loader.dataset.on_epoch_end()
+            if hasattr(train_loader.dataset, 'on_epoch_end'):
+                train_loader.dataset.on_epoch_end()
             print(f"Epoch {epoch+1}, Loss: {loss.item()}")
 
     @classmethod
