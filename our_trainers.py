@@ -54,20 +54,29 @@ class TripletLossModel(tf.keras.Model):
                                          tf.reduce_sum((anchor_embeddings - negative_embeddings[:, 0, :]) ** 2, axis=1), 
                                          0.0))
 
-def train_model(model, dataset, optimizer, margin, epochs):
+    def compile(self, optimizer, margin):
+        super(TripletLossModel, self).compile()
+        self.optimizer = optimizer
+        self.margin = margin
+
+    def train_step(self, batch):
+        with tf.GradientTape() as tape:
+            anchor_input_ids = batch["anchor_input_ids"]
+            positive_input_ids = batch["positive_input_ids"]
+            negative_input_ids = batch["negative_input_ids"]
+            anchor_embeddings = self.standardize_vectors(self(anchor_input_ids))
+            positive_embeddings = self.standardize_vectors(self(positive_input_ids))
+            negative_embeddings = self.standardize_vectors(self(negative_input_ids))
+            loss = self.triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, self.margin)
+        gradients = tape.gradient(loss, self.trainable_variables)
+        self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+        return {"loss": loss}
+
+def train_model(model, dataset, epochs):
     for epoch in range(epochs):
         total_loss = 0
         for batch in dataset:
-            with tf.GradientTape() as tape:
-                anchor_input_ids = batch["anchor_input_ids"]
-                positive_input_ids = batch["positive_input_ids"]
-                negative_input_ids = batch["negative_input_ids"]
-                anchor_embeddings = model.standardize_vectors(model(anchor_input_ids))
-                positive_embeddings = model.standardize_vectors(model(positive_input_ids))
-                negative_embeddings = model.standardize_vectors(model(negative_input_ids))
-                loss = model.triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, margin)
-            gradients = tape.gradient(loss, model.trainable_variables)
-            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+            loss = model.train_step(batch).get("loss")
             total_loss += loss.numpy()
         print(f"Epoch {epoch+1}, Loss: {total_loss / len(dataset)}")
 
@@ -82,11 +91,10 @@ def main():
     epochs = 10
 
     model = TripletLossModel(101, 10)
+    model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=1e-4), margin=1.0)
     dataset = TripletData(samples, labels, batch_size, num_negatives)
-    optimizer = tf.keras.optimizers.SGD(learning_rate=1e-4)
-    margin = 1.0
 
-    train_model(model, dataset, optimizer, margin, epochs)
+    train_model(model, dataset, epochs)
     persist_model(model, "model")
 
 if __name__ == "__main__":
