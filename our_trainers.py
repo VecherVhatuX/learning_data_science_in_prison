@@ -1,6 +1,7 @@
-import tensorflow as tf
-from tensorflow.keras import layers, models
-from tensorflow.keras.optimizers import SGD
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.utils.data as data
 import numpy as np
 
 def shuffle_samples(samples):
@@ -22,64 +23,63 @@ def get_triplet_indices(samples, labels, batch_size, num_negatives):
 def get_triplet_batch(samples, labels, batch_size, num_negatives, idx):
     anchor_idx, positive_idx, negative_indices = get_triplet_indices(samples, labels, batch_size, num_negatives)
     return {
-        'anchor_input_ids': samples[anchor_idx],
-        'positive_input_ids': samples[positive_idx],
-        'negative_input_ids': np.stack([samples[negative_idx] for negative_idx in negative_indices]),
+        'anchor_input_ids': torch.tensor(samples[anchor_idx]),
+        'positive_input_ids': torch.tensor(samples[positive_idx]),
+        'negative_input_ids': torch.stack([torch.tensor(samples[negative_idx]) for negative_idx in negative_indices]),
     }
 
-def create_dataset(samples, labels, batch_size, num_negatives):
-    def generator():
-        for idx in range(-(-len(samples) // batch_size)):
-            yield get_triplet_batch(samples, labels, batch_size, num_negatives, idx)
+class TripletDataset(data.Dataset):
+    def __init__(self, samples, labels, batch_size, num_negatives):
+        self.samples = samples
+        self.labels = labels
+        self.batch_size = batch_size
+        self.num_negatives = num_negatives
 
-    return tf.data.Dataset.from_generator(
-        generator,
-        output_types={'anchor_input_ids': tf.int32, 'positive_input_ids': tf.int32, 'negative_input_ids': tf.int32},
-        output_shapes={'anchor_input_ids': (batch_size, samples.shape[1]), 'positive_input_ids': (batch_size, samples.shape[1]), 'negative_input_ids': (batch_size, num_negatives, samples.shape[1])}
-    ).prefetch(tf.data.AUTOTUNE)
+    def __len__(self):
+        return -(-len(self.samples) // self.batch_size)
+
+    def __getitem__(self, idx):
+        return get_triplet_batch(self.samples, self.labels, self.batch_size, self.num_negatives, idx)
 
 def normalize_embeddings(embeddings):
-    return embeddings / tf.norm(embeddings, axis=1, keepdims=True)
+    return embeddings / torch.norm(embeddings, dim=1, keepdim=True)
 
 def calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, margin):
-    return tf.reduce_mean(tf.maximum(margin + 
-                                     tf.reduce_sum(tf.square(anchor_embeddings - positive_embeddings), axis=1) - 
-                                     tf.reduce_sum(tf.square(anchor_embeddings - negative_embeddings[:, 0, :]), axis=1), 
-                                     0.0))
+    return torch.mean(torch.clamp(margin + 
+                                  torch.sum((anchor_embeddings - positive_embeddings) ** 2, dim=1) - 
+                                  torch.sum((anchor_embeddings - negative_embeddings[:, 0, :]) ** 2, dim=1), 
+                                  min=0.0))
 
-def train_step(model, optimizer, margin, inputs):
-    with tf.GradientTape() as tape:
-        anchor_input_ids = inputs["anchor_input_ids"]
-        positive_input_ids = inputs["positive_input_ids"]
-        negative_input_ids = inputs["negative_input_ids"]
+class EmbeddingModel(nn.Module):
+    def __init__(self, num_embeddings, embedding_dim):
+        super(EmbeddingModel, self).__init__()
+        self.embedding = nn.Embedding(num_embeddings, embedding_dim)
+        self.pooling = nn.AdaptiveAvgPool1d(1)
 
-        anchor_embeddings = normalize_embeddings(model(anchor_input_ids))
-        positive_embeddings = normalize_embeddings(model(positive_input_ids))
-        negative_embeddings = normalize_embeddings(model(negative_input_ids))
-
-        loss = calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, margin)
-
-    gradients = tape.gradient(loss, model.trainable_variables)
-    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-
-    return {"loss": loss}
+    def forward(self, x):
+        x = self.embedding(x)
+        x = self.pooling(x.permute(0, 2, 1)).squeeze()
+        return x
 
 def train(model, dataset, optimizer, margin, epochs):
     for epoch in range(epochs):
         total_loss = 0
-        for inputs in dataset:
-            loss = train_step(model, optimizer, margin, inputs)
-            total_loss += loss["loss"]
+        for batch in data.DataLoader(dataset, batch_size=1, shuffle=True):
+            optimizer.zero_grad()
+            anchor_input_ids = batch["anchor_input_ids"].squeeze()
+            positive_input_ids = batch["positive_input_ids"].squeeze()
+            negative_input_ids = batch["negative_input_ids"].squeeze()
+            anchor_embeddings = normalize_embeddings(model(anchor_input_ids))
+            positive_embeddings = normalize_embeddings(model(positive_input_ids))
+            negative_embeddings = normalize_embeddings(model(negative_input_ids))
+            loss = calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, margin)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
         print(f"Epoch {epoch+1}, Loss: {total_loss / len(dataset)}")
 
 def save_model(model, filename):
-    model.save_weights(filename)
-
-def embedding_model(num_embeddings, embedding_dim):
-    return models.Sequential([
-        layers.Embedding(input_dim=num_embeddings, output_dim=embedding_dim),
-        layers.GlobalAveragePooling1D()
-    ])
+    torch.save(model.state_dict(), filename)
 
 def main():
     samples = np.random.randint(0, 100, (100, 10))
@@ -88,13 +88,13 @@ def main():
     num_negatives = 5
     epochs = 10
 
-    model = embedding_model(100, 10)
-    dataset = create_dataset(samples, shuffle_samples(samples.copy()), batch_size, num_negatives)
-    optimizer = SGD(learning_rate=1e-4)
+    model = EmbeddingModel(100, 10)
+    dataset = TripletDataset(shuffle_samples(samples.copy()), labels, batch_size, num_negatives)
+    optimizer = optim.SGD(model.parameters(), lr=1e-4)
     margin = 1.0
 
     train(model, dataset, optimizer, margin, epochs)
-    save_model(model, "model.h5")
+    save_model(model, "model.pth")
 
 if __name__ == "__main__":
     main()
