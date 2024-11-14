@@ -10,6 +10,7 @@ from flax.training import train_state
 from flax.training import common_utils
 from tensorflow.io import gfile
 from tqdm import tqdm
+import optax
 
 @dataclass
 class ModelConfig:
@@ -53,77 +54,62 @@ class TrainingConfig:
     seed: int = 42
     resume_from_checkpoint: str = None
 
-class DatasetBase:
-    def __init__(self, data, model_args, num_negative_samples=0):
-        self.data = data
-        self.model_args = model_args
-        self.num_negative_samples = num_negative_samples
-        self.input_ids = jnp.array([self._process_input(example) for example in data])
-        self.labels = jnp.array([self._process_output(example) for example in data])
-        self.attention_mask = jnp.array([1]*len(self.input_ids))
+def load_data(file_name):
+    with gfile.GFile(file_name, 'r') as f:
+        return json.load(f)
 
-    def _process_input(self, example):
-        return example["input"] if self.model_args.chat_template == "none" else f"{example['input']} "
+def prepare_datasets(model_args, data_args, num_negative_samples=0):
+    train_data = load_data("train.json")
+    test_data = load_data("test.json")
+    return train_data, test_data
 
-    def _process_output(self, example):
-        return example["output"] if self.model_args.chat_template == "none" else f"{example['output']} "
+def prepare_triplet_dataset(data, model_args):
+    return jax.tree_map(lambda x: jnp.array(x), {
+        "input_ids": jnp.array([f"{example['input']} " if model_args.chat_template != "none" else example["input"] for example in data]),
+        "labels": jnp.array([f"{example['output']} " if model_args.chat_template != "none" else example["output"] for example in data]),
+        "attention_mask": jnp.ones(len(data))
+    })
 
-    def __len__(self):
-        return len(self.input_ids)
+def prepare_custom_dataset(data, model_args):
+    return jax.tree_map(lambda x: jnp.array(x), {
+        "input_ids": jnp.array([f"{example['input']} " if model_args.chat_template != "none" else example["input"] for example in data]),
+        "labels": jnp.array([f"{example['output']} " if model_args.chat_template != "none" else example["output"] for example in data]),
+        "attention_mask": jnp.ones(len(data))
+    })
 
-    @staticmethod
-    def load_data(file_name):
-        with gfile.GFile(file_name, 'r') as f:
-            return json.load(f)
+def create_triplet_data_loader(dataset, model_args, batch_size):
+    return jax.tree_map(lambda x: common_utils.get_iterator(x, batch_size, shuffle=True, rng=jax.random.PRNGKey(0)), prepare_triplet_dataset(dataset, model_args))
 
-    @classmethod
-    def prepare_datasets(cls, model_args, data_args, num_negative_samples=0):
-        train_data = cls.load_data("train.json")
-        test_data = cls.load_data("test.json")
-        return cls(train_data, model_args, num_negative_samples), cls(test_data, model_args, num_negative_samples)
+def create_custom_data_loader(dataset, model_args, batch_size):
+    return jax.tree_map(lambda x: common_utils.get_iterator(x, batch_size, shuffle=True, rng=jax.random.PRNGKey(0)), prepare_custom_dataset(dataset, model_args))
 
-    @classmethod
-    def create_data_loaders(cls, model_args, data_args, num_negative_samples=0):
-        train_data, test_data = cls.prepare_datasets(model_args, data_args, num_negative_samples)
-        train_loader = cls._create_data_loader(train_data, data_args.per_device_train_batch_size)
-        test_loader = cls._create_data_loader(test_data, data_args.per_device_eval_batch_size)
-        return train_loader, test_loader
+def train_step(model, batch, use_triplet):
+    if use_triplet:
+        positive_labels = batch["positive_labels"]
+        negative_labels = batch["negative_labels"]
+        outputs = model(batch["input_ids"])
+        loss_fn = jax.jit(lambda x, y, z: jnp.mean((x - y)**2 - (x - z)**2))
+        loss = loss_fn(outputs, positive_labels, negative_labels)
+    else:
+        labels = batch["labels"]
+        outputs = model(batch["input_ids"])
+        loss_fn = jax.jit(lambda x, y: jnp.mean((x - y)**2))
+        loss = loss_fn(outputs, labels)
+    return loss
 
-    @classmethod
-    def _create_data_loader(cls, dataset, batch_size):
-        return common_utils.get_iterator(
-            dataset, batch_size, shuffle=True, rng=jax.random.PRNGKey(0)
-        )
+def train(model, data_loader, num_epochs, use_triplet):
+    optimizer = optax.adam(learning_rate=0.001)
+    state = train_state.TrainState.create(
+        apply_fn=model.apply, params=model.init(jax.random.PRNGKey(0), jnp.ones((1, 1)))["params"], tx=optimizer
+    )
+    for epoch in tqdm(range(num_epochs)):
+        for batch in data_loader:
+            loss = train_step(model, batch, use_triplet)
+            grads = jax.grad(loss, state.params)
+            state = state.apply_gradients(grads=grads)
+            print(f"Epoch {epoch+1}, Loss: {loss}")
 
-class CustomDataset(DatasetBase):
-    def __getitem__(self, idx):
-        return {"input_ids": self.input_ids[idx], "labels": self.labels[idx], "attention_mask": self.attention_mask[idx]}
-
-class TripletDataset(DatasetBase):
-    def __init__(self, data, model_args):
-        super().__init__(data, model_args, num_negative_samples=5)
-
-    def __getitem__(self, idx):
-        positive_example = self.data[idx]
-        negative_examples = jax.random.choice(key=jax.random.PRNGKey(0), a=self.data, shape=(self.num_negative_samples,), replace=False)
-        return {
-            "input_ids": self.input_ids[idx],
-            "positive_labels": positive_example["output"],
-            "negative_labels": [example["output"] for example in negative_examples],
-            "attention_mask": self.attention_mask[idx]
-        }
-
-    def on_epoch_end(self):
-        self.data = jax.random.permutation(key=jax.random.PRNGKey(0), x=self.data)
-
-class BaseModel(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def __call__(self, x):
-        raise NotImplementedError
-
-class T5Model(BaseModel):
+class T5Model(nn.Module):
     @nn.compact
     def __call__(self, x):
         x = nn.relu(nn.Dense(128)(x))
@@ -131,57 +117,27 @@ class T5Model(BaseModel):
         x = nn.Dense(1000)(x)
         return x
 
-    @staticmethod
-    def train_step(model, batch, use_triplet):
-        input_ids = batch["input_ids"]
-        if use_triplet:
-            positive_labels = batch["positive_labels"]
-            negative_labels = batch["negative_labels"]
-            outputs = model(input_ids)
-            loss_fn = jax.jit(jnp.mean((outputs - positive_labels)**2 - (outputs - negative_labels)**2))
-            loss = loss_fn
-        else:
-            labels = batch["labels"]
-            attention_mask = batch["attention_mask"]
-            outputs = model(input_ids)
-            loss_fn = jax.jit(jnp.mean((outputs - labels)**2))
-            loss = loss_fn
-        return loss
+def run_pipeline(model_args, data_args, training_args):
+    use_triplet = model_args.use_triplet_loss_trainer
+    train_data, _ = prepare_datasets(model_args, data_args)
+    if use_triplet:
+        train_loader = create_triplet_data_loader(train_data, model_args, training_args.per_device_train_batch_size)
+    else:
+        train_loader = create_custom_data_loader(train_data, model_args, training_args.per_device_train_batch_size)
+    train(T5Model(), train_loader, training_args.num_train_epochs, use_triplet)
 
-    @classmethod
-    def train(cls, model, train_loader, num_epochs, use_triplet):
-        optimizer = optax.adam(learning_rate=0.001)
-        state = train_state.TrainState.create(
-            apply_fn=model.apply, params=model.init(jax.random.PRNGKey(0), jnp.ones((1, 1)))["params"], tx=optimizer
-        )
-        for epoch in tqdm(range(num_epochs)):
-            for batch in train_loader:
-                loss = cls.train_step(model, batch, use_triplet)
-                grads = jax.grad(loss, state.params)
-                state = state.apply_gradients(grads=grads)
-                print(f"Epoch {epoch+1}, Loss: {loss}")
-
-    @classmethod
-    def run_pipeline(cls, model_args, data_args, training_args):
-        use_triplet = model_args.use_triplet_loss_trainer
-        if use_triplet:
-            train_loader, _ = TripletDataset.create_data_loaders(model_args, data_args)
-        else:
-            train_loader, _ = CustomDataset.create_data_loaders(model_args, data_args)
-        cls.train(cls(), train_loader, training_args.num_train_epochs, use_triplet)
-
-    @classmethod
-    def resume_pipeline(cls, model_args, data_args, training_args, checkpoint_path):
-        use_triplet = model_args.use_triplet_loss_trainer
-        if use_triplet:
-            train_loader, _ = TripletDataset.create_data_loaders(model_args, data_args)
-        else:
-            train_loader, _ = CustomDataset.create_data_loaders(model_args, data_args)
-        model_state, _ = jax2tf.checkpoint.load_pytree(checkpoint_path, None)
-        cls.train(cls(), train_loader, training_args.num_train_epochs, use_triplet)
+def resume_pipeline(model_args, data_args, training_args, checkpoint_path):
+    use_triplet = model_args.use_triplet_loss_trainer
+    train_data, _ = prepare_datasets(model_args, data_args)
+    if use_triplet:
+        train_loader = create_triplet_data_loader(train_data, model_args, training_args.per_device_train_batch_size)
+    else:
+        train_loader = create_custom_data_loader(train_data, model_args, training_args.per_device_train_batch_size)
+    model_state, _ = jax2tf.checkpoint.load_pytree(checkpoint_path, None)
+    train(T5Model(), train_loader, training_args.num_train_epochs, use_triplet)
 
 if __name__ == "__main__":
     model_args = ModelConfig(model_identifier="t5-base", chat_template="none", use_triplet_loss_trainer=True)
     data_args = TrainingDataConfig(dataset_name="timdettmers/openassistant-guanaco")
     training_args = TrainingConfig(output_dir="./results", num_train_epochs=3, per_device_train_batch_size=16)
-    T5Model.run_pipeline(model_args, data_args, training_args)
+    run_pipeline(model_args, data_args, training_args)
