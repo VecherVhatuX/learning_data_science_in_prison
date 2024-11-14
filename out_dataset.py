@@ -106,6 +106,9 @@ class TripletDataset:
             'negative': np.array(negative_encodings)
         }
 
+    def on_epoch_end(self):
+        random.shuffle(self.triplets)
+
 def load_json_file(file_path: str) -> List:
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -178,8 +181,7 @@ def main():
     optimizer = Adam(learning_rate=Config.LEARNING_RATE)
     model_path = 'triplet_model.h5'
     for epoch in range(Config.MAX_EPOCHS):
-        random.shuffle(train_dataset.triplets)
-        train_dataset.triplets = train_dataset.triplets[:len(train_dataset.triplets) // Config.BATCH_SIZE * Config.BATCH_SIZE]
+        train_dataset.on_epoch_end()
         loss = train(model, train_dataset, optimizer)
         print(f'Epoch {epoch+1}, Loss: {loss:.4f}')
         save_model(model, model_path)
