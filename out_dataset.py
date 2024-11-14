@@ -22,8 +22,8 @@ class Config:
     MAX_EPOCHS = 5
 
 class TripletModel:
-    def __init__(self, rng):
-        self.distilbert = AutoTokenizer.from_pretrained('distilbert-base-uncased')
+    def __init__(self, rng, tokenizer):
+        self.distilbert = tokenizer
         init_fn, apply_fn = stax.serial(
             stax.Dense(Config.EMBEDDING_DIM, W_init=jax.nn.initializers.zeros),
             stax.Relu(),
@@ -35,7 +35,7 @@ class TripletModel:
         self.params = init_fn(rng, (-1, 768))
         self.apply_fn = apply_fn
 
-    def forward(self, params, inputs):
+    def forward(self, inputs):
         anchor, positive, negative = inputs
         anchor_output = jax.jit(self.distilbert.encode_plus)(
             anchor['input_ids'], 
@@ -61,12 +61,12 @@ class TripletModel:
             return_attention_mask=True, 
             return_tensors='jax'
         )
-        anchor_embedding = self.apply_fn(params, anchor_output['input_ids'][:, 0, :])
-        positive_embedding = self.apply_fn(params, positive_output['input_ids'][:, 0, :])
-        negative_embedding = self.apply_fn(params, negative_output['input_ids'][:, 0, :])
+        anchor_embedding = self.apply_fn(self.params, anchor_output['input_ids'][:, 0, :])
+        positive_embedding = self.apply_fn(self.params, positive_output['input_ids'][:, 0, :])
+        negative_embedding = self.apply_fn(self.params, negative_output['input_ids'][:, 0, :])
         return anchor_embedding, positive_embedding, negative_embedding
 
-    def triplet_loss(self, params, anchor, positive, negative):
+    def triplet_loss(self, anchor, positive, negative):
         return jnp.mean(jnp.clip(jnp.linalg.norm(anchor - positive, axis=1) - jnp.linalg.norm(anchor - negative, axis=1) + 1.0, a_min=0.0))
 
 class TripletDataset:
@@ -171,24 +171,27 @@ def train(model, dataset, optimizer):
     total_loss = 0
     for batch in dataset.batch():
         anchor, positive, negative = batch
-        grads = jax.grad(lambda params: model.triplet_loss(params, *model.forward(params, (anchor, positive, negative))))(model.params)
+        anchor_embedding, positive_embedding, negative_embedding = model.forward((anchor, positive, negative))
+        loss = model.triplet_loss(anchor_embedding, positive_embedding, negative_embedding)
+        grads = jax.grad(lambda params, anchor, positive, negative: model.triplet_loss(model.apply_fn(params, anchor), model.apply_fn(params, positive), model.apply_fn(params, negative)))(model.params, anchor_embedding, positive_embedding, negative_embedding)
         optimizer = optimizers.adam(model.params, grads, optimizer)
         model.params = optimizer[0]
-        total_loss += model.triplet_loss(model.params, *model.forward(model.params, (anchor, positive, negative)))
+        total_loss += loss
     return total_loss / len(dataset)
 
 def evaluate(model, dataset):
     total_loss = 0
     for batch in dataset.batch():
         anchor, positive, negative = batch
-        total_loss += model.triplet_loss(model.params, *model.forward(model.params, (anchor, positive, negative)))
+        anchor_embedding, positive_embedding, negative_embedding = model.forward((anchor, positive, negative))
+        total_loss += model.triplet_loss(anchor_embedding, positive_embedding, negative_embedding)
     return total_loss / len(dataset)
 
 def save_model(model, path):
     np.save(path, model.params)
 
-def load_model(path):
-    model = TripletModel(jax.random.PRNGKey(0))
+def load_model(path, tokenizer):
+    model = TripletModel(jax.random.PRNGKey(0), tokenizer)
     model.params = np.load(path)
     return model
 
@@ -203,7 +206,7 @@ def main():
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
     tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
     train_dataset, test_dataset = load_data(dataset_path, snippet_folder_path, tokenizer)
-    model = TripletModel(jax.random.PRNGKey(0))
+    model = TripletModel(jax.random.PRNGKey(0), tokenizer)
     optimizer = optimizers.adam(model.params, Config.LEARNING_RATE)
     model_path = 'triplet_model.npy'
     history = {'loss': [], 'val_loss': []}
