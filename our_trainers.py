@@ -4,6 +4,10 @@ import torch.nn.functional as F
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
 
+# Functional style for TripletDataset
+def get_triplet_dataset(samples, labels, batch_size, num_negatives):
+    return lambda: TripletDataset(samples, labels, batch_size, num_negatives)
+
 class TripletDataset(Dataset):
     def __init__(self, samples, labels, batch_size, num_negatives):
         self.samples = samples
@@ -25,6 +29,9 @@ class TripletDataset(Dataset):
     def __len__(self):
         return len(self.samples) // self.batch_size
 
+# Functional style for TripletModel
+def get_triplet_model(num_embeddings, embedding_dim):
+    return lambda: TripletModel(num_embeddings, embedding_dim)
 
 class TripletModel(nn.Module):
     def __init__(self, num_embeddings, embedding_dim):
@@ -43,6 +50,9 @@ class TripletModel(nn.Module):
         negative_embeddings = self.embed(inputs['negative_input_ids'].view(-1, inputs['negative_input_ids'].shape[2]))
         return anchor_embeddings, positive_embeddings, negative_embeddings
 
+# Functional style for TripletLoss
+def get_triplet_loss(margin):
+    return lambda: TripletLoss(margin)
 
 class TripletLoss(nn.Module):
     def __init__(self, margin=1.0):
@@ -52,6 +62,9 @@ class TripletLoss(nn.Module):
     def forward(self, anchor, positive, negative):
         return torch.mean(torch.clamp(torch.norm(anchor - positive, p=2, dim=1) - torch.norm(anchor.unsqueeze(1) - negative, p=2, dim=2) + self.margin, min=0))
 
+# Functional style for BaseTrainer
+def get_base_trainer(model, device):
+    return lambda: BaseTrainer(model, device)
 
 class BaseTrainer:
     def __init__(self, model, device):
@@ -68,6 +81,9 @@ class BaseTrainer:
     def train(self, dataset, epochs, batch_size):
         raise NotImplementedError
 
+# Functional style for TripletTrainer
+def get_triplet_trainer(model, loss_fn, epochs, lr, dataset, device):
+    return lambda: TripletTrainer(model, loss_fn, epochs, lr, dataset, device)
 
 class TripletTrainer(BaseTrainer):
     def __init__(self, model, loss_fn, epochs, lr, dataset, device):
@@ -96,6 +112,9 @@ class TripletTrainer(BaseTrainer):
                 total_loss += loss
             print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
+# Functional style for TripletEvaluator
+def get_triplet_evaluator(model, loss_fn, dataset, device):
+    return lambda: TripletEvaluator(model, loss_fn, dataset, device)
 
 class TripletEvaluator(BaseTrainer):
     def __init__(self, model, loss_fn, dataset, device):
@@ -119,6 +138,9 @@ class TripletEvaluator(BaseTrainer):
                 total_loss += loss
         print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
+# Functional style for TripletPredictor
+def get_triplet_predictor(model, device):
+    return lambda: TripletPredictor(model, device)
 
 class TripletPredictor(BaseTrainer):
     def __init__(self, model, device):
@@ -129,7 +151,7 @@ class TripletPredictor(BaseTrainer):
             input_ids = input_ids.to(self.device)
             return self.model({'anchor_input_ids': input_ids})[0]
 
-
+# Main function using functional style
 def main():
     np.random.seed(42)
     torch.manual_seed(42)
@@ -144,20 +166,19 @@ def main():
     lr = 1e-4
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    dataset = TripletDataset(samples, labels, batch_size, num_negatives)
-    model = TripletModel(num_embeddings, embedding_dim)
-    loss_fn = TripletLoss(margin)
-    trainer = TripletTrainer(model, loss_fn, epochs, lr, dataset, device)
+    dataset = get_triplet_dataset(samples, labels, batch_size, num_negatives)()
+    model = get_triplet_model(num_embeddings, embedding_dim)()
+    loss_fn = get_triplet_loss(margin)()
+    trainer = get_triplet_trainer(model, loss_fn, epochs, lr, dataset, device)()
     trainer.train()
 
-    evaluator = TripletEvaluator(model, loss_fn, dataset, device)
+    evaluator = get_triplet_evaluator(model, loss_fn, dataset, device)()
     evaluator.evaluate()
 
-    predictor = TripletPredictor(model, device)
+    predictor = get_triplet_predictor(model, device)()
     input_ids = torch.tensor([1, 2, 3, 4, 5])
     output = predictor.predict(input_ids)
     print(output)
-
 
 if __name__ == "__main__":
     main()
