@@ -34,10 +34,10 @@ class TripletModel(tf.keras.Model):
         ])
 
     def call(self, inputs):
-        anchor_input_ids, anchor_attention_mask, positive_input_ids, positive_attention_mask, negative_input_ids, negative_attention_mask = inputs
-        anchor_output = self.distilbert([anchor_input_ids, anchor_attention_mask])
-        positive_output = self.distilbert([positive_input_ids, positive_attention_mask])
-        negative_output = self.distilbert([negative_input_ids, negative_attention_mask])
+        anchor, positive, negative = inputs
+        anchor_output = self.distilbert([anchor['input_ids'], anchor['attention_mask']])
+        positive_output = self.distilbert([positive['input_ids'], positive['attention_mask']])
+        negative_output = self.distilbert([negative['input_ids'], negative['attention_mask']])
         anchor_embedding = self.embedding(anchor_output)
         positive_embedding = self.embedding(positive_output)
         negative_embedding = self.embedding(negative_output)
@@ -60,12 +60,9 @@ class TripletDataset:
         start = index * self.batch_size
         end = (index + 1) * self.batch_size
         batch_triplets = self.triplets[start:end]
-        anchor_input_ids = []
-        anchor_attention_mask = []
-        positive_input_ids = []
-        positive_attention_mask = []
-        negative_input_ids = []
-        negative_attention_mask = []
+        anchor_encodings = []
+        positive_encodings = []
+        negative_encodings = []
         for triplet in batch_triplets:
             anchor_encoding = self.tokenizer.encode_plus(
                 triplet['anchor'],
@@ -91,19 +88,22 @@ class TripletDataset:
                 return_attention_mask=True,
                 return_tensors='np'
             )
-            anchor_input_ids.append(anchor_encoding['input_ids'].flatten())
-            anchor_attention_mask.append(anchor_encoding['attention_mask'].flatten())
-            positive_input_ids.append(positive_encoding['input_ids'].flatten())
-            positive_attention_mask.append(positive_encoding['attention_mask'].flatten())
-            negative_input_ids.append(negative_encoding['input_ids'].flatten())
-            negative_attention_mask.append(negative_encoding['attention_mask'].flatten())
+            anchor_encodings.append({
+                'input_ids': anchor_encoding['input_ids'].flatten(),
+                'attention_mask': anchor_encoding['attention_mask'].flatten()
+            })
+            positive_encodings.append({
+                'input_ids': positive_encoding['input_ids'].flatten(),
+                'attention_mask': positive_encoding['attention_mask'].flatten()
+            })
+            negative_encodings.append({
+                'input_ids': negative_encoding['input_ids'].flatten(),
+                'attention_mask': negative_encoding['attention_mask'].flatten()
+            })
         return {
-            'anchor_input_ids': np.array(anchor_input_ids),
-            'anchor_attention_mask': np.array(anchor_attention_mask),
-            'positive_input_ids': np.array(positive_input_ids),
-            'positive_attention_mask': np.array(positive_attention_mask),
-            'negative_input_ids': np.array(negative_input_ids),
-            'negative_attention_mask': np.array(negative_attention_mask)
+            'anchor': np.array(anchor_encodings),
+            'positive': np.array(positive_encodings),
+            'negative': np.array(negative_encodings)
         }
 
 def load_json_file(file_path: str) -> List:
@@ -147,30 +147,18 @@ def load_data(dataset_path: str, snippet_folder_path: str, tokenizer):
 def train(model, dataset, optimizer):
     total_loss = 0
     for batch in dataset:
-        anchor_input_ids = batch['anchor_input_ids']
-        anchor_attention_mask = batch['anchor_attention_mask']
-        positive_input_ids = batch['positive_input_ids']
-        positive_attention_mask = batch['positive_attention_mask']
-        negative_input_ids = batch['negative_input_ids']
-        negative_attention_mask = batch['negative_attention_mask']
+        anchor, positive, negative = model([batch['anchor'], batch['positive'], batch['negative']])
+        loss = model.triplet_loss(anchor, positive, negative)
         with tf.GradientTape() as tape:
-            anchor, positive, negative = model([anchor_input_ids, anchor_attention_mask, positive_input_ids, positive_attention_mask, negative_input_ids, negative_attention_mask])
-            loss = model.triplet_loss(anchor, positive, negative)
-        gradients = tape.gradient(loss, model.trainable_variables)
-        optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+            gradients = tape.gradient(loss, model.trainable_variables)
+            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
         total_loss += loss
     return total_loss / len(dataset)
 
 def evaluate(model, dataset):
     total_loss = 0
     for batch in dataset:
-        anchor_input_ids = batch['anchor_input_ids']
-        anchor_attention_mask = batch['anchor_attention_mask']
-        positive_input_ids = batch['positive_input_ids']
-        positive_attention_mask = batch['positive_attention_mask']
-        negative_input_ids = batch['negative_input_ids']
-        negative_attention_mask = batch['negative_attention_mask']
-        anchor, positive, negative = model([anchor_input_ids, anchor_attention_mask, positive_input_ids, positive_attention_mask, negative_input_ids, negative_attention_mask])
+        anchor, positive, negative = model([batch['anchor'], batch['positive'], batch['negative']])
         loss = model.triplet_loss(anchor, positive, negative)
         total_loss += loss
     return total_loss / len(dataset)
@@ -190,8 +178,8 @@ def main():
     optimizer = Adam(learning_rate=Config.LEARNING_RATE)
     model_path = 'triplet_model.h5'
     for epoch in range(Config.MAX_EPOCHS):
-        train_dataset.triplets = train_dataset.triplets[:len(train_dataset.triplets) // Config.BATCH_SIZE * Config.BATCH_SIZE]
         random.shuffle(train_dataset.triplets)
+        train_dataset.triplets = train_dataset.triplets[:len(train_dataset.triplets) // Config.BATCH_SIZE * Config.BATCH_SIZE]
         loss = train(model, train_dataset, optimizer)
         print(f'Epoch {epoch+1}, Loss: {loss:.4f}')
         save_model(model, model_path)
