@@ -172,6 +172,13 @@ def save_model(model, path):
 def load_model(path):
     return tf.keras.models.load_model(path)
 
+def plot_history(history):
+    import matplotlib.pyplot as plt
+    plt.plot(history['loss'], label='Training Loss')
+    plt.plot(history['val_loss'], label='Validation Loss')
+    plt.legend()
+    plt.show()
+
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
@@ -180,15 +187,17 @@ def main():
     model = TripletModel()
     optimizer = Adam(learning_rate=Config.LEARNING_RATE)
     model_path = 'triplet_model.h5'
+    history = {'loss': [], 'val_loss': []}
     for epoch in range(Config.MAX_EPOCHS):
         train_dataset.on_epoch_end()
         loss = train(model, train_dataset, optimizer)
-        print(f'Epoch {epoch+1}, Loss: {loss:.4f}')
+        val_loss = evaluate(model, test_dataset)
+        history['loss'].append(loss)
+        history['val_loss'].append(val_loss)
+        print(f'Epoch {epoch+1}, Loss: {loss:.4f}, Val Loss: {val_loss:.4f}')
         save_model(model, model_path)
         print(f'Model saved at {model_path}')
-    model = load_model(model_path)
-    loss = evaluate(model, test_dataset)
-    print(f'Test Loss: {loss:.4f}')
+    plot_history(history)
 
 if __name__ == "__main__":
     main()
