@@ -1,13 +1,15 @@
+# Import necessary libraries
 import os
 import random
 import json
-import numpy as np
-import torch
-from torch import nn
-from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer, AutoModel
+import jax
+import jax.numpy as jnp
+from jax.experimental import stax
+from jax.experimental import optimizers
+from transformers import AutoTokenizer
 from typing import List, Tuple
 
+# Define configuration
 class Config:
     INSTANCE_ID_FIELD = 'instance_id'
     MAX_LENGTH = 512
@@ -19,33 +21,57 @@ class Config:
     LEARNING_RATE = 1e-5
     MAX_EPOCHS = 5
 
-class TripletModel(nn.Module):
-    def __init__(self):
-        super(TripletModel, self).__init__()
-        self.distilbert = AutoModel.from_pretrained('distilbert-base-uncased')
-        self.embedding = nn.Sequential(
-            nn.Linear(self.distilbert.config.hidden_size, Config.EMBEDDING_DIM),
-            nn.ReLU(),
-            nn.Dropout(Config.DROPOUT),
-            nn.Linear(Config.EMBEDDING_DIM, Config.FC_DIM),
-            nn.ReLU(),
-            nn.Dropout(Config.DROPOUT)
+# Define Triplet Model
+class TripletModel:
+    def __init__(self, rng):
+        self.distilbert = AutoTokenizer.from_pretrained('distilbert-base-uncased')
+        init_fn, apply_fn = stax.serial(
+            stax.Dense(Config.EMBEDDING_DIM, W_init=jax.nn.initializers.zeros),
+            stax.Relu(),
+            stax.Dropout(Config.DROPOUT),
+            stax.Dense(Config.FC_DIM, W_init=jax.nn.initializers.zeros),
+            stax.Relu(),
+            stax.Dropout(Config.DROPOUT)
         )
+        self.params = init_fn(rng, (-1, 768))
+        self.apply_fn = apply_fn
 
-    def forward(self, inputs):
+    def forward(self, params, inputs):
         anchor, positive, negative = inputs
-        anchor_output = self.distilbert(anchor['input_ids'], attention_mask=anchor['attention_mask'])
-        positive_output = self.distilbert(positive['input_ids'], attention_mask=positive['attention_mask'])
-        negative_output = self.distilbert(negative['input_ids'], attention_mask=negative['attention_mask'])
-        anchor_embedding = self.embedding(anchor_output.last_hidden_state[:, 0, :])
-        positive_embedding = self.embedding(positive_output.last_hidden_state[:, 0, :])
-        negative_embedding = self.embedding(negative_output.last_hidden_state[:, 0, :])
+        anchor_output = jax.jit(self.distilbert.encode_plus)(
+            anchor['input_ids'], 
+            max_length=Config.MAX_LENGTH, 
+            padding='max_length', 
+            truncation=True, 
+            return_attention_mask=True, 
+            return_tensors='jax'
+        )
+        positive_output = jax.jit(self.distilbert.encode_plus)(
+            positive['input_ids'], 
+            max_length=Config.MAX_LENGTH, 
+            padding='max_length', 
+            truncation=True, 
+            return_attention_mask=True, 
+            return_tensors='jax'
+        )
+        negative_output = jax.jit(self.distilbert.encode_plus)(
+            negative['input_ids'], 
+            max_length=Config.MAX_LENGTH, 
+            padding='max_length', 
+            truncation=True, 
+            return_attention_mask=True, 
+            return_tensors='jax'
+        )
+        anchor_embedding = self.apply_fn(params, anchor_output['input_ids'][:, 0, :])
+        positive_embedding = self.apply_fn(params, positive_output['input_ids'][:, 0, :])
+        negative_embedding = self.apply_fn(params, negative_output['input_ids'][:, 0, :])
         return anchor_embedding, positive_embedding, negative_embedding
 
-    def triplet_loss(self, anchor, positive, negative):
-        return torch.mean(torch.clamp(torch.norm(anchor - positive, dim=1) - torch.norm(anchor - negative, dim=1) + 1.0, min=0.0))
+    def triplet_loss(self, params, anchor, positive, negative):
+        return jnp.mean(jnp.clip(jnp.linalg.norm(anchor - positive, axis=1) - jnp.linalg.norm(anchor - negative, axis=1) + 1.0, a_min=0.0))
 
-class TripletDataset(Dataset):
+# Define Triplet Dataset
+class TripletDataset:
     def __init__(self, triplets, tokenizer):
         self.triplets = triplets
         self.tokenizer = tokenizer
@@ -61,7 +87,7 @@ class TripletDataset(Dataset):
             padding='max_length',
             truncation=True,
             return_attention_mask=True,
-            return_tensors='pt'
+            return_tensors='jax'
         )
         positive_encoding = self.tokenizer.encode_plus(
             triplet['positive'],
@@ -69,7 +95,7 @@ class TripletDataset(Dataset):
             padding='max_length',
             truncation=True,
             return_attention_mask=True,
-            return_tensors='pt'
+            return_tensors='jax'
         )
         negative_encoding = self.tokenizer.encode_plus(
             triplet['negative'],
@@ -77,7 +103,7 @@ class TripletDataset(Dataset):
             padding='max_length',
             truncation=True,
             return_attention_mask=True,
-            return_tensors='pt'
+            return_tensors='jax'
         )
         return {
             'anchor': anchor_encoding,
@@ -85,6 +111,7 @@ class TripletDataset(Dataset):
             'negative': negative_encoding
         }
 
+# Load JSON file
 def load_json_file(file_path: str) -> List:
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -93,19 +120,22 @@ def load_json_file(file_path: str) -> List:
         print(f"Failed to load JSON file: {file_path}, error: {str(e)}")
         return []
 
+# Separate snippets
 def separate_snippets(snippets: List) -> Tuple[List, List]:
     return (
         [item['snippet'] for item in snippets if item.get('is_bug', False) and item.get('snippet')],
         [item['snippet'] for item in snippets if not item.get('is_bug', False) and item.get('snippet')]
     )
 
+# Create triplets
 def create_triplets(problem_statement: str, positive_snippets: List, negative_snippets: List, num_negatives_per_positive: int) -> List:
     return [{'anchor': problem_statement, 'positive': positive_doc, 'negative': random.choice(negative_snippets)}
             for positive_doc in positive_snippets
             for _ in range(min(num_negatives_per_positive, len(negative_snippets)))]
 
+# Create triplet dataset
 def create_triplet_dataset(dataset_path: str, snippet_folder_path: str) -> List:
-    dataset = np.load(dataset_path, allow_pickle=True)
+    dataset = jnp.load(dataset_path, allow_pickle=True)
     instance_id_map = {item['instance_id']: item['problem_statement'] for item in dataset}
     folder_paths = [os.path.join(snippet_folder_path, f) for f in os.listdir(snippet_folder_path) if os.path.isdir(os.path.join(snippet_folder_path, f))]
     snippets = [load_json_file(os.path.join(folder_path, 'snippet.json')) for folder_path in folder_paths]
@@ -115,6 +145,7 @@ def create_triplet_dataset(dataset_path: str, snippet_folder_path: str) -> List:
                 for i, problem_statement in enumerate(problem_statements)]
     return [item for sublist in triplets for item in sublist]
 
+# Load data
 def load_data(dataset_path: str, snippet_folder_path: str, tokenizer):
     triplets = create_triplet_dataset(dataset_path, snippet_folder_path)
     random.shuffle(triplets)
@@ -123,42 +154,42 @@ def load_data(dataset_path: str, snippet_folder_path: str, tokenizer):
     test_dataset = TripletDataset(test_triplets, tokenizer)
     return train_dataset, test_dataset
 
+# Train model
 def train(model, dataset, optimizer):
     total_loss = 0
-    for batch in DataLoader(dataset, batch_size=Config.BATCH_SIZE, shuffle=True):
+    for batch in jax.tree_util.tree_leaves(dataset):
         anchor, positive, negative = batch
-        anchor = {k: v.to(device) for k, v in anchor.items()}
-        positive = {k: v.to(device) for k, v in positive.items()}
-        negative = {k: v.to(device) for k, v in negative.items()}
-        optimizer.zero_grad()
-        anchor_embedding, positive_embedding, negative_embedding = model((anchor, positive, negative))
-        loss = model.triplet_loss(anchor_embedding, positive_embedding, negative_embedding)
-        loss.backward()
-        optimizer.step()
-        total_loss += loss.item()
+        anchor = jax.tree_util.tree_map(lambda x: x[0], anchor)
+        positive = jax.tree_util.tree_map(lambda x: x[0], positive)
+        negative = jax.tree_util.tree_map(lambda x: x[0], negative)
+        grads = jax.grad(lambda params: model.triplet_loss(params, *model.forward(params, (anchor, positive, negative))))(model.params)
+        optimizer = optimizers.adam(model.params, grads, optimizer)
+        model.params = optimizer[0]
+        total_loss += model.triplet_loss(model.params, *model.forward(model.params, (anchor, positive, negative)))
     return total_loss / len(dataset)
 
+# Evaluate model
 def evaluate(model, dataset):
     total_loss = 0
-    with torch.no_grad():
-        for batch in DataLoader(dataset, batch_size=Config.BATCH_SIZE, shuffle=False):
-            anchor, positive, negative = batch
-            anchor = {k: v.to(device) for k, v in anchor.items()}
-            positive = {k: v.to(device) for k, v in positive.items()}
-            negative = {k: v.to(device) for k, v in negative.items()}
-            anchor_embedding, positive_embedding, negative_embedding = model((anchor, positive, negative))
-            loss = model.triplet_loss(anchor_embedding, positive_embedding, negative_embedding)
-            total_loss += loss.item()
+    for batch in jax.tree_util.tree_leaves(dataset):
+        anchor, positive, negative = batch
+        anchor = jax.tree_util.tree_map(lambda x: x[0], anchor)
+        positive = jax.tree_util.tree_map(lambda x: x[0], positive)
+        negative = jax.tree_util.tree_map(lambda x: x[0], negative)
+        total_loss += model.triplet_loss(model.params, *model.forward(model.params, (anchor, positive, negative)))
     return total_loss / len(dataset)
 
+# Save model
 def save_model(model, path):
-    torch.save(model.state_dict(), path)
+    jnp.save(path, model.params)
 
+# Load model
 def load_model(path):
-    model = TripletModel()
-    model.load_state_dict(torch.load(path))
+    model = TripletModel(jax.random.PRNGKey(0))
+    model.params = jnp.load(path)
     return model
 
+# Plot history
 def plot_history(history):
     import matplotlib.pyplot as plt
     plt.plot(history['loss'], label='Training Loss')
@@ -166,16 +197,15 @@ def plot_history(history):
     plt.legend()
     plt.show()
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+# Main function
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
     tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
     train_dataset, test_dataset = load_data(dataset_path, snippet_folder_path, tokenizer)
-    model = TripletModel().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=Config.LEARNING_RATE)
-    model_path = 'triplet_model.pth'
+    model = TripletModel(jax.random.PRNGKey(0))
+    optimizer = optimizers.adam(model.params, Config.LEARNING_RATE)
+    model_path = 'triplet_model.npy'
     history = {'loss': [], 'val_loss': []}
     for epoch in range(Config.MAX_EPOCHS):
         loss = train(model, train_dataset, optimizer)
