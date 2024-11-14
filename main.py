@@ -2,15 +2,16 @@ import os
 import json
 from dataclasses import dataclass
 from typing import Dict
-import jax
-import jax.numpy as jnp
-from jax.experimental import jax2tf
-from flax import linen as nn
-from flax.training import train_state
-from flax.training import common_utils
-from tensorflow.io import gfile
-from tqdm import tqdm
-import optax
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.utils.data as data
+from torch.utils.data import Dataset, DataLoader
+import torchvision
+from torchvision import transforms
+from torchvision.utils import make_grid
+import torchvision.transforms.functional as TF
+import numpy as np
 
 @dataclass
 class ModelConfig:
@@ -57,118 +58,100 @@ class TrainingConfig:
     seed: int = 42
     resume_from_checkpoint: str = None
 
-class Dataset:
+class Dataset(Dataset):
     """Dataset class"""
-    def __init__(self, dataset, batch_size, num_epochs, use_triplet):
+    def __init__(self, dataset, use_triplet):
         self.dataset = dataset
-        self.batch_size = batch_size
-        self.num_epochs = num_epochs
         self.use_triplet = use_triplet
-        self.rng = jax.random.PRNGKey(0)
 
-    def _create_triplet_batch(self, batch):
-        """Create a triplet batch"""
-        positive_labels = batch["labels"]
-        negative_labels = jnp.array([batch["labels"][j] for j in jax.random.permutation(self.rng, len(batch["labels"]))])
-        return {"input_ids": batch["input_ids"], "positive_labels": positive_labels, "negative_labels": negative_labels}
+    def __len__(self):
+        return len(self.dataset["input_ids"])
 
-    def _create_batch(self, batch):
-        """Create a batch"""
-        return {"input_ids": batch["input_ids"], "labels": batch["labels"]}
-
-    def __iter__(self):
-        """Iterator for the dataset"""
-        for _ in range(self.num_epochs):
-            self.rng, subkey = jax.random.split(self.rng)
-            shuffled_dataset = jax.tree_map(lambda x: jax.random.permutation(subkey, x), self.dataset)
-            batches = common_utils.get_iterator(shuffled_dataset, self.batch_size)
-            for batch in batches:
-                if self.use_triplet:
-                    yield self._create_triplet_batch(batch)
-                else:
-                    yield self._create_batch(batch)
+    def __getitem__(self, idx):
+        if self.use_triplet:
+            positive_labels = self.dataset["labels"][idx]
+            negative_labels = np.random.choice(self.dataset["labels"], 1, replace=False)[0]
+            return {"input_ids": self.dataset["input_ids"][idx], "positive_labels": positive_labels, "negative_labels": negative_labels}
+        else:
+            return {"input_ids": self.dataset["input_ids"][idx], "labels": self.dataset["labels"][idx]}
 
 def load_json_file(file_name):
     """Load a JSON file"""
-    with gfile.GFile(file_name, 'r') as f:
+    with open(file_name, 'r') as f:
         return json.load(f)
 
 def prepare_dataset(data_args):
     """Prepare the dataset"""
     def load_and_prepare_data(file_name):
         data = load_json_file(file_name)
-        return jax.tree_map(
-            lambda x: jnp.array(x),
-            {
-                "input_ids": jnp.array([f"{example['input']} " if data_args.chat_template != "none" else example["input"] for example in data]),
-                "labels": jnp.array([f"{example['output']} " if data_args.chat_template != "none" else example["output"] for example in data]),
-                "attention_mask": jnp.ones(len(data))
-            }
-        )
+        return {
+            "input_ids": np.array([f"{example['input']} " if data_args.chat_template != "none" else example["input"] for example in data]),
+            "labels": np.array([f"{example['output']} " if data_args.chat_template != "none" else example["output"] for example in data]),
+            "attention_mask": np.ones(len(data))
+        }
     return load_and_prepare_data("train.json"), load_and_prepare_data("test.json")
 
 def get_loss_fn(use_triplet):
     """Get the loss function"""
     def triplet_loss_fn(x, y, z):
-        return jnp.mean((x - y)**2 - (x - z)**2)
+        return (x - y)**2 - (x - z)**2
     def mse_loss_fn(x, y):
-        return jnp.mean((x - y)**2)
+        return (x - y)**2
     return triplet_loss_fn if use_triplet else mse_loss_fn
 
 def train_step(model, batch, loss_fn):
     """Train a step"""
     if "positive_labels" in batch:
-        outputs = model(batch["input_ids"])
-        loss = loss_fn(outputs, batch["positive_labels"], batch["negative_labels"])
+        outputs = model(torch.tensor(batch["input_ids"]))
+        loss = loss_fn(outputs, torch.tensor(batch["positive_labels"]), torch.tensor(batch["negative_labels"]))
     else:
-        labels = batch["labels"]
-        outputs = model(batch["input_ids"])
+        labels = torch.tensor(batch["labels"])
+        outputs = model(torch.tensor(batch["input_ids"]))
         loss = loss_fn(outputs, labels)
     return loss
 
 def train_model(model, data_loader, num_epochs, loss_fn):
     """Train the model"""
-    optimizer = optax.adam(learning_rate=0.001)
-    state = train_state.TrainState.create(
-        apply_fn=model.apply, params=model.init(jax.random.PRNGKey(0), jnp.ones((1, 1)))["params"], tx=optimizer
-    )
-    return [
-        (
-            epoch,
-            state,
-            loss
-        ) for epoch in tqdm(range(num_epochs))
-        for batch in data_loader
-        for loss in [train_step(model, batch, loss_fn)]
-        for grads in [jax.grad(loss, state.params)]
-        for state in [state.apply_gradients(grads=grads)]
-    ]
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    for epoch in range(num_epochs):
+        for batch in data_loader:
+            loss = train_step(model, batch, loss_fn)
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+        print(f"Epoch {epoch+1}, Loss: {loss.item()}")
 
 class T5Model(nn.Module):
     """T5 model"""
-    @nn.compact
-    def __call__(self, x):
-        x = nn.relu(nn.Dense(128)(x))
-        x = nn.relu(nn.Dense(128)(x))
-        x = nn.Dense(1000)(x)
+    def __init__(self):
+        super(T5Model, self).__init__()
+        self.fc1 = nn.Linear(128, 128)
+        self.fc2 = nn.Linear(128, 128)
+        self.fc3 = nn.Linear(128, 1000)
+
+    def forward(self, x):
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = self.fc3(x)
         return x
 
 def run_pipeline(model_args, data_args, training_args):
     """Run the pipeline"""
-    train_data, _ = prepare_dataset(model_args)
-    data_loader = Dataset(train_data, training_args.per_device_train_batch_size, training_args.num_train_epochs, model_args.use_triplet_loss_trainer)
+    train_data, _ = prepare_dataset(data_args)
+    dataset = Dataset(train_data, model_args.use_triplet_loss_trainer)
+    data_loader = DataLoader(dataset, batch_size=training_args.per_device_train_batch_size, shuffle=True)
     loss_fn = get_loss_fn(model_args.use_triplet_loss_trainer)
-    for epoch, state, loss in train_model(T5Model(), data_loader, training_args.num_train_epochs, loss_fn):
-        print(f"Epoch {epoch+1}, Loss: {loss}")
+    train_model(T5Model(), data_loader, training_args.num_train_epochs, loss_fn)
 
 def resume_pipeline(model_args, data_args, training_args, checkpoint_path):
     """Resume the pipeline"""
-    train_data, _ = prepare_dataset(model_args)
-    data_loader = Dataset(train_data, training_args.per_device_train_batch_size, training_args.num_train_epochs, model_args.use_triplet_loss_trainer)
-    model_state, _ = jax2tf.checkpoint.load_pytree(checkpoint_path, None)
+    train_data, _ = prepare_dataset(data_args)
+    dataset = Dataset(train_data, model_args.use_triplet_loss_trainer)
+    data_loader = DataLoader(dataset, batch_size=training_args.per_device_train_batch_size, shuffle=True)
+    model = T5Model()
+    model.load_state_dict(torch.load(checkpoint_path))
     loss_fn = get_loss_fn(model_args.use_triplet_loss_trainer)
-    for epoch, state, loss in train_model(T5Model(), data_loader, training_args.num_train_epochs, loss_fn):
-        print(f"Epoch {epoch+1}, Loss: {loss}")
+    train_model(model, data_loader, training_args.num_train_epochs, loss_fn)
 
 if __name__ == "__main__":
     model_args = ModelConfig(model_identifier="t5-base", chat_template="none", use_triplet_loss_trainer=True)
