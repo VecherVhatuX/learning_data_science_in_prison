@@ -15,7 +15,6 @@ import numpy as np
 
 @dataclass
 class ModelConfig:
-    """Model configuration"""
     model_identifier: str = "t5-base"
     chat_template: str = "none"
     lora_alpha: int = 16
@@ -36,7 +35,6 @@ class ModelConfig:
 
 @dataclass
 class TrainingDataConfig:
-    """Training data configuration"""
     dataset_name: str = "timdettmers/openassistant-guanaco"
     append_concat_token: bool = False
     add_special_tokens: bool = False
@@ -45,7 +43,6 @@ class TrainingDataConfig:
 
 @dataclass
 class TrainingConfig:
-    """Training configuration"""
     output_dir: str = "./results"
     num_train_epochs: int = 3
     per_device_train_batch_size: int = 16
@@ -59,7 +56,6 @@ class TrainingConfig:
     resume_from_checkpoint: str = None
 
 class Dataset(Dataset):
-    """Dataset class"""
     def __init__(self, dataset, use_triplet):
         self.dataset = dataset
         self.use_triplet = use_triplet
@@ -72,16 +68,13 @@ class Dataset(Dataset):
             positive_labels = self.dataset["labels"][idx]
             negative_labels = np.random.choice(self.dataset["labels"], 1, replace=False)[0]
             return {"input_ids": self.dataset["input_ids"][idx], "positive_labels": positive_labels, "negative_labels": negative_labels}
-        else:
-            return {"input_ids": self.dataset["input_ids"][idx], "labels": self.dataset["labels"][idx]}
+        return {"input_ids": self.dataset["input_ids"][idx], "labels": self.dataset["labels"][idx]}
 
 def load_json_file(file_name):
-    """Load a JSON file"""
     with open(file_name, 'r') as f:
         return json.load(f)
 
 def prepare_dataset(data_args):
-    """Prepare the dataset"""
     def load_and_prepare_data(file_name):
         data = load_json_file(file_name)
         return {
@@ -92,15 +85,13 @@ def prepare_dataset(data_args):
     return load_and_prepare_data("train.json"), load_and_prepare_data("test.json")
 
 def get_loss_fn(use_triplet):
-    """Get the loss function"""
     def triplet_loss_fn(x, y, z):
         return (x - y)**2 - (x - z)**2
     def mse_loss_fn(x, y):
         return (x - y)**2
     return triplet_loss_fn if use_triplet else mse_loss_fn
 
-def train_step(model, batch, loss_fn):
-    """Train a step"""
+def train_step(model, batch, loss_fn, optimizer):
     if "positive_labels" in batch:
         outputs = model(torch.tensor(batch["input_ids"]))
         loss = loss_fn(outputs, torch.tensor(batch["positive_labels"]), torch.tensor(batch["negative_labels"]))
@@ -108,21 +99,18 @@ def train_step(model, batch, loss_fn):
         labels = torch.tensor(batch["labels"])
         outputs = model(torch.tensor(batch["input_ids"]))
         loss = loss_fn(outputs, labels)
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
     return loss
 
-def train_model(model, data_loader, num_epochs, loss_fn):
-    """Train the model"""
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+def train_model(model, data_loader, num_epochs, loss_fn, optimizer):
     for epoch in range(num_epochs):
         for batch in data_loader:
-            loss = train_step(model, batch, loss_fn)
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
+            loss = train_step(model, batch, loss_fn, optimizer)
         print(f"Epoch {epoch+1}, Loss: {loss.item()}")
 
 class T5Model(nn.Module):
-    """T5 model"""
     def __init__(self):
         super(T5Model, self).__init__()
         self.fc1 = nn.Linear(128, 128)
@@ -136,22 +124,23 @@ class T5Model(nn.Module):
         return x
 
 def run_pipeline(model_args, data_args, training_args):
-    """Run the pipeline"""
     train_data, _ = prepare_dataset(data_args)
     dataset = Dataset(train_data, model_args.use_triplet_loss_trainer)
     data_loader = DataLoader(dataset, batch_size=training_args.per_device_train_batch_size, shuffle=True)
     loss_fn = get_loss_fn(model_args.use_triplet_loss_trainer)
-    train_model(T5Model(), data_loader, training_args.num_train_epochs, loss_fn)
+    model = T5Model()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    train_model(model, data_loader, training_args.num_train_epochs, loss_fn, optimizer)
 
 def resume_pipeline(model_args, data_args, training_args, checkpoint_path):
-    """Resume the pipeline"""
     train_data, _ = prepare_dataset(data_args)
     dataset = Dataset(train_data, model_args.use_triplet_loss_trainer)
     data_loader = DataLoader(dataset, batch_size=training_args.per_device_train_batch_size, shuffle=True)
     model = T5Model()
     model.load_state_dict(torch.load(checkpoint_path))
     loss_fn = get_loss_fn(model_args.use_triplet_loss_trainer)
-    train_model(model, data_loader, training_args.num_train_epochs, loss_fn)
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    train_model(model, data_loader, training_args.num_train_epochs, loss_fn, optimizer)
 
 if __name__ == "__main__":
     model_args = ModelConfig(model_identifier="t5-base", chat_template="none", use_triplet_loss_trainer=True)
