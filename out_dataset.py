@@ -1,4 +1,3 @@
-# Import necessary libraries
 import os
 import random
 import json
@@ -9,7 +8,6 @@ from jax.experimental import optimizers
 from transformers import AutoTokenizer
 from typing import List, Tuple
 
-# Define configuration
 class Config:
     INSTANCE_ID_FIELD = 'instance_id'
     MAX_LENGTH = 512
@@ -21,7 +19,6 @@ class Config:
     LEARNING_RATE = 1e-5
     MAX_EPOCHS = 5
 
-# Define Triplet Model
 class TripletModel:
     def __init__(self, rng):
         self.distilbert = AutoTokenizer.from_pretrained('distilbert-base-uncased')
@@ -70,7 +67,6 @@ class TripletModel:
     def triplet_loss(self, params, anchor, positive, negative):
         return jnp.mean(jnp.clip(jnp.linalg.norm(anchor - positive, axis=1) - jnp.linalg.norm(anchor - negative, axis=1) + 1.0, a_min=0.0))
 
-# Define Triplet Dataset
 class TripletDataset:
     def __init__(self, triplets, tokenizer):
         self.triplets = triplets
@@ -111,7 +107,6 @@ class TripletDataset:
             'negative': negative_encoding
         }
 
-# Load JSON file
 def load_json_file(file_path: str) -> List:
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -120,20 +115,17 @@ def load_json_file(file_path: str) -> List:
         print(f"Failed to load JSON file: {file_path}, error: {str(e)}")
         return []
 
-# Separate snippets
 def separate_snippets(snippets: List) -> Tuple[List, List]:
     return (
         [item['snippet'] for item in snippets if item.get('is_bug', False) and item.get('snippet')],
         [item['snippet'] for item in snippets if not item.get('is_bug', False) and item.get('snippet')]
     )
 
-# Create triplets
 def create_triplets(problem_statement: str, positive_snippets: List, negative_snippets: List, num_negatives_per_positive: int) -> List:
     return [{'anchor': problem_statement, 'positive': positive_doc, 'negative': random.choice(negative_snippets)}
             for positive_doc in positive_snippets
             for _ in range(min(num_negatives_per_positive, len(negative_snippets)))]
 
-# Create triplet dataset
 def create_triplet_dataset(dataset_path: str, snippet_folder_path: str) -> List:
     dataset = jnp.load(dataset_path, allow_pickle=True)
     instance_id_map = {item['instance_id']: item['problem_statement'] for item in dataset}
@@ -145,7 +137,6 @@ def create_triplet_dataset(dataset_path: str, snippet_folder_path: str) -> List:
                 for i, problem_statement in enumerate(problem_statements)]
     return [item for sublist in triplets for item in sublist]
 
-# Load data
 def load_data(dataset_path: str, snippet_folder_path: str, tokenizer):
     triplets = create_triplet_dataset(dataset_path, snippet_folder_path)
     random.shuffle(triplets)
@@ -154,7 +145,6 @@ def load_data(dataset_path: str, snippet_folder_path: str, tokenizer):
     test_dataset = TripletDataset(test_triplets, tokenizer)
     return train_dataset, test_dataset
 
-# Train model
 def train(model, dataset, optimizer):
     total_loss = 0
     for batch in jax.tree_util.tree_leaves(dataset):
@@ -168,7 +158,6 @@ def train(model, dataset, optimizer):
         total_loss += model.triplet_loss(model.params, *model.forward(model.params, (anchor, positive, negative)))
     return total_loss / len(dataset)
 
-# Evaluate model
 def evaluate(model, dataset):
     total_loss = 0
     for batch in jax.tree_util.tree_leaves(dataset):
@@ -179,17 +168,14 @@ def evaluate(model, dataset):
         total_loss += model.triplet_loss(model.params, *model.forward(model.params, (anchor, positive, negative)))
     return total_loss / len(dataset)
 
-# Save model
 def save_model(model, path):
     jnp.save(path, model.params)
 
-# Load model
 def load_model(path):
     model = TripletModel(jax.random.PRNGKey(0))
     model.params = jnp.load(path)
     return model
 
-# Plot history
 def plot_history(history):
     import matplotlib.pyplot as plt
     plt.plot(history['loss'], label='Training Loss')
@@ -197,7 +183,6 @@ def plot_history(history):
     plt.legend()
     plt.show()
 
-# Main function
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
