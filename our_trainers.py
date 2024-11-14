@@ -1,159 +1,115 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+import tensorflow as tf
+from tensorflow.keras import layers, models
+from tensorflow.keras import backend as K
 import numpy as np
-from torch.utils.data import Dataset, DataLoader
 
-def get_triplet_dataset(samples, labels, batch_size, num_negatives):
-    class TripletDataset(Dataset):
-        def __init__(self, samples, labels, batch_size, num_negatives):
-            self.samples = samples
-            self.labels = labels
-            self.batch_size = batch_size
-            self.num_negatives = num_negatives
+class TripletDataset:
+    def __init__(self, samples, labels, batch_size, num_negatives):
+        self.samples = samples
+        self.labels = labels
+        self.batch_size = batch_size
+        self.num_negatives = num_negatives
 
-        def __getitem__(self, idx):
-            anchor_idx = np.arange(idx * self.batch_size, (idx + 1) * self.batch_size)
-            anchor_labels = self.labels[anchor_idx]
-            positive_idx = np.array([np.random.choice(np.where(self.labels == label)[0], size=1)[0] for label in anchor_labels])
-            negative_idx = np.array([np.random.choice(np.where(self.labels != label)[0], size=self.num_negatives, replace=False) for label in anchor_labels])
-            return {
-                'anchor_input_ids': torch.from_numpy(self.samples[anchor_idx]),
-                'positive_input_ids': torch.from_numpy(self.samples[positive_idx]),
-                'negative_input_ids': torch.from_numpy(self.samples[negative_idx]).view(self.batch_size, self.num_negatives, -1)
-            }
+    def __getitem__(self, idx):
+        anchor_idx = np.arange(idx * self.batch_size, (idx + 1) * self.batch_size)
+        anchor_labels = self.labels[anchor_idx]
+        positive_idx = np.array([np.random.choice(np.where(self.labels == label)[0], size=1)[0] for label in anchor_labels])
+        negative_idx = np.array([np.random.choice(np.where(self.labels != label)[0], size=self.num_negatives, replace=False) for label in anchor_labels])
+        return {
+            'anchor_input_ids': self.samples[anchor_idx],
+            'positive_input_ids': self.samples[positive_idx],
+            'negative_input_ids': self.samples[negative_idx]
+        }
 
-        def __len__(self):
-            return len(self.samples) // self.batch_size
-
-    return TripletDataset(samples, labels, batch_size, num_negatives)
+    def __len__(self):
+        return len(self.samples) // self.batch_size
 
 
-def get_triplet_model(num_embeddings, embedding_dim):
-    class TripletModel(nn.Module):
-        def __init__(self, num_embeddings, embedding_dim):
-            super(TripletModel, self).__init__()
-            self.embedding = nn.Embedding(num_embeddings, embedding_dim)
-            self.pooling = nn.AdaptiveAvgPool1d(1)
+class TripletModel(models.Model):
+    def __init__(self, num_embeddings, embedding_dim):
+        super(TripletModel, self).__init__()
+        self.embedding = layers.Embedding(input_dim=num_embeddings, output_dim=embedding_dim)
+        self.pooling = layers.GlobalAveragePooling1D()
 
-        def embed(self, input_ids):
-            embeddings = self.embedding(input_ids)
-            embeddings = self.pooling(embeddings.permute(0, 2, 1)).squeeze()
-            return F.normalize(embeddings, p=2, dim=1)
+    def embed(self, input_ids):
+        embeddings = self.embedding(input_ids)
+        embeddings = self.pooling(embeddings)
+        return embeddings / tf.norm(embeddings, axis=-1, keepdims=True)
 
-        def forward(self, inputs):
-            anchor_embeddings = self.embed(inputs['anchor_input_ids'])
-            positive_embeddings = self.embed(inputs['positive_input_ids'])
-            negative_embeddings = self.embed(inputs['negative_input_ids'].view(-1, inputs['negative_input_ids'].shape[2]))
-            return anchor_embeddings, positive_embeddings, negative_embeddings
-
-    return TripletModel(num_embeddings, embedding_dim)
+    def call(self, inputs):
+        anchor_embeddings = self.embed(inputs['anchor_input_ids'])
+        positive_embeddings = self.embed(inputs['positive_input_ids'])
+        negative_embeddings = self.embed(inputs['negative_input_ids'])
+        return anchor_embeddings, positive_embeddings, negative_embeddings
 
 
-def get_triplet_loss(margin):
-    class TripletLoss(nn.Module):
-        def __init__(self, margin=1.0):
-            super(TripletLoss, self).__init__()
-            self.margin = margin
+class TripletLoss(tf.keras.losses.Loss):
+    def __init__(self, margin=1.0):
+        super(TripletLoss, self).__init__()
+        self.margin = margin
 
-        def forward(self, anchor, positive, negative):
-            return torch.mean(torch.clamp(torch.norm(anchor - positive, p=2, dim=1) - torch.norm(anchor.unsqueeze(1) - negative, p=2, dim=2) + self.margin, min=0))
-
-    return TripletLoss(margin)
+    def call(self, y_true, y_pred):
+        anchor, positive, negative = y_pred
+        return tf.reduce_mean(tf.maximum(tf.norm(anchor - positive, axis=-1) - tf.reduce_min(tf.norm(anchor[:, tf.newaxis] - negative, axis=-1), axis=-1) + self.margin, 0))
 
 
-def get_base_trainer(model, device):
-    class BaseTrainer:
-        def __init__(self, model, device):
-            self.model = model
-            self.device = device
-            self.model.to(self.device)
+class TripletTrainer:
+    def __init__(self, model, loss_fn, epochs, lr, dataset):
+        self.model = model
+        self.loss_fn = loss_fn
+        self.epochs = epochs
+        self.lr = lr
+        self.dataset = dataset
+        self.optimizer = tf.keras.optimizers.Adam(learning_rate=self.lr)
 
-        def to_device(self, data):
-            return {key: value.to(self.device) for key, value in data.items()}
-
-        def train_step(self, data):
-            raise NotImplementedError
-
-        def train(self, dataset, epochs, batch_size):
-            raise NotImplementedError
-
-    return BaseTrainer(model, device)
-
-
-def get_triplet_trainer(model, loss_fn, epochs, lr, dataset, device):
-    class TripletTrainer(get_base_trainer(model, device)):
-        def __init__(self, model, loss_fn, epochs, lr, dataset, device):
-            super(TripletTrainer, self).__init__(model, device)
-            self.loss_fn = loss_fn
-            self.epochs = epochs
-            self.lr = lr
-            self.dataset = dataset
-            self.optimizer = torch.optim.Adam(model.parameters(), lr=self.lr)
-
-        def train_step(self, data):
-            self.optimizer.zero_grad()
-            data = self.to_device(data)
+    def train_step(self, data):
+        with tf.GradientTape() as tape:
             anchor_embeddings, positive_embeddings, negative_embeddings = self.model(data)
-            if len(positive_embeddings) > 0:
-                loss = self.loss_fn(anchor_embeddings, positive_embeddings, negative_embeddings)
-                loss.backward()
-                self.optimizer.step()
-            return loss.item()
+            loss = self.loss_fn(None, (anchor_embeddings, positive_embeddings, negative_embeddings))
+        gradients = tape.gradient(loss, self.model.trainable_variables)
+        self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+        return loss
 
-        def train(self):
-            for epoch in range(self.epochs):
-                total_loss = 0
-                for i, data in enumerate(DataLoader(self.dataset, batch_size=1, shuffle=True)):
-                    loss = self.train_step(data)
-                    total_loss += loss
-                print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
-
-    return TripletTrainer(model, loss_fn, epochs, lr, dataset, device)
+    def train(self):
+        for epoch in range(self.epochs):
+            total_loss = 0
+            for i, data in enumerate(self.dataset):
+                loss = self.train_step(data)
+                total_loss += loss
+            print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
 
-def get_triplet_evaluator(model, loss_fn, dataset, device):
-    class TripletEvaluator(get_base_trainer(model, device)):
-        def __init__(self, model, loss_fn, dataset, device):
-            super(TripletEvaluator, self).__init__(model, device)
-            self.loss_fn = loss_fn
-            self.dataset = dataset
+class TripletEvaluator:
+    def __init__(self, model, loss_fn, dataset):
+        self.model = model
+        self.loss_fn = loss_fn
+        self.dataset = dataset
 
-        def evaluate_step(self, data):
-            data = self.to_device(data)
-            anchor_embeddings, positive_embeddings, negative_embeddings = self.model(data)
-            if len(positive_embeddings) > 0:
-                loss = self.loss_fn(anchor_embeddings, positive_embeddings, negative_embeddings)
-                return loss.item()
-            return 0.0
+    def evaluate_step(self, data):
+        anchor_embeddings, positive_embeddings, negative_embeddings = self.model(data)
+        loss = self.loss_fn(None, (anchor_embeddings, positive_embeddings, negative_embeddings))
+        return loss
 
-        def evaluate(self):
-            total_loss = 0.0
-            with torch.no_grad():
-                for i, data in enumerate(DataLoader(self.dataset, batch_size=1, shuffle=True)):
-                    loss = self.evaluate_step(data)
-                    total_loss += loss
-            print(f'Validation Loss: {total_loss / (i+1):.3f}')
-
-    return TripletEvaluator(model, loss_fn, dataset, device)
+    def evaluate(self):
+        total_loss = 0.0
+        for i, data in enumerate(self.dataset):
+            loss = self.evaluate_step(data)
+            total_loss += loss
+        print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
 
-def get_triplet_predictor(model, device):
-    class TripletPredictor(get_base_trainer(model, device)):
-        def __init__(self, model, device):
-            super(TripletPredictor, self).__init__(model, device)
+class TripletPredictor:
+    def __init__(self, model):
+        self.model = model
 
-        def predict(self, input_ids):
-            with torch.no_grad():
-                input_ids = input_ids.to(self.device)
-                return self.model({'anchor_input_ids': input_ids})[0]
-
-    return TripletPredictor(model, device)
+    def predict(self, input_ids):
+        input_ids = tf.convert_to_tensor(input_ids)
+        return self.model({'anchor_input_ids': input_ids})[0]
 
 
 def main():
     np.random.seed(42)
-    torch.manual_seed(42)
+    tf.random.set_seed(42)
     samples = np.random.randint(0, 100, (100, 10))
     labels = np.random.randint(0, 2, (100,))
     batch_size = 32
@@ -163,19 +119,18 @@ def main():
     embedding_dim = 10
     margin = 1.0
     lr = 1e-4
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    dataset = get_triplet_dataset(samples, labels, batch_size, num_negatives)()
-    model = get_triplet_model(num_embeddings, embedding_dim)()
-    loss_fn = get_triplet_loss(margin)()
-    trainer = get_triplet_trainer(model, loss_fn, epochs, lr, dataset, device)()
+    dataset = tf.data.Dataset.from_generator(lambda: iter(TripletDataset(samples, labels, batch_size, num_negatives)), output_types={'anchor_input_ids': tf.int32, 'positive_input_ids': tf.int32, 'negative_input_ids': tf.int32}, output_shapes={'anchor_input_ids': (batch_size, 10), 'positive_input_ids': (batch_size, 10), 'negative_input_ids': (batch_size, num_negatives, 10)})
+    model = TripletModel(num_embeddings, embedding_dim)
+    loss_fn = TripletLoss(margin)
+    trainer = TripletTrainer(model, loss_fn, epochs, lr, dataset)
     trainer.train()
 
-    evaluator = get_triplet_evaluator(model, loss_fn, dataset, device)()
+    evaluator = TripletEvaluator(model, loss_fn, dataset)
     evaluator.evaluate()
 
-    predictor = get_triplet_predictor(model, device)()
-    input_ids = torch.tensor([1, 2, 3, 4, 5])
+    predictor = TripletPredictor(model)
+    input_ids = tf.convert_to_tensor([1, 2, 3, 4, 5])
     output = predictor.predict(input_ids)
     print(output)
 
