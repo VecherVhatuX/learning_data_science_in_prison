@@ -12,30 +12,19 @@ class TripletDataset(Dataset):
         self.num_negatives = num_negatives
 
     def __len__(self):
-        return (len(self.samples) + self.batch_size - 1) // self.batch_size
+        return -(-len(self.samples) // self.batch_size)
 
-    def get_indices(self):
-        return np.random.permutation(len(self.samples))
-
-    def get_anchor_idx(self, indices, idx):
-        return indices[idx * self.batch_size:(idx + 1) * self.batch_size]
-
-    def get_positive_idx(self, anchor_idx):
+    def __getitem__(self, idx):
+        indices = np.random.permutation(len(self.samples))
+        anchor_idx = indices[idx * self.batch_size:(idx + 1) * self.batch_size]
         positive_idx = []
         for anchor in anchor_idx:
             idx = torch.where(self.labels == self.labels[anchor])[0]
             positive_idx.append(torch.randint(0, len(idx[idx != anchor]), (1,)).item())
-        return positive_idx
-
-    def get_negative_idx(self, anchor_idx):
-        negative_indices = []
+        negative_idx = []
         for anchor in anchor_idx:
             idx = torch.where(self.labels != self.labels[anchor])[0]
-            negative_idx = torch.randperm(len(idx))[:self.num_negatives]
-            negative_indices.extend(negative_idx)
-        return negative_indices
-
-    def get_data(self, anchor_idx, positive_idx, negative_idx):
+            negative_idx.extend(torch.randperm(len(idx))[:self.num_negatives])
         anchor_input_ids = self.samples[anchor_idx]
         positive_input_ids = self.samples[torch.tensor(positive_idx, dtype=torch.long)]
         negative_input_ids = self.samples[torch.tensor(negative_idx, dtype=torch.long)].numpy().reshape(self.batch_size, self.num_negatives, -1)
@@ -45,19 +34,11 @@ class TripletDataset(Dataset):
             'negative_input_ids': negative_input_ids
         }
 
-    def __getitem__(self, idx):
-        indices = self.get_indices()
-        anchor_idx = self.get_anchor_idx(indices, idx)
-        positive_idx = self.get_positive_idx(anchor_idx)
-        negative_idx = self.get_negative_idx(anchor_idx)
-        return self.get_data(anchor_idx, positive_idx, negative_idx)
-
 class TripletModel(nn.Module):
-    def __init__(self, num_embeddings, embedding_dim, num_negatives):
+    def __init__(self, num_embeddings, embedding_dim):
         super(TripletModel, self).__init__()
         self.embedding = nn.Embedding(num_embeddings, embedding_dim)
         self.pooling = nn.AdaptiveAvgPool1d(1)
-        self.num_negatives = num_negatives
 
     def normalize_embeddings(self, embeddings):
         return embeddings / torch.norm(embeddings, dim=1, keepdim=True)
@@ -67,9 +48,6 @@ class TripletModel(nn.Module):
         embeddings = self.pooling(embeddings.permute(0, 2, 1)).squeeze()
         return self.normalize_embeddings(embeddings)
 
-    def embed_negative(self, negative_input_ids):
-        return self.embed(torch.tensor(negative_input_ids, dtype=torch.long).view(-1, negative_input_ids.shape[2]))
-
     def forward(self, inputs):
         anchor_input_ids = inputs['anchor_input_ids']
         positive_input_ids = inputs['positive_input_ids']
@@ -77,18 +55,15 @@ class TripletModel(nn.Module):
 
         anchor_embeddings = self.embed(anchor_input_ids)
         positive_embeddings = self.embed(positive_input_ids)
-        negative_embeddings = self.embed_negative(negative_input_ids)
+        negative_embeddings = self.embed(torch.tensor(negative_input_ids, dtype=torch.long).view(-1, negative_input_ids.shape[2]))
         return anchor_embeddings, positive_embeddings, negative_embeddings
 
 class TripletLoss:
     def __init__(self, margin=1.0):
         self.margin = margin
 
-    def calculate_loss(self, anchor, positive, negative):
-        return torch.clamp(torch.norm(anchor - positive, dim=1) - torch.norm(anchor.unsqueeze(1) - negative, dim=2) + self.margin, min=0.0)
-
     def __call__(self, anchor, positive, negative):
-        return torch.mean(self.calculate_loss(anchor, positive, negative))
+        return torch.mean(torch.clamp(torch.norm(anchor - positive, dim=1) - torch.norm(anchor.unsqueeze(1) - negative, dim=2) + self.margin, min=0.0))
 
 class TripletTrainer:
     def __init__(self, model, optimizer, loss_fn, epochs):
@@ -156,9 +131,9 @@ def main():
     lr = 1e-4
 
     dataset = TripletDataset(samples, labels, batch_size, num_negatives)
-    data_loader = DataLoader(dataset, batch_size=1)
+    data_loader = DataLoader(dataset, batch_size=1, shuffle=True)
 
-    model = TripletModel(num_embeddings, embedding_dim, num_negatives)
+    model = TripletModel(num_embeddings, embedding_dim)
     loss_fn = TripletLoss(margin)
     optimizer = optim.SGD(model.parameters(), lr=lr)
 
