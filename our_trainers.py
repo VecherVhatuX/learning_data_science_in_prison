@@ -120,7 +120,7 @@ def main():
     margin = 1.0
     lr = 1e-4
 
-    dataset = tf.data.Dataset.from_generator(lambda: iter(TripletDataset(samples, labels, batch_size, num_negatives)), output_types={'anchor_input_ids': tf.int32, 'positive_input_ids': tf.int32, 'negative_input_ids': tf.int32}, output_shapes={'anchor_input_ids': (batch_size, 10), 'positive_input_ids': (batch_size, 10), 'negative_input_ids': (batch_size, num_negatives, 10)})
+    dataset = TripletDataset(samples, labels, batch_size, num_negatives)
     model = TripletModel(num_embeddings, embedding_dim)
     loss_fn = TripletLoss(margin)
     trainer = TripletTrainer(model, loss_fn, epochs, lr, dataset)
