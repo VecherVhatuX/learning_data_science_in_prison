@@ -107,6 +107,24 @@ class TripletPredictor:
         return self.model({'anchor_input_ids': input_ids})[0]
 
 
+class TripletModelTrainer:
+    def __init__(self, model, loss_fn, epochs, lr, dataset, validation_dataset):
+        self.model = model
+        self.loss_fn = loss_fn
+        self.epochs = epochs
+        self.lr = lr
+        self.dataset = dataset
+        self.validation_dataset = validation_dataset
+        self.optimizer = tf.keras.optimizers.Adam(learning_rate=self.lr)
+        self.trainer = TripletTrainer(model, loss_fn, epochs, lr, dataset)
+        self.evaluator = TripletEvaluator(model, loss_fn, validation_dataset)
+
+    def train(self):
+        for epoch in range(self.epochs):
+            self.trainer.train()
+            self.evaluator.evaluate()
+
+
 def main():
     np.random.seed(42)
     tf.random.set_seed(42)
@@ -121,13 +139,11 @@ def main():
     lr = 1e-4
 
     dataset = TripletDataset(samples, labels, batch_size, num_negatives)
+    validation_dataset = TripletDataset(samples, labels, batch_size, num_negatives)
     model = TripletModel(num_embeddings, embedding_dim)
     loss_fn = TripletLoss(margin)
-    trainer = TripletTrainer(model, loss_fn, epochs, lr, dataset)
+    trainer = TripletModelTrainer(model, loss_fn, epochs, lr, dataset, validation_dataset)
     trainer.train()
-
-    evaluator = TripletEvaluator(model, loss_fn, dataset)
-    evaluator.evaluate()
 
     predictor = TripletPredictor(model)
     input_ids = tf.convert_to_tensor([1, 2, 3, 4, 5])
