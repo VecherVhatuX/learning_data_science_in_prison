@@ -4,20 +4,47 @@ import numpy as np
 
 class TripletDataset(tf.keras.utils.Sequence):
     def __init__(self, samples, labels, batch_size, num_negatives):
+        """
+        Initialize the TripletDataset with samples, labels, batch size and number of negatives.
+        
+        Args:
+            samples (numpy array): Input data.
+            labels (numpy array): Labels corresponding to the input data.
+            batch_size (int): Batch size for the dataset.
+            num_negatives (int): Number of negative samples for each anchor.
+        """
         self.samples = tf.convert_to_tensor(samples, dtype=tf.int32)
         self.labels = tf.convert_to_tensor(labels, dtype=tf.int32)
         self.batch_size = batch_size
         self.num_negatives = num_negatives
 
     def __len__(self):
+        """
+        Calculate the length of the dataset in terms of batches.
+        
+        Returns:
+            int: Length of the dataset.
+        """
         return -(-len(self.samples) // self.batch_size)
 
     def on_epoch_end(self):
+        """
+        Shuffle the dataset at the end of each epoch.
+        """
         indices = np.random.permutation(len(self.samples))
         self.samples = tf.gather(self.samples, indices)
         self.labels = tf.gather(self.labels, indices)
 
     def __getitem__(self, idx):
+        """
+        Get a batch of data from the dataset.
+        
+        Args:
+            idx (int): Index of the batch.
+        
+        Returns:
+            dict: A dictionary containing the anchor, positive and negative input ids.
+        """
         anchor_idx = tf.range(idx * self.batch_size, (idx + 1) * self.batch_size)
         positive_idx = tf.concat([tf.random.uniform(shape=[1], minval=0, maxval=len(tf.where(self.labels == self.labels[anchor])[0]), dtype=tf.int32) for anchor in anchor_idx], axis=0)
         negative_idx = tf.random.shuffle(tf.where(self.labels != self.labels[anchor_idx])[0])[:self.batch_size * self.num_negatives]
@@ -29,19 +56,53 @@ class TripletDataset(tf.keras.utils.Sequence):
 
 class TripletModel(models.Model):
     def __init__(self, num_embeddings, embedding_dim):
+        """
+        Initialize the TripletModel with number of embeddings and embedding dimension.
+        
+        Args:
+            num_embeddings (int): Number of embeddings.
+            embedding_dim (int): Dimension of each embedding.
+        """
         super(TripletModel, self).__init__()
         self.embedding = layers.Embedding(input_dim=num_embeddings, output_dim=embedding_dim)
         self.pooling = layers.GlobalAveragePooling1D()
 
     def normalize_embeddings(self, embeddings):
+        """
+        Normalize the embeddings to have unit length.
+        
+        Args:
+            embeddings (tensorflow tensor): Embeddings to be normalized.
+        
+        Returns:
+            tensorflow tensor: Normalized embeddings.
+        """
         return embeddings / tf.norm(embeddings, axis=1, keepdims=True)
 
     def embed(self, input_ids):
+        """
+        Embed the input ids into a dense vector space.
+        
+        Args:
+            input_ids (tensorflow tensor): Input ids to be embedded.
+        
+        Returns:
+            tensorflow tensor: Embedded input ids.
+        """
         embeddings = self.embedding(input_ids)
         embeddings = self.pooling(embeddings)
         return self.normalize_embeddings(embeddings)
 
     def call(self, inputs):
+        """
+        Call the TripletModel with a batch of data.
+        
+        Args:
+            inputs (dict): A dictionary containing the anchor, positive and negative input ids.
+        
+        Returns:
+            tuple: A tuple containing the anchor, positive and negative embeddings.
+        """
         anchor_input_ids = inputs['anchor_input_ids']
         positive_input_ids = inputs['positive_input_ids']
         negative_input_ids = inputs['negative_input_ids']
@@ -53,20 +114,55 @@ class TripletModel(models.Model):
 
 class TripletLoss(tf.keras.losses.Loss):
     def __init__(self, margin=1.0):
+        """
+        Initialize the TripletLoss with a margin.
+        
+        Args:
+            margin (float, optional): Margin for the triplet loss. Defaults to 1.0.
+        """
         super(TripletLoss, self).__init__()
         self.margin = margin
 
     def call(self, anchor, positive, negative):
+        """
+        Calculate the triplet loss for a batch of data.
+        
+        Args:
+            anchor (tensorflow tensor): Anchor embeddings.
+            positive (tensorflow tensor): Positive embeddings.
+            negative (tensorflow tensor): Negative embeddings.
+        
+        Returns:
+            tensorflow tensor: Triplet loss for the batch.
+        """
         return tf.reduce_mean(tf.maximum(0.0, tf.norm(anchor - positive, axis=1) - tf.norm(anchor[:, tf.newaxis] - negative, axis=2) + self.margin))
 
 class TripletTrainer:
     def __init__(self, model, loss_fn, epochs, lr):
+        """
+        Initialize the TripletTrainer with a model, loss function, epochs and learning rate.
+        
+        Args:
+            model (TripletModel): Model to be trained.
+            loss_fn (TripletLoss): Loss function for the model.
+            epochs (int): Number of epochs to train the model.
+            lr (float): Learning rate for the model.
+        """
         self.model = model
         self.loss_fn = loss_fn
         self.epochs = epochs
         self.optimizer = optimizers.SGD(learning_rate=lr)
 
     def train_step(self, data):
+        """
+        Train the model for a single step.
+        
+        Args:
+            data (dict): A dictionary containing the anchor, positive and negative input ids.
+        
+        Returns:
+            tensorflow tensor: Loss for the step.
+        """
         with tf.GradientTape() as tape:
             anchor_embeddings, positive_embeddings, negative_embeddings = self.model(data)
             if len(positive_embeddings) > 0:
@@ -76,6 +172,12 @@ class TripletTrainer:
         return loss
 
     def train(self, dataset):
+        """
+        Train the model for the specified number of epochs.
+        
+        Args:
+            dataset (TripletDataset): Dataset to train the model on.
+        """
         for epoch in range(self.epochs):
             total_loss = 0
             for i, data in enumerate(dataset):
@@ -85,10 +187,26 @@ class TripletTrainer:
 
 class TripletEvaluator:
     def __init__(self, model, loss_fn):
+        """
+        Initialize the TripletEvaluator with a model and loss function.
+        
+        Args:
+            model (TripletModel): Model to be evaluated.
+            loss_fn (TripletLoss): Loss function for the model.
+        """
         self.model = model
         self.loss_fn = loss_fn
 
     def evaluate_step(self, data):
+        """
+        Evaluate the model for a single step.
+        
+        Args:
+            data (dict): A dictionary containing the anchor, positive and negative input ids.
+        
+        Returns:
+            float: Loss for the step.
+        """
         anchor_embeddings, positive_embeddings, negative_embeddings = self.model(data)
         if len(positive_embeddings) > 0:
             loss = self.loss_fn(anchor_embeddings, positive_embeddings, negative_embeddings)
@@ -96,6 +214,12 @@ class TripletEvaluator:
         return 0.0
 
     def evaluate(self, dataset):
+        """
+        Evaluate the model on the dataset.
+        
+        Args:
+            dataset (TripletDataset): Dataset to evaluate the model on.
+        """
         total_loss = 0.0
         for i, data in enumerate(dataset):
             loss = self.evaluate_step(data)
@@ -104,12 +228,30 @@ class TripletEvaluator:
 
 class TripletPredictor:
     def __init__(self, model):
+        """
+        Initialize the TripletPredictor with a model.
+        
+        Args:
+            model (TripletModel): Model to make predictions with.
+        """
         self.model = model
 
     def predict(self, input_ids):
+        """
+        Make predictions with the model.
+        
+        Args:
+            input_ids (tensorflow tensor): Input ids to make predictions for.
+        
+        Returns:
+            tensorflow tensor: Predictions for the input ids.
+        """
         return self.model.embed(tf.convert_to_tensor(input_ids, dtype=tf.int32))
 
 def main():
+    """
+    Main function to train and evaluate the TripletModel.
+    """
     np.random.seed(42)
     tf.random.set_seed(42)
     samples = np.random.randint(0, 100, (100, 10))
