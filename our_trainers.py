@@ -1,5 +1,6 @@
-import tensorflow as tf
-from tensorflow.keras import layers, models, optimizers
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 
 class TripletDataset:
@@ -10,44 +11,45 @@ class TripletDataset:
         self.num_negatives = num_negatives
 
     def __call__(self, idx):
-        anchor_idx = tf.range(idx * self.batch_size, (idx + 1) * self.batch_size)
-        positive_idx = tf.concat([tf.random.uniform(shape=[1], minval=0, maxval=len(tf.where(self.labels == self.labels[anchor])[0]), dtype=tf.int32) for anchor in anchor_idx], axis=0)
-        negative_idx = tf.random.shuffle(tf.where(self.labels != self.labels[anchor_idx])[0])[:self.batch_size * self.num_negatives]
+        anchor_idx = np.arange(idx * self.batch_size, (idx + 1) * self.batch_size)
+        positive_idx = np.concatenate([np.random.choice(np.where(self.labels == self.labels[anchor])[0], size=1) for anchor in anchor_idx], axis=0)
+        negative_idx = np.random.choice(np.where(self.labels != self.labels[anchor_idx])[0], size=self.batch_size * self.num_negatives, replace=False)
         return {
-            'anchor_input_ids': tf.gather(self.samples, anchor_idx),
-            'positive_input_ids': tf.gather(self.samples, positive_idx),
-            'negative_input_ids': tf.gather(self.samples, negative_idx).numpy().reshape(self.batch_size, self.num_negatives, -1)
+            'anchor_input_ids': torch.from_numpy(self.samples[anchor_idx]),
+            'positive_input_ids': torch.from_numpy(self.samples[positive_idx]),
+            'negative_input_ids': torch.from_numpy(self.samples[negative_idx]).view(self.batch_size, self.num_negatives, -1)
         }
 
     def on_epoch_end(self):
         indices = np.random.permutation(len(self.samples))
-        return tf.gather(self.samples, indices), tf.gather(self.labels, indices)
+        return self.samples[indices], self.labels[indices]
 
 
-class TripletModel(models.Model):
+class TripletModel(nn.Module):
     def __init__(self, num_embeddings, embedding_dim):
         super(TripletModel, self).__init__()
-        self.embedding = layers.Embedding(input_dim=num_embeddings, output_dim=embedding_dim)
-        self.pooling = layers.GlobalAveragePooling1D()
+        self.embedding = nn.Embedding(num_embeddings, embedding_dim)
+        self.pooling = nn.AdaptiveAvgPool1d(1)
 
     def embed(self, input_ids):
         embeddings = self.embedding(input_ids)
-        embeddings = self.pooling(embeddings)
-        return embeddings / tf.norm(embeddings, axis=1, keepdims=True)
+        embeddings = self.pooling(embeddings.permute(0, 2, 1)).squeeze()
+        return F.normalize(embeddings, p=2, dim=1)
 
-    def call(self, inputs):
+    def forward(self, inputs):
         anchor_embeddings = self.embed(inputs['anchor_input_ids'])
         positive_embeddings = self.embed(inputs['positive_input_ids'])
-        negative_embeddings = self.embed(tf.convert_to_tensor(inputs['negative_input_ids'], dtype=tf.int32).reshape(-1, inputs['negative_input_ids'].shape[2]))
+        negative_embeddings = self.embed(inputs['negative_input_ids'].view(-1, inputs['negative_input_ids'].shape[2]))
         return anchor_embeddings, positive_embeddings, negative_embeddings
 
 
-class TripletLoss:
+class TripletLoss(nn.Module):
     def __init__(self, margin=1.0):
+        super(TripletLoss, self).__init__()
         self.margin = margin
 
-    def __call__(self, anchor, positive, negative):
-        return tf.reduce_mean(tf.maximum(0.0, tf.norm(anchor - positive, axis=1) - tf.norm(anchor[:, tf.newaxis] - negative, axis=2) + self.margin))
+    def forward(self, anchor, positive, negative):
+        return torch.mean(torch.clamp(torch.norm(anchor - positive, p=2, dim=1) - torch.norm(anchor.unsqueeze(1) - negative, p=2, dim=2) + self.margin, min=0))
 
 
 class TripletTrainer:
@@ -57,16 +59,16 @@ class TripletTrainer:
         self.epochs = epochs
         self.lr = lr
         self.dataset = dataset
-        self.optimizer = optimizers.SGD(learning_rate=self.lr)
+        self.optimizer = torch.optim.SGD(model.parameters(), lr=self.lr)
 
     def train_step(self, data):
-        with tf.GradientTape() as tape:
-            anchor_embeddings, positive_embeddings, negative_embeddings = self.model(data)
-            if len(positive_embeddings) > 0:
-                loss = self.loss_fn(anchor_embeddings, positive_embeddings, negative_embeddings)
-        gradients = tape.gradient(loss, self.model.trainable_variables)
-        self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
-        return loss
+        self.optimizer.zero_grad()
+        anchor_embeddings, positive_embeddings, negative_embeddings = self.model(data)
+        if len(positive_embeddings) > 0:
+            loss = self.loss_fn(anchor_embeddings, positive_embeddings, negative_embeddings)
+            loss.backward()
+            self.optimizer.step()
+        return loss.item()
 
     def train(self):
         for epoch in range(self.epochs):
@@ -88,7 +90,7 @@ class TripletEvaluator:
         anchor_embeddings, positive_embeddings, negative_embeddings = self.model(data)
         if len(positive_embeddings) > 0:
             loss = self.loss_fn(anchor_embeddings, positive_embeddings, negative_embeddings)
-            return loss
+            return loss.item()
         return 0.0
 
     def evaluate(self):
@@ -110,7 +112,7 @@ class TripletPredictor:
 
 def main():
     np.random.seed(42)
-    tf.random.set_seed(42)
+    torch.manual_seed(42)
     samples = np.random.randint(0, 100, (100, 10))
     labels = np.random.randint(0, 2, (100,))
     batch_size = 32
@@ -131,7 +133,7 @@ def main():
     evaluator.evaluate()
 
     predictor = TripletPredictor(model)
-    input_ids = tf.convert_to_tensor([1, 2, 3, 4, 5])
+    input_ids = torch.tensor([1, 2, 3, 4, 5])
     output = predictor.predict(input_ids)
     print(output)
 
