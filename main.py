@@ -2,13 +2,13 @@ import os
 import json
 from dataclasses import dataclass
 from typing import Dict
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
-import torchvision
-from torchvision import transforms
-import numpy as np
+import jax
+import jax.numpy as jnp
+from jax.experimental import jax2tf
+from flax import linen as nn
+from flax.training import train_state
+from flax.training import common_utils
+from tensorflow.io import gfile
 from tqdm import tqdm
 
 @dataclass
@@ -53,14 +53,14 @@ class TrainingConfig:
     seed: int = 42
     resume_from_checkpoint: str = None
 
-class DatasetBase(Dataset):
+class DatasetBase:
     def __init__(self, data, model_args, num_negative_samples=0):
         self.data = data
         self.model_args = model_args
         self.num_negative_samples = num_negative_samples
-        self.input_ids = np.array([self._process_input(example) for example in data])
-        self.labels = np.array([self._process_output(example) for example in data])
-        self.attention_mask = np.array([1]*len(self.input_ids))
+        self.input_ids = jnp.array([self._process_input(example) for example in data])
+        self.labels = jnp.array([self._process_output(example) for example in data])
+        self.attention_mask = jnp.array([1]*len(self.input_ids))
 
     def _process_input(self, example):
         return example["input"] if self.model_args.chat_template == "none" else f"{example['input']} "
@@ -73,7 +73,7 @@ class DatasetBase(Dataset):
 
     @staticmethod
     def load_data(file_name):
-        with open(file_name, 'r') as f:
+        with gfile.GFile(file_name, 'r') as f:
             return json.load(f)
 
     @classmethod
@@ -85,9 +85,15 @@ class DatasetBase(Dataset):
     @classmethod
     def create_data_loaders(cls, model_args, data_args, num_negative_samples=0):
         train_data, test_data = cls.prepare_datasets(model_args, data_args, num_negative_samples)
-        train_loader = DataLoader(train_data, batch_size=data_args.per_device_train_batch_size, shuffle=True)
-        test_loader = DataLoader(test_data, batch_size=data_args.per_device_eval_batch_size, shuffle=False)
+        train_loader = cls._create_data_loader(train_data, data_args.per_device_train_batch_size)
+        test_loader = cls._create_data_loader(test_data, data_args.per_device_eval_batch_size)
         return train_loader, test_loader
+
+    @classmethod
+    def _create_data_loader(cls, dataset, batch_size):
+        return common_utils.get_iterator(
+            dataset, batch_size, shuffle=True, rng=jax.random.PRNGKey(0)
+        )
 
 class CustomDataset(DatasetBase):
     def __getitem__(self, idx):
@@ -99,7 +105,7 @@ class TripletDataset(DatasetBase):
 
     def __getitem__(self, idx):
         positive_example = self.data[idx]
-        negative_examples = np.random.choice(self.data, self.num_negative_samples, replace=False)
+        negative_examples = jax.random.choice(key=jax.random.PRNGKey(0), a=self.data, shape=(self.num_negative_samples,), replace=False)
         return {
             "input_ids": self.input_ids[idx],
             "positive_labels": positive_example["output"],
@@ -108,83 +114,71 @@ class TripletDataset(DatasetBase):
         }
 
     def on_epoch_end(self):
-        self.data = np.random.permutation(self.data)
+        self.data = jax.random.permutation(key=jax.random.PRNGKey(0), x=self.data)
 
 class BaseModel(nn.Module):
     def __init__(self):
-        super(BaseModel, self).__init__()
+        super().__init__()
 
-    def forward(self, x):
+    def __call__(self, x):
         raise NotImplementedError
 
 class T5Model(BaseModel):
-    def __init__(self):
-        super(T5Model, self).__init__()
-        self.fc1 = nn.Linear(128, 128)
-        self.fc2 = nn.Linear(128, 128)
-        self.fc3 = nn.Linear(128, 1000)
-
-    def forward(self, x):
-        x = torch.relu(self.fc1(x))
-        x = torch.relu(self.fc2(x))
-        x = self.fc3(x)
+    @nn.compact
+    def __call__(self, x):
+        x = nn.relu(nn.Dense(128)(x))
+        x = nn.relu(nn.Dense(128)(x))
+        x = nn.Dense(1000)(x)
         return x
 
     @staticmethod
-    def train_step(model, batch, device, use_triplet):
-        input_ids = batch["input_ids"].view(1, -1).to(device)
+    def train_step(model, batch, use_triplet):
+        input_ids = batch["input_ids"]
         if use_triplet:
-            positive_labels = batch["positive_labels"].view(1, -1).to(device)
-            negative_labels = batch["negative_labels"].view(1, -1).to(device)
+            positive_labels = batch["positive_labels"]
+            negative_labels = batch["negative_labels"]
             outputs = model(input_ids)
-            loss_fn = nn.TripletMarginLoss()
-            loss = loss_fn(outputs, positive_labels, negative_labels)
+            loss_fn = jax.jit(jnp.mean((outputs - positive_labels)**2 - (outputs - negative_labels)**2))
+            loss = loss_fn
         else:
-            labels = batch["labels"].view(1, -1).to(device)
-            attention_mask = batch["attention_mask"].view(1, -1).to(device)
+            labels = batch["labels"]
+            attention_mask = batch["attention_mask"]
             outputs = model(input_ids)
-            loss_fn = nn.MSELoss()
-            loss = loss_fn(outputs, labels)
+            loss_fn = jax.jit(jnp.mean((outputs - labels)**2))
+            loss = loss_fn
         return loss
 
     @classmethod
-    def train(cls, model, device, train_loader, num_epochs, use_triplet):
-        optimizer = optim.Adam(model.parameters(), lr=0.001)
+    def train(cls, model, train_loader, num_epochs, use_triplet):
+        optimizer = optax.adam(learning_rate=0.001)
+        state = train_state.TrainState.create(
+            apply_fn=model.apply, params=model.init(jax.random.PRNGKey(0), jnp.ones((1, 1)))["params"], tx=optimizer
+        )
         for epoch in tqdm(range(num_epochs)):
             for batch in train_loader:
-                loss = cls.train_step(model, batch, device, use_triplet)
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-            if hasattr(train_loader.dataset, 'on_epoch_end'):
-                train_loader.dataset.on_epoch_end()
-            print(f"Epoch {epoch+1}, Loss: {loss.item()}")
+                loss = cls.train_step(model, batch, use_triplet)
+                grads = jax.grad(loss, state.params)
+                state = state.apply_gradients(grads=grads)
+                print(f"Epoch {epoch+1}, Loss: {loss}")
 
     @classmethod
     def run_pipeline(cls, model_args, data_args, training_args):
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = cls()
-        model.to(device)
         use_triplet = model_args.use_triplet_loss_trainer
         if use_triplet:
             train_loader, _ = TripletDataset.create_data_loaders(model_args, data_args)
         else:
             train_loader, _ = CustomDataset.create_data_loaders(model_args, data_args)
-        cls.train(model, device, train_loader, training_args.num_train_epochs, use_triplet)
+        cls.train(cls(), train_loader, training_args.num_train_epochs, use_triplet)
 
     @classmethod
     def resume_pipeline(cls, model_args, data_args, training_args, checkpoint_path):
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = cls()
-        model.to(device)
-        checkpoint = torch.load(checkpoint_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
         use_triplet = model_args.use_triplet_loss_trainer
         if use_triplet:
             train_loader, _ = TripletDataset.create_data_loaders(model_args, data_args)
         else:
             train_loader, _ = CustomDataset.create_data_loaders(model_args, data_args)
-        cls.train(model, device, train_loader, training_args.num_train_epochs, use_triplet)
+        model_state, _ = jax2tf.checkpoint.load_pytree(checkpoint_path, None)
+        cls.train(cls(), train_loader, training_args.num_train_epochs, use_triplet)
 
 if __name__ == "__main__":
     model_args = ModelConfig(model_identifier="t5-base", chat_template="none", use_triplet_loss_trainer=True)
