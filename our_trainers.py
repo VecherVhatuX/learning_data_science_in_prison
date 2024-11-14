@@ -4,6 +4,24 @@ import torch.nn.functional as F
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
 
+def create_triplet_dataset(samples, labels, batch_size, num_negatives):
+    return TripletDataset(samples, labels, batch_size, num_negatives)
+
+def create_triplet_model(num_embeddings, embedding_dim):
+    return TripletModel(num_embeddings, embedding_dim)
+
+def create_triplet_loss(margin=1.0):
+    return TripletLoss(margin)
+
+def create_triplet_trainer(model, loss_fn, epochs, lr, dataset):
+    return TripletTrainer(model, loss_fn, epochs, lr, dataset)
+
+def create_triplet_evaluator(model, loss_fn, dataset):
+    return TripletEvaluator(model, loss_fn, dataset)
+
+def create_triplet_predictor(model):
+    return TripletPredictor(model)
+
 class TripletDataset(Dataset):
     def __init__(self, samples, labels, batch_size, num_negatives):
         self.samples = samples
@@ -81,13 +99,14 @@ class TripletTrainer:
         return loss.item()
 
     def train(self):
-        for epoch in range(self.epochs):
-            total_loss = 0
-            for i, data in enumerate(DataLoader(self.dataset, batch_size=1, shuffle=True)):
-                loss = self.train_step(data)
-                total_loss += loss
-            print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
+        return list(map(lambda epoch: self.train_epoch(epoch), range(self.epochs)))
 
+    def train_epoch(self, epoch):
+        total_loss = 0
+        for i, data in enumerate(DataLoader(self.dataset, batch_size=1, shuffle=True)):
+            loss = self.train_step(data)
+            total_loss += loss
+        print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
 class TripletEvaluator:
     def __init__(self, model, loss_fn, dataset):
@@ -106,6 +125,9 @@ class TripletEvaluator:
         return 0.0
 
     def evaluate(self):
+        return self.evaluate_epoch()
+
+    def evaluate_epoch(self):
         total_loss = 0.0
         with torch.no_grad():
             for i, data in enumerate(DataLoader(self.dataset, batch_size=1, shuffle=True)):
@@ -139,16 +161,16 @@ def main():
     margin = 1.0
     lr = 1e-4
 
-    dataset = TripletDataset(samples, labels, batch_size, num_negatives)
-    model = TripletModel(num_embeddings, embedding_dim)
-    loss_fn = TripletLoss(margin)
-    trainer = TripletTrainer(model, loss_fn, epochs, lr, dataset)
+    dataset = create_triplet_dataset(samples, labels, batch_size, num_negatives)
+    model = create_triplet_model(num_embeddings, embedding_dim)
+    loss_fn = create_triplet_loss(margin)
+    trainer = create_triplet_trainer(model, loss_fn, epochs, lr, dataset)
     trainer.train()
 
-    evaluator = TripletEvaluator(model, loss_fn, dataset)
+    evaluator = create_triplet_evaluator(model, loss_fn, dataset)
     evaluator.evaluate()
 
-    predictor = TripletPredictor(model)
+    predictor = create_triplet_predictor(model)
     input_ids = torch.tensor([1, 2, 3, 4, 5])
     output = predictor.predict(input_ids)
     print(output)
