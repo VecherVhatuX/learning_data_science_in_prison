@@ -24,7 +24,10 @@ class Config:
 class TripletModel:
     def __init__(self, rng, tokenizer):
         self.distilbert = tokenizer
-        init_fn, apply_fn = stax.serial(
+        self.init_fn, self.apply_fn = self._create_model(rng)
+
+    def _create_model(self, rng):
+        return stax.serial(
             stax.Dense(Config.EMBEDDING_DIM, W_init=jax.nn.initializers.zeros),
             stax.Relu(),
             stax.Dropout(Config.DROPOUT),
@@ -32,12 +35,13 @@ class TripletModel:
             stax.Relu(),
             stax.Dropout(Config.DROPOUT)
         )
-        self.params = init_fn(rng, (-1, 768))
-        self.apply_fn = apply_fn
+
+    def init_params(self, rng, input_shape):
+        return self.init_fn(rng, input_shape)
 
     def forward(self, inputs):
         anchor, positive, negative = inputs
-        anchor_output = jax.jit(self.distilbert.encode_plus)(
+        anchor_output = self.distilbert.encode_plus(
             anchor['input_ids'], 
             max_length=Config.MAX_LENGTH, 
             padding='max_length', 
@@ -45,7 +49,7 @@ class TripletModel:
             return_attention_mask=True, 
             return_tensors='jax'
         )
-        positive_output = jax.jit(self.distilbert.encode_plus)(
+        positive_output = self.distilbert.encode_plus(
             positive['input_ids'], 
             max_length=Config.MAX_LENGTH, 
             padding='max_length', 
@@ -53,7 +57,7 @@ class TripletModel:
             return_attention_mask=True, 
             return_tensors='jax'
         )
-        negative_output = jax.jit(self.distilbert.encode_plus)(
+        negative_output = self.distilbert.encode_plus(
             negative['input_ids'], 
             max_length=Config.MAX_LENGTH, 
             padding='max_length', 
@@ -207,6 +211,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
     train_dataset, test_dataset = load_data(dataset_path, snippet_folder_path, tokenizer)
     model = TripletModel(jax.random.PRNGKey(0), tokenizer)
+    model.params = model.init_params(jax.random.PRNGKey(0), (-1, 768))
     optimizer = optimizers.adam(model.params, Config.LEARNING_RATE)
     model_path = 'triplet_model.npy'
     history = {'loss': [], 'val_loss': []}
