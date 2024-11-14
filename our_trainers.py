@@ -15,21 +15,12 @@ class TripletDataset:
     def __getitem__(self, idx):
         indices = np.random.permutation(len(self.samples))
         anchor_idx = indices[idx * self.batch_size:(idx + 1) * self.batch_size]
-        positive_idx = []
-        for anchor in anchor_idx:
-            idx = tf.where(self.labels == self.labels[anchor])[0]
-            positive_idx.append(tf.random.uniform(shape=[], minval=0, maxval=len(idx[idx != anchor]), dtype=tf.int32))
-        negative_idx = []
-        for anchor in anchor_idx:
-            idx = tf.where(self.labels != self.labels[anchor])[0]
-            negative_idx.extend(tf.random.shuffle(idx)[:self.num_negatives])
-        anchor_input_ids = tf.gather(self.samples, anchor_idx)
-        positive_input_ids = tf.gather(self.samples, tf.convert_to_tensor(positive_idx, dtype=tf.int32))
-        negative_input_ids = tf.gather(self.samples, tf.convert_to_tensor(negative_idx, dtype=tf.int32)).numpy().reshape(self.batch_size, self.num_negatives, -1)
+        positive_idx = tf.concat([tf.random.uniform(shape=[1], minval=0, maxval=len(tf.where(self.labels == self.labels[anchor])[0]), dtype=tf.int32) for anchor in anchor_idx], axis=0)
+        negative_idx = tf.random.shuffle(tf.where(self.labels != self.labels[anchor_idx])[0])[:self.batch_size * self.num_negatives]
         return {
-            'anchor_input_ids': anchor_input_ids,
-            'positive_input_ids': positive_input_ids,
-            'negative_input_ids': negative_input_ids
+            'anchor_input_ids': tf.gather(self.samples, anchor_idx),
+            'positive_input_ids': tf.gather(self.samples, positive_idx),
+            'negative_input_ids': tf.gather(self.samples, negative_idx).numpy().reshape(self.batch_size, self.num_negatives, -1)
         }
 
 class TripletModel(models.Model):
@@ -64,11 +55,11 @@ class TripletLoss:
         return tf.reduce_mean(tf.maximum(0.0, tf.norm(anchor - positive, axis=1) - tf.norm(anchor[:, tf.newaxis] - negative, axis=2) + self.margin))
 
 class TripletTrainer:
-    def __init__(self, model, loss_fn, epochs):
+    def __init__(self, model, loss_fn, epochs, lr):
         self.model = model
         self.loss_fn = loss_fn
         self.epochs = epochs
-        self.optimizer = optimizers.SGD()
+        self.optimizer = optimizers.SGD(learning_rate=lr)
 
     def train_step(self, data):
         with tf.GradientTape() as tape:
@@ -131,7 +122,7 @@ def main():
     model = TripletModel(num_embeddings, embedding_dim)
     loss_fn = TripletLoss(margin)
 
-    trainer = TripletTrainer(model, loss_fn, epochs)
+    trainer = TripletTrainer(model, loss_fn, epochs, lr)
     trainer.train(dataset)
 
     evaluator = TripletEvaluator(model, loss_fn)
