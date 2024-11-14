@@ -11,7 +11,7 @@ class TripletDataset:
         self.num_negatives = num_negatives
 
     def __getitem__(self, idx):
-        anchor_idx = np.arange(idx * self.batch_size, (idx + 1) * self.batch_size)
+        anchor_idx = np.arange(idx * self.batch_size, min((idx + 1) * self.batch_size, len(self.samples)))
         anchor_labels = self.labels[anchor_idx]
         positive_idx = np.array([np.random.choice(np.where(self.labels == label)[0], size=1)[0] for label in anchor_labels])
         negative_idx = np.array([np.random.choice(np.where(self.labels != label)[0], size=self.num_negatives, replace=False) for label in anchor_labels])
@@ -22,7 +22,7 @@ class TripletDataset:
         }
 
     def __len__(self):
-        return len(self.samples) // self.batch_size
+        return len(self.samples) // self.batch_size + (1 if len(self.samples) % self.batch_size != 0 else 0)
 
 
 class TripletModel(models.Model):
