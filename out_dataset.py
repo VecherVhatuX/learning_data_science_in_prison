@@ -26,6 +26,7 @@ class TripletModel:
         self.distilbert = tokenizer
         self.init_fn, self.apply_fn = self._create_model(rng)
         self.params = None
+        self.optimizer_state = None
 
     def _create_model(self, rng):
         return stax.serial(
@@ -73,6 +74,10 @@ class TripletModel:
 
     def triplet_loss(self, anchor, positive, negative):
         return jnp.mean(jnp.clip(jnp.linalg.norm(anchor - positive, axis=1) - jnp.linalg.norm(anchor - negative, axis=1) + 1.0, a_min=0.0))
+
+    def update_params(self, grads):
+        self.optimizer_state = optimizers.adam_update(self.optimizer_state, grads, self.params, Config.LEARNING_RATE)
+        self.params = self.optimizer_state[0]
 
 class TripletDataset:
     def __init__(self, triplets, tokenizer):
@@ -172,15 +177,14 @@ def load_data(dataset_path: str, snippet_folder_path: str, tokenizer):
     test_dataset = TripletDataset(test_triplets, tokenizer)
     return train_dataset, test_dataset
 
-def train(model, dataset, optimizer):
+def train(model, dataset):
     total_loss = 0
     for batch in dataset.batch():
         anchor, positive, negative = batch
         anchor_embedding, positive_embedding, negative_embedding = model.forward((anchor, positive, negative))
         loss = model.triplet_loss(anchor_embedding, positive_embedding, negative_embedding)
         grads = jax.grad(lambda params: model.triplet_loss(model.apply_fn(params, anchor_embedding), model.apply_fn(params, positive_embedding), model.apply_fn(params, negative_embedding)))(model.params)
-        optimizer = optimizers.adam(model.params, grads, optimizer, step_size=Config.LEARNING_RATE)
-        model.params = optimizer[0]
+        model.update_params(grads)
         total_loss += loss
     return total_loss / len(dataset)
 
@@ -213,12 +217,12 @@ def main():
     train_dataset, test_dataset = load_data(dataset_path, snippet_folder_path, tokenizer)
     model = TripletModel(jax.random.PRNGKey(0), tokenizer)
     model.params = model.init_params(jax.random.PRNGKey(0), (-1, 768))
-    optimizer = optimizers.adam(model.params, Config.LEARNING_RATE)
+    model.optimizer_state = optimizers.adam(model.params, Config.LEARNING_RATE)
     model_path = 'triplet_model.npy'
     history = {'loss': [], 'val_loss': []}
     for epoch in range(Config.MAX_EPOCHS):
         train_dataset.shuffle()
-        loss = train(model, train_dataset, optimizer)
+        loss = train(model, train_dataset)
         val_loss = evaluate(model, test_dataset)
         history['loss'].append(loss)
         history['val_loss'].append(val_loss)
