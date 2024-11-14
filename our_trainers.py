@@ -5,21 +5,21 @@ import numpy as np
 
 class TripletDataset:
     """
-    A custom dataset class for creating triplet datasets.
+    Dataset for generating triplet samples.
     """
     def __init__(self, samples, labels, batch_size, num_negatives):
-        # Initialize the dataset with samples, labels, batch size, and number of negatives.
+        # Create a dataset from samples, labels, batch size, and number of negatives.
         self.samples = tf.convert_to_tensor(samples, dtype=tf.int32)
         self.labels = tf.convert_to_tensor(labels, dtype=tf.int32)
         self.batch_size = batch_size
         self.num_negatives = num_negatives
 
     def __len__(self):
-        # Calculate the length of the dataset.
+        # Calculate the number of batches.
         return (len(self.samples) + self.batch_size - 1) // self.batch_size
 
     def __getitem__(self, idx):
-        # Get a batch of samples.
+        # Get a batch of samples with their corresponding labels.
         indices = np.random.permutation(len(self.samples))
         batch = indices[idx * self.batch_size:(idx + 1) * self.batch_size]
         anchor_idx = batch
@@ -27,11 +27,11 @@ class TripletDataset:
         positive_idx = []
         negative_indices = []
         for anchor in anchor_idx:
-            # Find the indices of the samples with the same label as the anchor.
+            # Find indices of samples with the same label as the anchor.
             idx = tf.where(self.labels == self.labels[anchor])[0]
             # Randomly select a positive sample from the indices.
             positive_idx.append(tf.random.uniform(shape=[], minval=0, maxval=len(idx[idx != anchor]), dtype=tf.int32).numpy())
-            # Find the indices of the samples with different labels than the anchor.
+            # Find indices of samples with different labels than the anchor.
             idx = tf.where(self.labels != self.labels[anchor])[0]
             # Randomly select a specified number of negative samples from the indices.
             negative_idx = tf.random.shuffle(idx)[:self.num_negatives]
@@ -51,7 +51,7 @@ class TripletDataset:
 
 class TripletModel(models.Model):
     """
-    A custom model class for training a triplet network.
+    Model for training a triplet network.
     """
     def __init__(self, num_embeddings, embedding_dim, num_negatives):
         # Initialize the model with the number of embeddings, embedding dimension, and number of negatives.
@@ -61,7 +61,7 @@ class TripletModel(models.Model):
         self.num_negatives = num_negatives
 
     def embed(self, input_ids):
-        # Embed the input IDs and normalize the embeddings.
+        # Embed the input IDs, apply pooling, and normalize the embeddings.
         embeddings = self.embedding(input_ids)
         embeddings = self.pooling(embeddings)
         embeddings = embeddings / tf.linalg.norm(embeddings, axis=1, keepdims=True)
@@ -88,7 +88,7 @@ def triplet_loss(anchor, positive, negative):
 def train(model, dataset, optimizer, epochs):
     # Train the model for a specified number of epochs.
     for epoch in range(epochs):
-        running_loss = 0.0
+        total_loss = 0
         for i, data in enumerate(dataset):
             # Zero the gradients.
             with tf.GradientTape() as tape:
@@ -101,10 +101,10 @@ def train(model, dataset, optimizer, epochs):
             gradients = tape.gradient(loss, model.trainable_weights)
             # Update the model parameters.
             optimizer.apply_gradients(zip(gradients, model.trainable_weights))
-            # Add the loss to the running loss.
-            running_loss += loss.numpy()
+            # Add the loss to the total loss.
+            total_loss += loss.numpy()
         # Print the epoch and loss.
-        print(f'Epoch: {epoch+1}, Loss: {running_loss/(i+1):.3f}')
+        print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
 def evaluate(model, dataset):
     # Evaluate the model on the validation set.
