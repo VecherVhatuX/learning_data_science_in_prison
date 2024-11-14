@@ -14,6 +14,7 @@ import optax
 
 @dataclass
 class ModelConfig:
+    """Model configuration"""
     model_identifier: str = "t5-base"
     chat_template: str = "none"
     lora_alpha: int = 16
@@ -34,6 +35,7 @@ class ModelConfig:
 
 @dataclass
 class TrainingDataConfig:
+    """Training data configuration"""
     dataset_name: str = "timdettmers/openassistant-guanaco"
     append_concat_token: bool = False
     add_special_tokens: bool = False
@@ -42,6 +44,7 @@ class TrainingDataConfig:
 
 @dataclass
 class TrainingConfig:
+    """Training configuration"""
     output_dir: str = "./results"
     num_train_epochs: int = 3
     per_device_train_batch_size: int = 16
@@ -55,6 +58,7 @@ class TrainingConfig:
     resume_from_checkpoint: str = None
 
 class Dataset:
+    """Dataset class"""
     def __init__(self, dataset, batch_size, num_epochs, use_triplet):
         self.dataset = dataset
         self.batch_size = batch_size
@@ -63,14 +67,17 @@ class Dataset:
         self.rng = jax.random.PRNGKey(0)
 
     def _create_triplet_batch(self, batch):
+        """Create a triplet batch"""
         positive_labels = batch["labels"]
         negative_labels = jnp.array([batch["labels"][j] for j in jax.random.permutation(self.rng, len(batch["labels"]))])
         return {"input_ids": batch["input_ids"], "positive_labels": positive_labels, "negative_labels": negative_labels}
 
     def _create_batch(self, batch):
+        """Create a batch"""
         return {"input_ids": batch["input_ids"], "labels": batch["labels"]}
 
     def __iter__(self):
+        """Iterator for the dataset"""
         for _ in range(self.num_epochs):
             self.rng, subkey = jax.random.split(self.rng)
             shuffled_dataset = jax.tree_map(lambda x: jax.random.permutation(subkey, x), self.dataset)
@@ -82,10 +89,12 @@ class Dataset:
                     yield self._create_batch(batch)
 
 def load_json_file(file_name):
+    """Load a JSON file"""
     with gfile.GFile(file_name, 'r') as f:
         return json.load(f)
 
 def prepare_dataset(data_args):
+    """Prepare the dataset"""
     def load_and_prepare_data(file_name):
         data = load_json_file(file_name)
         return jax.tree_map(
@@ -99,6 +108,7 @@ def prepare_dataset(data_args):
     return load_and_prepare_data("train.json"), load_and_prepare_data("test.json")
 
 def get_loss_fn(use_triplet):
+    """Get the loss function"""
     def triplet_loss_fn(x, y, z):
         return jnp.mean((x - y)**2 - (x - z)**2)
     def mse_loss_fn(x, y):
@@ -106,6 +116,7 @@ def get_loss_fn(use_triplet):
     return triplet_loss_fn if use_triplet else mse_loss_fn
 
 def train_step(model, batch, loss_fn):
+    """Train a step"""
     if "positive_labels" in batch:
         outputs = model(batch["input_ids"])
         loss = loss_fn(outputs, batch["positive_labels"], batch["negative_labels"])
@@ -116,6 +127,7 @@ def train_step(model, batch, loss_fn):
     return loss
 
 def train_model(model, data_loader, num_epochs, loss_fn):
+    """Train the model"""
     optimizer = optax.adam(learning_rate=0.001)
     state = train_state.TrainState.create(
         apply_fn=model.apply, params=model.init(jax.random.PRNGKey(0), jnp.ones((1, 1)))["params"], tx=optimizer
@@ -133,6 +145,7 @@ def train_model(model, data_loader, num_epochs, loss_fn):
     ]
 
 class T5Model(nn.Module):
+    """T5 model"""
     @nn.compact
     def __call__(self, x):
         x = nn.relu(nn.Dense(128)(x))
@@ -141,6 +154,7 @@ class T5Model(nn.Module):
         return x
 
 def run_pipeline(model_args, data_args, training_args):
+    """Run the pipeline"""
     train_data, _ = prepare_dataset(model_args)
     data_loader = Dataset(train_data, training_args.per_device_train_batch_size, training_args.num_train_epochs, model_args.use_triplet_loss_trainer)
     loss_fn = get_loss_fn(model_args.use_triplet_loss_trainer)
@@ -148,6 +162,7 @@ def run_pipeline(model_args, data_args, training_args):
         print(f"Epoch {epoch+1}, Loss: {loss}")
 
 def resume_pipeline(model_args, data_args, training_args, checkpoint_path):
+    """Resume the pipeline"""
     train_data, _ = prepare_dataset(model_args)
     data_loader = Dataset(train_data, training_args.per_device_train_batch_size, training_args.num_train_epochs, model_args.use_triplet_loss_trainer)
     model_state, _ = jax2tf.checkpoint.load_pytree(checkpoint_path, None)
