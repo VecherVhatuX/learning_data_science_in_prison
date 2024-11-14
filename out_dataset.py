@@ -7,6 +7,8 @@ from jax.experimental import stax
 from jax.experimental import optimizers
 from transformers import AutoTokenizer
 from typing import List, Tuple
+import matplotlib.pyplot as plt
+import numpy as np
 
 class Config:
     INSTANCE_ID_FIELD = 'instance_id'
@@ -71,6 +73,7 @@ class TripletDataset:
     def __init__(self, triplets, tokenizer):
         self.triplets = triplets
         self.tokenizer = tokenizer
+        self.batch_size = Config.BATCH_SIZE
 
     def __len__(self):
         return len(self.triplets)
@@ -107,6 +110,25 @@ class TripletDataset:
             'negative': negative_encoding
         }
 
+    def shuffle(self):
+        random.shuffle(self.triplets)
+
+    def batch(self):
+        for i in range(0, len(self), self.batch_size):
+            batch = self.triplets[i:i + self.batch_size]
+            yield self._create_batch(batch)
+
+    def _create_batch(self, batch):
+        anchors = []
+        positives = []
+        negatives = []
+        for item in batch:
+            encoding = self.__getitem__(self.triplets.index(item))
+            anchors.append(encoding['anchor'])
+            positives.append(encoding['positive'])
+            negatives.append(encoding['negative'])
+        return jax.tree_util.tree_map(lambda *x: np.stack(x), *anchors), jax.tree_util.tree_map(lambda *x: np.stack(x), *positives), jax.tree_util.tree_map(lambda *x: np.stack(x), *negatives)
+
 def load_json_file(file_path: str) -> List:
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -127,7 +149,7 @@ def create_triplets(problem_statement: str, positive_snippets: List, negative_sn
             for _ in range(min(num_negatives_per_positive, len(negative_snippets)))]
 
 def create_triplet_dataset(dataset_path: str, snippet_folder_path: str) -> List:
-    dataset = jnp.load(dataset_path, allow_pickle=True)
+    dataset = np.load(dataset_path, allow_pickle=True)
     instance_id_map = {item['instance_id']: item['problem_statement'] for item in dataset}
     folder_paths = [os.path.join(snippet_folder_path, f) for f in os.listdir(snippet_folder_path) if os.path.isdir(os.path.join(snippet_folder_path, f))]
     snippets = [load_json_file(os.path.join(folder_path, 'snippet.json')) for folder_path in folder_paths]
@@ -147,11 +169,8 @@ def load_data(dataset_path: str, snippet_folder_path: str, tokenizer):
 
 def train(model, dataset, optimizer):
     total_loss = 0
-    for batch in jax.tree_util.tree_leaves(dataset):
+    for batch in dataset.batch():
         anchor, positive, negative = batch
-        anchor = jax.tree_util.tree_map(lambda x: x[0], anchor)
-        positive = jax.tree_util.tree_map(lambda x: x[0], positive)
-        negative = jax.tree_util.tree_map(lambda x: x[0], negative)
         grads = jax.grad(lambda params: model.triplet_loss(params, *model.forward(params, (anchor, positive, negative))))(model.params)
         optimizer = optimizers.adam(model.params, grads, optimizer)
         model.params = optimizer[0]
@@ -160,24 +179,20 @@ def train(model, dataset, optimizer):
 
 def evaluate(model, dataset):
     total_loss = 0
-    for batch in jax.tree_util.tree_leaves(dataset):
+    for batch in dataset.batch():
         anchor, positive, negative = batch
-        anchor = jax.tree_util.tree_map(lambda x: x[0], anchor)
-        positive = jax.tree_util.tree_map(lambda x: x[0], positive)
-        negative = jax.tree_util.tree_map(lambda x: x[0], negative)
         total_loss += model.triplet_loss(model.params, *model.forward(model.params, (anchor, positive, negative)))
     return total_loss / len(dataset)
 
 def save_model(model, path):
-    jnp.save(path, model.params)
+    np.save(path, model.params)
 
 def load_model(path):
     model = TripletModel(jax.random.PRNGKey(0))
-    model.params = jnp.load(path)
+    model.params = np.load(path)
     return model
 
 def plot_history(history):
-    import matplotlib.pyplot as plt
     plt.plot(history['loss'], label='Training Loss')
     plt.plot(history['val_loss'], label='Validation Loss')
     plt.legend()
@@ -193,6 +208,7 @@ def main():
     model_path = 'triplet_model.npy'
     history = {'loss': [], 'val_loss': []}
     for epoch in range(Config.MAX_EPOCHS):
+        train_dataset.shuffle()
         loss = train(model, train_dataset, optimizer)
         val_loss = evaluate(model, test_dataset)
         history['loss'].append(loss)
