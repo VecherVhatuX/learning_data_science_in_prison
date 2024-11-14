@@ -47,7 +47,7 @@ class TripletModel(tf.keras.Model):
         loss = tf.maximum(tf.zeros_like(anchor), tf.reduce_sum((anchor - positive) ** 2) - tf.reduce_sum((anchor - negative) ** 2) + 1.0)
         return tf.reduce_mean(loss)
 
-class TripletDataset:
+class TripletDataset(tf.keras.utils.Sequence):
     def __init__(self, triplets, tokenizer, batch_size):
         self.triplets = triplets
         self.tokenizer = tokenizer
@@ -55,6 +55,9 @@ class TripletDataset:
 
     def __len__(self):
         return len(self.triplets) // self.batch_size
+
+    def on_epoch_end(self):
+        random.shuffle(self.triplets)
 
     def __getitem__(self, index):
         start = index * self.batch_size
@@ -106,9 +109,6 @@ class TripletDataset:
             'negative': np.array(negative_encodings)
         }
 
-    def on_epoch_end(self):
-        random.shuffle(self.triplets)
-
 def load_json_file(file_path: str) -> List:
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -150,9 +150,9 @@ def load_data(dataset_path: str, snippet_folder_path: str, tokenizer):
 def train(model, dataset, optimizer):
     total_loss = 0
     for batch in dataset:
-        anchor, positive, negative = model([batch['anchor'], batch['positive'], batch['negative']])
-        loss = model.triplet_loss(anchor, positive, negative)
         with tf.GradientTape() as tape:
+            anchor, positive, negative = model([batch['anchor'], batch['positive'], batch['negative']])
+            loss = model.triplet_loss(anchor, positive, negative)
             gradients = tape.gradient(loss, model.trainable_variables)
             optimizer.apply_gradients(zip(gradients, model.trainable_variables))
         total_loss += loss
