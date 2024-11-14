@@ -25,6 +25,7 @@ class TripletModel:
     def __init__(self, rng, tokenizer):
         self.distilbert = tokenizer
         self.init_fn, self.apply_fn = self._create_model(rng)
+        self.params = None
 
     def _create_model(self, rng):
         return stax.serial(
@@ -177,8 +178,8 @@ def train(model, dataset, optimizer):
         anchor, positive, negative = batch
         anchor_embedding, positive_embedding, negative_embedding = model.forward((anchor, positive, negative))
         loss = model.triplet_loss(anchor_embedding, positive_embedding, negative_embedding)
-        grads = jax.grad(lambda params, anchor, positive, negative: model.triplet_loss(model.apply_fn(params, anchor), model.apply_fn(params, positive), model.apply_fn(params, negative)))(model.params, anchor_embedding, positive_embedding, negative_embedding)
-        optimizer = optimizers.adam(model.params, grads, optimizer)
+        grads = jax.grad(lambda params: model.triplet_loss(model.apply_fn(params, anchor_embedding), model.apply_fn(params, positive_embedding), model.apply_fn(params, negative_embedding)))(model.params)
+        optimizer = optimizers.adam(model.params, grads, optimizer, step_size=Config.LEARNING_RATE)
         model.params = optimizer[0]
         total_loss += loss
     return total_loss / len(dataset)
