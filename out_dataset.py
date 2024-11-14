@@ -175,6 +175,12 @@ def evaluate(model, dataset):
         total_loss += loss
     return total_loss / len(dataset)
 
+def save_model(model, path):
+    model.save(path)
+
+def load_model(path):
+    return tf.keras.models.load_model(path)
+
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
@@ -182,11 +188,15 @@ def main():
     train_dataset, test_dataset = load_data(dataset_path, snippet_folder_path, tokenizer)
     model = TripletModel()
     optimizer = Adam(learning_rate=Config.LEARNING_RATE)
+    model_path = 'triplet_model.h5'
     for epoch in range(Config.MAX_EPOCHS):
         train_dataset.triplets = train_dataset.triplets[:len(train_dataset.triplets) // Config.BATCH_SIZE * Config.BATCH_SIZE]
         random.shuffle(train_dataset.triplets)
         loss = train(model, train_dataset, optimizer)
         print(f'Epoch {epoch+1}, Loss: {loss:.4f}')
+        save_model(model, model_path)
+        print(f'Model saved at {model_path}')
+    model = load_model(model_path)
     loss = evaluate(model, test_dataset)
     print(f'Test Loss: {loss:.4f}')
 
