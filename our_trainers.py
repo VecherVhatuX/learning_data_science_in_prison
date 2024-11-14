@@ -2,8 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+from torch.utils.data import Dataset, DataLoader
 
-class TripletDataset(torch.utils.data.Dataset):
+class TripletDataset(Dataset):
     def __init__(self, samples, labels, batch_size, num_negatives):
         self.samples = samples
         self.labels = labels
@@ -12,8 +13,15 @@ class TripletDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         anchor_idx = np.arange(idx * self.batch_size, (idx + 1) * self.batch_size)
-        positive_idx = np.concatenate([np.random.choice(np.where(self.labels == self.labels[anchor])[0], size=1) for anchor in anchor_idx], axis=0)
-        negative_idx = np.random.choice(np.where(self.labels != self.labels[anchor_idx])[0], size=self.batch_size * self.num_negatives, replace=False)
+        anchor_labels = self.labels[anchor_idx]
+        positive_idx = []
+        for label in anchor_labels:
+            positive_idx.append(np.random.choice(np.where(self.labels == label)[0], size=1)[0])
+        positive_idx = np.array(positive_idx)
+        negative_idx = []
+        for label in anchor_labels:
+            negative_idx.append(np.random.choice(np.where(self.labels != label)[0], size=self.num_negatives, replace=False))
+        negative_idx = np.array(negative_idx)
         return {
             'anchor_input_ids': torch.from_numpy(self.samples[anchor_idx]),
             'positive_input_ids': torch.from_numpy(self.samples[positive_idx]),
@@ -22,11 +30,6 @@ class TripletDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.samples) // self.batch_size
-
-    def on_epoch_end(self):
-        indices = np.random.permutation(len(self.samples))
-        self.samples = self.samples[indices]
-        self.labels = self.labels[indices]
 
 
 class TripletModel(nn.Module):
@@ -80,7 +83,7 @@ class TripletTrainer:
     def train(self):
         for epoch in range(self.epochs):
             total_loss = 0
-            for i, data in enumerate(torch.utils.data.DataLoader(self.dataset, batch_size=1, shuffle=True)):
+            for i, data in enumerate(DataLoader(self.dataset, batch_size=1, shuffle=True)):
                 loss = self.train_step(data)
                 total_loss += loss
             print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
@@ -105,7 +108,7 @@ class TripletEvaluator:
     def evaluate(self):
         total_loss = 0.0
         with torch.no_grad():
-            for i, data in enumerate(torch.utils.data.DataLoader(self.dataset, batch_size=1, shuffle=True)):
+            for i, data in enumerate(DataLoader(self.dataset, batch_size=1, shuffle=True)):
                 loss = self.evaluate_step(data)
                 total_loss += loss
         print(f'Validation Loss: {total_loss / (i+1):.3f}')
