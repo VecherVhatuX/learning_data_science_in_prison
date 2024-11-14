@@ -23,6 +23,7 @@ class TripletDataset:
         indices = np.random.permutation(len(self.samples))
         return tf.gather(self.samples, indices), tf.gather(self.labels, indices)
 
+
 class TripletModel(models.Model):
     def __init__(self, num_embeddings, embedding_dim):
         super(TripletModel, self).__init__()
@@ -40,6 +41,7 @@ class TripletModel(models.Model):
         negative_embeddings = self.embed(tf.convert_to_tensor(inputs['negative_input_ids'], dtype=tf.int32).reshape(-1, inputs['negative_input_ids'].shape[2]))
         return anchor_embeddings, positive_embeddings, negative_embeddings
 
+
 class TripletLoss:
     def __init__(self, margin=1.0):
         self.margin = margin
@@ -47,12 +49,14 @@ class TripletLoss:
     def __call__(self, anchor, positive, negative):
         return tf.reduce_mean(tf.maximum(0.0, tf.norm(anchor - positive, axis=1) - tf.norm(anchor[:, tf.newaxis] - negative, axis=2) + self.margin))
 
+
 class TripletTrainer:
-    def __init__(self, model, loss_fn, epochs, lr):
+    def __init__(self, model, loss_fn, epochs, lr, dataset):
         self.model = model
         self.loss_fn = loss_fn
         self.epochs = epochs
         self.lr = lr
+        self.dataset = dataset
         self.optimizer = optimizers.SGD(learning_rate=self.lr)
 
     def train_step(self, data):
@@ -64,18 +68,21 @@ class TripletTrainer:
         self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
         return loss
 
-    def train(self, dataset):
+    def train(self):
         for epoch in range(self.epochs):
             total_loss = 0
-            for i, data in enumerate(dataset):
+            for i in range(len(self.dataset.samples) // self.dataset.batch_size):
+                data = self.dataset(i)
                 loss = self.train_step(data)
                 total_loss += loss
             print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
+
 class TripletEvaluator:
-    def __init__(self, model, loss_fn):
+    def __init__(self, model, loss_fn, dataset):
         self.model = model
         self.loss_fn = loss_fn
+        self.dataset = dataset
 
     def evaluate_step(self, data):
         anchor_embeddings, positive_embeddings, negative_embeddings = self.model(data)
@@ -84,12 +91,14 @@ class TripletEvaluator:
             return loss
         return 0.0
 
-    def evaluate(self, dataset):
+    def evaluate(self):
         total_loss = 0.0
-        for i, data in enumerate(dataset):
+        for i in range(len(self.dataset.samples) // self.dataset.batch_size):
+            data = self.dataset(i)
             loss = self.evaluate_step(data)
             total_loss += loss
         print(f'Validation Loss: {total_loss / (i+1):.3f}')
+
 
 class TripletPredictor:
     def __init__(self, model):
@@ -97,6 +106,7 @@ class TripletPredictor:
 
     def predict(self, input_ids):
         return self.model({'anchor_input_ids': input_ids})[0]
+
 
 def main():
     np.random.seed(42)
@@ -114,16 +124,17 @@ def main():
     dataset = TripletDataset(samples, labels, batch_size, num_negatives)
     model = TripletModel(num_embeddings, embedding_dim)
     loss_fn = TripletLoss(margin)
-    trainer = TripletTrainer(model, loss_fn, epochs, lr)
-    trainer.train([dataset(i) for i in range(len(samples) // batch_size)])
+    trainer = TripletTrainer(model, loss_fn, epochs, lr, dataset)
+    trainer.train()
 
-    evaluator = TripletEvaluator(model, loss_fn)
-    evaluator.evaluate([dataset(i) for i in range(len(samples) // batch_size)])
+    evaluator = TripletEvaluator(model, loss_fn, dataset)
+    evaluator.evaluate()
 
     predictor = TripletPredictor(model)
     input_ids = tf.convert_to_tensor([1, 2, 3, 4, 5])
     output = predictor.predict(input_ids)
     print(output)
+
 
 if __name__ == "__main__":
     main()
