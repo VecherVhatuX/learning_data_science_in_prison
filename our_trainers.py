@@ -1,36 +1,9 @@
 import torch
-from torch.utils.data import Dataset, DataLoader
 import numpy as np
+from torch.utils.data import Dataset, DataLoader
 import torch.nn as nn
 import torch.optim as optim
 
-# Data Preparation
-def prepare_data():
-    np.random.seed(42)
-    torch.manual_seed(42)
-    samples = np.random.randint(0, 100, (100, 10))
-    labels = np.random.randint(0, 2, (100,))
-    batch_size = 32
-    num_negatives = 5
-    epochs = 10
-    return samples, labels, batch_size, num_negatives, epochs
-
-# Model Initialization
-def initialize_model(num_embeddings, embedding_dim, num_negatives):
-    model = TripletModel(num_embeddings, embedding_dim, num_negatives)
-    return model
-
-# Loss Function Initialization
-def initialize_loss_fn(margin=1.0):
-    loss_fn = TripletLoss(margin)
-    return loss_fn
-
-# Optimizer Initialization
-def initialize_optimizer(model, lr=1e-4):
-    optimizer = optim.SGD(model.parameters(), lr=lr)
-    return optimizer
-
-# Dataset Class
 class TripletDataset(Dataset):
     def __init__(self, samples, labels, batch_size, num_negatives):
         self.samples = torch.tensor(samples, dtype=torch.long)
@@ -79,7 +52,6 @@ class TripletDataset(Dataset):
         negative_idx = self.get_negative_idx(anchor_idx)
         return self.get_data(anchor_idx, positive_idx, negative_idx)
 
-# Model Class
 class TripletModel(nn.Module):
     def __init__(self, num_embeddings, embedding_dim, num_negatives):
         super(TripletModel, self).__init__()
@@ -108,7 +80,6 @@ class TripletModel(nn.Module):
         negative_embeddings = self.embed_negative(negative_input_ids)
         return anchor_embeddings, positive_embeddings, negative_embeddings
 
-# Loss Function Class
 class TripletLoss:
     def __init__(self, margin=1.0):
         self.margin = margin
@@ -119,12 +90,12 @@ class TripletLoss:
     def __call__(self, anchor, positive, negative):
         return torch.mean(self.calculate_loss(anchor, positive, negative))
 
-# Trainer Class
-class Trainer:
-    def __init__(self, model, optimizer, loss_fn):
+class TripletTrainer:
+    def __init__(self, model, optimizer, loss_fn, epochs):
         self.model = model
         self.optimizer = optimizer
         self.loss_fn = loss_fn
+        self.epochs = epochs
 
     def train_step(self, data):
         self.optimizer.zero_grad()
@@ -136,16 +107,15 @@ class Trainer:
             return loss.item()
         return 0.0
 
-    def train(self, dataset, epochs):
-        for epoch in range(epochs):
+    def train(self, dataset):
+        for epoch in range(self.epochs):
             total_loss = 0
             for i, data in enumerate(dataset):
                 loss = self.train_step(data)
                 total_loss += loss
             print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
-# Evaluator Class
-class Evaluator:
+class TripletEvaluator:
     def __init__(self, model, loss_fn):
         self.model = model
         self.loss_fn = loss_fn
@@ -165,32 +135,42 @@ class Evaluator:
             total_loss += loss
         print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
-# Predictor Class
-class Predictor:
+class TripletPredictor:
     def __init__(self, model):
         self.model = model
 
     def predict(self, input_ids):
         return self.model.embed(input_ids)
 
-# Main Function
 def main():
-    samples, labels, batch_size, num_negatives, epochs = prepare_data()
-    model = initialize_model(101, 10, num_negatives)
-    loss_fn = initialize_loss_fn()
-    optimizer = initialize_optimizer(model)
+    np.random.seed(42)
+    torch.manual_seed(42)
+    samples = np.random.randint(0, 100, (100, 10))
+    labels = np.random.randint(0, 2, (100,))
+    batch_size = 32
+    num_negatives = 5
+    epochs = 10
+    num_embeddings = 101
+    embedding_dim = 10
+    margin = 1.0
+    lr = 1e-4
+
     dataset = TripletDataset(samples, labels, batch_size, num_negatives)
     data_loader = DataLoader(dataset, batch_size=1)
 
-    trainer = Trainer(model, optimizer, loss_fn)
-    evaluator = Evaluator(model, loss_fn)
+    model = TripletModel(num_embeddings, embedding_dim, num_negatives)
+    loss_fn = TripletLoss(margin)
+    optimizer = optim.SGD(model.parameters(), lr=lr)
 
-    trainer.train(data_loader, epochs)
+    trainer = TripletTrainer(model, optimizer, loss_fn, epochs)
+    trainer.train(data_loader)
+
+    evaluator = TripletEvaluator(model, loss_fn)
     evaluator.evaluate(data_loader)
 
     torch.save(model.state_dict(), 'model.pth')
 
-    predictor = Predictor(model)
+    predictor = TripletPredictor(model)
     input_ids = torch.tensor([1, 2, 3, 4, 5])
     output = predictor.predict(input_ids)
     print(output)
