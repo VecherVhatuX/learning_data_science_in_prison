@@ -2,7 +2,7 @@ import tensorflow as tf
 from tensorflow.keras import layers, models, optimizers
 import numpy as np
 
-class TripletDataset:
+class TripletDataset(tf.keras.utils.Sequence):
     def __init__(self, samples, labels, batch_size, num_negatives):
         self.samples = tf.convert_to_tensor(samples, dtype=tf.int32)
         self.labels = tf.convert_to_tensor(labels, dtype=tf.int32)
@@ -12,9 +12,13 @@ class TripletDataset:
     def __len__(self):
         return -(-len(self.samples) // self.batch_size)
 
-    def __getitem__(self, idx):
+    def on_epoch_end(self):
         indices = np.random.permutation(len(self.samples))
-        anchor_idx = indices[idx * self.batch_size:(idx + 1) * self.batch_size]
+        self.samples = tf.gather(self.samples, indices)
+        self.labels = tf.gather(self.labels, indices)
+
+    def __getitem__(self, idx):
+        anchor_idx = tf.range(idx * self.batch_size, (idx + 1) * self.batch_size)
         positive_idx = tf.concat([tf.random.uniform(shape=[1], minval=0, maxval=len(tf.where(self.labels == self.labels[anchor])[0]), dtype=tf.int32) for anchor in anchor_idx], axis=0)
         negative_idx = tf.random.shuffle(tf.where(self.labels != self.labels[anchor_idx])[0])[:self.batch_size * self.num_negatives]
         return {
@@ -47,11 +51,12 @@ class TripletModel(models.Model):
         negative_embeddings = self.embed(tf.convert_to_tensor(negative_input_ids, dtype=tf.int32).reshape(-1, negative_input_ids.shape[2]))
         return anchor_embeddings, positive_embeddings, negative_embeddings
 
-class TripletLoss:
+class TripletLoss(tf.keras.losses.Loss):
     def __init__(self, margin=1.0):
+        super(TripletLoss, self).__init__()
         self.margin = margin
 
-    def __call__(self, anchor, positive, negative):
+    def call(self, anchor, positive, negative):
         return tf.reduce_mean(tf.maximum(0.0, tf.norm(anchor - positive, axis=1) - tf.norm(anchor[:, tf.newaxis] - negative, axis=2) + self.margin))
 
 class TripletTrainer:
