@@ -3,14 +3,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-class TripletDataset:
+class TripletDataset(torch.utils.data.Dataset):
     def __init__(self, samples, labels, batch_size, num_negatives):
         self.samples = samples
         self.labels = labels
         self.batch_size = batch_size
         self.num_negatives = num_negatives
 
-    def __call__(self, idx):
+    def __getitem__(self, idx):
         anchor_idx = np.arange(idx * self.batch_size, (idx + 1) * self.batch_size)
         positive_idx = np.concatenate([np.random.choice(np.where(self.labels == self.labels[anchor])[0], size=1) for anchor in anchor_idx], axis=0)
         negative_idx = np.random.choice(np.where(self.labels != self.labels[anchor_idx])[0], size=self.batch_size * self.num_negatives, replace=False)
@@ -20,9 +20,13 @@ class TripletDataset:
             'negative_input_ids': torch.from_numpy(self.samples[negative_idx]).view(self.batch_size, self.num_negatives, -1)
         }
 
+    def __len__(self):
+        return len(self.samples) // self.batch_size
+
     def on_epoch_end(self):
         indices = np.random.permutation(len(self.samples))
-        return self.samples[indices], self.labels[indices]
+        self.samples = self.samples[indices]
+        self.labels = self.labels[indices]
 
 
 class TripletModel(nn.Module):
@@ -59,10 +63,13 @@ class TripletTrainer:
         self.epochs = epochs
         self.lr = lr
         self.dataset = dataset
-        self.optimizer = torch.optim.SGD(model.parameters(), lr=self.lr)
+        self.optimizer = torch.optim.Adam(model.parameters(), lr=self.lr)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)
 
     def train_step(self, data):
         self.optimizer.zero_grad()
+        data = {key: value.to(self.device) for key, value in data.items()}
         anchor_embeddings, positive_embeddings, negative_embeddings = self.model(data)
         if len(positive_embeddings) > 0:
             loss = self.loss_fn(anchor_embeddings, positive_embeddings, negative_embeddings)
@@ -73,8 +80,7 @@ class TripletTrainer:
     def train(self):
         for epoch in range(self.epochs):
             total_loss = 0
-            for i in range(len(self.dataset.samples) // self.dataset.batch_size):
-                data = self.dataset(i)
+            for i, data in enumerate(torch.utils.data.DataLoader(self.dataset, batch_size=1, shuffle=True)):
                 loss = self.train_step(data)
                 total_loss += loss
             print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
@@ -85,8 +91,11 @@ class TripletEvaluator:
         self.model = model
         self.loss_fn = loss_fn
         self.dataset = dataset
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)
 
     def evaluate_step(self, data):
+        data = {key: value.to(self.device) for key, value in data.items()}
         anchor_embeddings, positive_embeddings, negative_embeddings = self.model(data)
         if len(positive_embeddings) > 0:
             loss = self.loss_fn(anchor_embeddings, positive_embeddings, negative_embeddings)
@@ -95,19 +104,23 @@ class TripletEvaluator:
 
     def evaluate(self):
         total_loss = 0.0
-        for i in range(len(self.dataset.samples) // self.dataset.batch_size):
-            data = self.dataset(i)
-            loss = self.evaluate_step(data)
-            total_loss += loss
+        with torch.no_grad():
+            for i, data in enumerate(torch.utils.data.DataLoader(self.dataset, batch_size=1, shuffle=True)):
+                loss = self.evaluate_step(data)
+                total_loss += loss
         print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
 
 class TripletPredictor:
     def __init__(self, model):
         self.model = model
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)
 
     def predict(self, input_ids):
-        return self.model({'anchor_input_ids': input_ids})[0]
+        with torch.no_grad():
+            input_ids = input_ids.to(self.device)
+            return self.model({'anchor_input_ids': input_ids})[0]
 
 
 def main():
