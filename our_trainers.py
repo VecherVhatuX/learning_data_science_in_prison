@@ -37,6 +37,14 @@ class TripletDataset(Dataset):
     def get_num_negatives(self):
         return self.num_negatives
 
+    def get_info(self):
+        print("Dataset info:")
+        print(f"  Samples: {self.samples.shape}")
+        print(f"  Labels: {self.labels.shape}")
+        print(f"  Batch size: {self.batch_size}")
+        print(f"  Number of negatives: {self.num_negatives}")
+
+
 class TripletNetwork(nn.Module):
     def __init__(self, num_embeddings, embedding_dim):
         super(TripletNetwork, self).__init__()
@@ -51,6 +59,11 @@ class TripletNetwork(nn.Module):
 
     def get_embedding_dim(self):
         return self.model[1].out_features
+
+    def get_model_summary(self):
+        print("Model summary:")
+        print(self.model)
+
 
 class TripletModel:
     def __init__(self, num_embeddings, embedding_dim, margin, learning_rate, device):
@@ -112,6 +125,13 @@ class TripletModel:
     def get_optimizer(self):
         return self.optimizer
 
+    def get_model_info(self):
+        print("Model info:")
+        print(f"  Device: {self.device}")
+        print(f"  Model: {self.model}")
+        print(f"  Optimizer: {self.optimizer}")
+
+
 def main():
     np.random.seed(42)
     torch.manual_seed(42)
@@ -139,10 +159,8 @@ def main():
     print(output)
 
     # Example usage of new methods
-    print(dataset.get_samples())
-    print(dataset.get_labels())
-    print(dataset.get_batch_size())
-    print(dataset.get_num_negatives())
+    dataset.get_info()
+    model.get_model_info()
     print(model.get_device())
     print(model.get_model())
     print(model.get_optimizer())
