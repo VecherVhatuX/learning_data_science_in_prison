@@ -22,13 +22,13 @@ class Config:
     MAX_EPOCHS = 5
 
 class TripletModel:
-    def __init__(self, rng, tokenizer):
+    def __init__(self, rng: jax.random.PRNGKey, tokenizer: AutoTokenizer):
         self.distilbert = tokenizer
         self.init_fn, self.apply_fn = self._create_model(rng)
         self.params = None
         self.optimizer_state = None
 
-    def _create_model(self, rng):
+    def _create_model(self, rng: jax.random.PRNGKey):
         return stax.serial(
             stax.Dense(Config.EMBEDDING_DIM, W_init=jax.nn.initializers.zeros),
             stax.Relu(),
@@ -38,10 +38,10 @@ class TripletModel:
             stax.Dropout(Config.DROPOUT)
         )
 
-    def init_params(self, rng, input_shape):
+    def init_params(self, rng: jax.random.PRNGKey, input_shape: Tuple):
         return self.init_fn(rng, input_shape)
 
-    def forward(self, inputs):
+    def forward(self, inputs: Tuple):
         anchor, positive, negative = inputs
         anchor_output = self.distilbert.encode_plus(
             anchor['input_ids'], 
@@ -72,15 +72,15 @@ class TripletModel:
         negative_embedding = self.apply_fn(self.params, negative_output['input_ids'][:, 0, :])
         return anchor_embedding, positive_embedding, negative_embedding
 
-    def triplet_loss(self, anchor, positive, negative):
+    def triplet_loss(self, anchor: jnp.ndarray, positive: jnp.ndarray, negative: jnp.ndarray):
         return jnp.mean(jnp.clip(jnp.linalg.norm(anchor - positive, axis=1) - jnp.linalg.norm(anchor - negative, axis=1) + 1.0, a_min=0.0))
 
-    def update_params(self, grads):
+    def update_params(self, grads: jnp.ndarray):
         self.optimizer_state = optimizers.adam_update(self.optimizer_state, grads, self.params, Config.LEARNING_RATE)
         self.params = self.optimizer_state[0]
 
 class TripletDataset:
-    def __init__(self, triplets, tokenizer):
+    def __init__(self, triplets: List, tokenizer: AutoTokenizer):
         self.triplets = triplets
         self.tokenizer = tokenizer
         self.batch_size = Config.BATCH_SIZE
@@ -88,7 +88,7 @@ class TripletDataset:
     def __len__(self):
         return len(self.triplets)
 
-    def __getitem__(self, index):
+    def __getitem__(self, index: int):
         triplet = self.triplets[index]
         anchor_encoding = self.tokenizer.encode_plus(
             triplet['anchor'],
@@ -128,7 +128,7 @@ class TripletDataset:
             batch = self.triplets[i:i + self.batch_size]
             yield self._create_batch(batch)
 
-    def _create_batch(self, batch):
+    def _create_batch(self, batch: List):
         anchors = []
         positives = []
         negatives = []
@@ -169,7 +169,7 @@ def create_triplet_dataset(dataset_path: str, snippet_folder_path: str) -> List:
                 for i, problem_statement in enumerate(problem_statements)]
     return [item for sublist in triplets for item in sublist]
 
-def load_data(dataset_path: str, snippet_folder_path: str, tokenizer):
+def load_data(dataset_path: str, snippet_folder_path: str, tokenizer: AutoTokenizer) -> Tuple[TripletDataset, TripletDataset]:
     triplets = create_triplet_dataset(dataset_path, snippet_folder_path)
     random.shuffle(triplets)
     train_triplets, test_triplets = triplets[:int(0.8 * len(triplets))], triplets[int(0.8 * len(triplets)):]
@@ -177,7 +177,7 @@ def load_data(dataset_path: str, snippet_folder_path: str, tokenizer):
     test_dataset = TripletDataset(test_triplets, tokenizer)
     return train_dataset, test_dataset
 
-def train(model, dataset):
+def train(model: TripletModel, dataset: TripletDataset) -> float:
     total_loss = 0
     for batch in dataset.batch():
         anchor, positive, negative = batch
@@ -188,7 +188,7 @@ def train(model, dataset):
         total_loss += loss
     return total_loss / len(dataset)
 
-def evaluate(model, dataset):
+def evaluate(model: TripletModel, dataset: TripletDataset) -> float:
     total_loss = 0
     for batch in dataset.batch():
         anchor, positive, negative = batch
@@ -196,15 +196,15 @@ def evaluate(model, dataset):
         total_loss += model.triplet_loss(anchor_embedding, positive_embedding, negative_embedding)
     return total_loss / len(dataset)
 
-def save_model(model, path):
+def save_model(model: TripletModel, path: str) -> None:
     np.save(path, model.params)
 
-def load_model(path, tokenizer):
+def load_model(path: str, tokenizer: AutoTokenizer) -> TripletModel:
     model = TripletModel(jax.random.PRNGKey(0), tokenizer)
     model.params = np.load(path)
     return model
 
-def plot_history(history):
+def plot_history(history: dict) -> None:
     plt.plot(history['loss'], label='Training Loss')
     plt.plot(history['val_loss'], label='Validation Loss')
     plt.legend()
