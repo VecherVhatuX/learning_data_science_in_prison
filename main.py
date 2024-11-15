@@ -49,7 +49,7 @@ class TrainingConfig:
     seed: int = 42
     resume_from_checkpoint: str = None
 
-class Dataset(Dataset):
+class CustomDataset(Dataset):
     def __init__(self, data_args, dataset, use_triplet):
         self.data_args = data_args
         self.dataset = self._prepare_data(dataset)
@@ -74,13 +74,6 @@ class Dataset(Dataset):
             negative_labels = self.dataset["labels"][torch.randint(0, len(self.dataset["labels"]), (1,))][0]
             return {"input_ids": self.dataset["input_ids"][idx], "positive_labels": positive_labels, "negative_labels": negative_labels}
         return {"input_ids": self.dataset["input_ids"][idx], "labels": self.dataset["labels"][idx]}
-
-    def on_epoch_end(self):
-        torch.manual_seed(0)
-        torch.cuda.manual_seed(0)
-        torch.manual_seed(0)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
 
     @staticmethod
     def load_json_file(file_name):
@@ -119,8 +112,9 @@ class T5Model(nn.Module):
             outputs = self(torch.tensor([0]*128))
             loss = loss_fn(outputs, torch.tensor([0]*1000), torch.tensor([0]*1000))
         else:
-            labels = torch.tensor([0]*1000)
-            outputs = self(torch.tensor([0]*128))
+            labels = torch.tensor(batch["labels"][0])
+            inputs = torch.tensor(batch["input_ids"][0])
+            outputs = self(inputs)
             loss = loss_fn(outputs, labels)
         optimizer.zero_grad()
         loss.backward()
@@ -132,10 +126,9 @@ class T5Model(nn.Module):
             for batch in data_loader:
                 loss = self.train_step(batch, loss_fn, optimizer)
             print(f"Epoch {epoch+1}, Loss: {loss}")
-            self.on_epoch_end()
 
 def run_pipeline(model_args, data_args, training_args):
-    train_dataset, _ = Dataset.prepare(data_args, model_args.use_triplet_loss_trainer)
+    train_dataset, _ = CustomDataset.prepare(data_args, model_args.use_triplet_loss_trainer)
     data_loader = DataLoader(train_dataset, batch_size=training_args.per_device_train_batch_size, shuffle=True)
     model = T5Model()
     loss_fn = model.get_loss_fn(model_args.use_triplet_loss_trainer)
@@ -143,7 +136,7 @@ def run_pipeline(model_args, data_args, training_args):
     model.train(data_loader, training_args.num_train_epochs, loss_fn, optimizer)
 
 def resume_pipeline(model_args, data_args, training_args, checkpoint_path):
-    train_dataset, _ = Dataset.prepare(data_args, model_args.use_triplet_loss_trainer)
+    train_dataset, _ = CustomDataset.prepare(data_args, model_args.use_triplet_loss_trainer)
     data_loader = DataLoader(train_dataset, batch_size=training_args.per_device_train_batch_size, shuffle=True)
     model = T5Model()
     model.load_state_dict(torch.load(checkpoint_path))
