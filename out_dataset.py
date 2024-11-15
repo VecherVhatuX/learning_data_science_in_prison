@@ -7,7 +7,6 @@ from transformers import AutoTokenizer
 import numpy as np
 import matplotlib.pyplot as plt
 
-# Constants
 class Config:
     INSTANCE_ID_KEY = 'instance_id'
     MAX_SEQUENCE_LENGTH = 512
@@ -19,7 +18,6 @@ class Config:
     LEARNING_RATE_VALUE = 1e-5
     MAX_TRAINING_EPOCHS = 5
 
-# Model
 class TripletModel(tf.keras.Model):
     def __init__(self, tokenizer):
         super(TripletModel, self).__init__()
@@ -62,7 +60,6 @@ class TripletModel(tf.keras.Model):
         self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
         return {"loss": loss}
 
-# Dataset
 class TripletDataset:
     def __init__(self, triplets, tokenizer):
         self.triplets = triplets
@@ -118,7 +115,6 @@ class TripletDataset:
             negatives = np.stack([item['negative'] for item in batch])
             yield tf.data.Dataset.from_tensor_slices((anchors, positives, negatives)).batch(self.minibatch_size)
 
-# Data Loader
 def load_json_data(file_path):
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -157,7 +153,6 @@ def load_data(dataset_path, snippet_folder_path, tokenizer):
     test_dataset = TripletDataset(test_triplets, tokenizer)
     return train_dataset, test_dataset
 
-# Model Trainer
 def train_model(model, dataset):
     total_loss = 0
     for batch in dataset.batch_data():
@@ -176,7 +171,6 @@ def evaluate_model(model, dataset):
         total_loss += loss
     return total_loss / len(dataset)
 
-# Model Saver
 def save_model_weights(model, path):
     model.save_weights(path)
 
@@ -185,14 +179,12 @@ def load_model_weights(path, tokenizer):
     model.load_weights(path)
     return model
 
-# Plotter
 def plot_training_history(history):
     plt.plot(history['loss'], label='Training Loss')
     plt.plot(history['val_loss'], label='Validation Loss')
     plt.legend()
     plt.show()
 
-# Main
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
