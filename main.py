@@ -14,6 +14,7 @@ import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
 import numpy as np
+import optax
 
 @dataclass
 class ModelConfig:
@@ -57,49 +58,44 @@ class TrainingConfig:
     seed: int = 42
     resume_from_checkpoint: str = None
 
-class CustomDataset:
-    def __init__(self, data_args, dataset, use_triplet):
-        self.data_args = data_args
-        self.dataset = self._prepare_data(dataset)
-        self.use_triplet = use_triplet
-        self.indices = list(range(len(self.dataset["input_ids"])))
-
-    def _prepare_data(self, data):
-        chat_template = self.data_args.chat_template if self.data_args.chat_template != "none" else ""
+def prepare_data(data_args, chat_template):
+    def _prepare_data(data):
         return {
             "input_ids": [f"{chat_template} {example['input']}" for example in data],
             "labels": [f"{chat_template} {example['output']}" for example in data],
             "attention_mask": [1] * len(data)
         }
+    return _prepare_data
 
-    def __len__(self):
-        return len(self.dataset["input_ids"])
+def load_json_file(file_name):
+    with open(file_name, 'r') as f:
+        return json.load(f)
 
-    def __getitem__(self, idx):
-        idx = self.indices[idx]
-        if self.use_triplet:
-            positive_labels = self.dataset["labels"][idx]
-            negative_labels_idx = np.random.randint(0, len(self.dataset["labels"]))
-            while negative_labels_idx == idx:
-                negative_labels_idx = np.random.randint(0, len(self.dataset["labels"]))
-            negative_labels = self.dataset["labels"][negative_labels_idx]
-            return {"input_ids": self.dataset["input_ids"][idx], "positive_labels": positive_labels, "negative_labels": negative_labels}
-        return {"input_ids": self.dataset["input_ids"][idx], "labels": self.dataset["labels"][idx]}
+def create_dataset(data_args, use_triplet):
+    train_data = load_json_file("train.json")
+    test_data = load_json_file("test.json")
+    chat_template = data_args.chat_template if data_args.chat_template != "none" else ""
+    prepare_data_fn = prepare_data(data_args, chat_template)
+    train_dataset = prepare_data_fn(train_data)
+    test_dataset = prepare_data_fn(test_data)
+    def get_dataset(dataset, use_triplet):
+        def _dataset(indices):
+            if use_triplet:
+                positive_labels = dataset["labels"][indices]
+                negative_labels_idx = np.random.randint(0, len(dataset["labels"]))
+                while negative_labels_idx == indices:
+                    negative_labels_idx = np.random.randint(0, len(dataset["labels"]))
+                negative_labels = dataset["labels"][negative_labels_idx]
+                return {"input_ids": dataset["input_ids"][indices], "positive_labels": positive_labels, "negative_labels": negative_labels}
+            return {"input_ids": dataset["input_ids"][indices], "labels": dataset["labels"][indices]}
+        return _dataset
+    train_dataset_fn = get_dataset(train_dataset, use_triplet)
+    test_dataset_fn = get_dataset(test_dataset, use_triplet)
+    return train_dataset_fn, test_dataset_fn
 
-    def on_epoch_end(self):
-        np.random.seed(42)
-        self.indices = np.random.permutation(len(self.dataset["input_ids"])).tolist()
-
-    @staticmethod
-    def load_json_file(file_name):
-        with open(file_name, 'r') as f:
-            return json.load(f)
-
-    @classmethod
-    def prepare(cls, data_args, use_triplet):
-        train_data = cls.load_json_file("train.json")
-        test_data = cls.load_json_file("test.json")
-        return cls(data_args, train_data, use_triplet), cls(data_args, test_data, use_triplet)
+def on_epoch_end(indices):
+    np.random.seed(42)
+    return np.random.permutation(len(indices))
 
 class T5Model(nn.Module):
     @nn.compact
@@ -119,18 +115,19 @@ def create_train_state(rng, model, learning_rate):
     )
     return state
 
-def train_step(state, batch, use_triplet):
-    def loss_fn(params, batch, use_triplet):
-        if use_triplet:
-            outputs = state.apply_fn({'params': params}, batch["input_ids"])
-            loss = (outputs - batch["positive_labels"])**2 - (outputs - batch["negative_labels"])**2
-        else:
-            labels = batch["labels"]
-            inputs = batch["input_ids"]
-            outputs = state.apply_fn({'params': params}, inputs)
-            loss = (outputs - labels)**2
-        return jnp.mean(loss)
+def loss_fn(params, batch, use_triplet):
+    model = T5Model()
+    if use_triplet:
+        outputs = model.apply({'params': params}, batch["input_ids"])
+        loss = (outputs - batch["positive_labels"])**2 - (outputs - batch["negative_labels"])**2
+    else:
+        labels = batch["labels"]
+        inputs = batch["input_ids"]
+        outputs = model.apply({'params': params}, inputs)
+        loss = (outputs - labels)**2
+    return jnp.mean(loss)
 
+def train_step(state, batch, use_triplet):
     grads = jax.grad(loss_fn, argnums=0)(state.params, batch, use_triplet)
     state = state.apply_gradients(grads=grads)
     return state
@@ -139,26 +136,15 @@ def train(data_loader, num_epochs, state, use_triplet):
     for epoch in range(num_epochs):
         for batch in data_loader:
             state = train_step(state, batch, use_triplet)
-        data_loader.dataset.on_epoch_end()
         print(f"Epoch {epoch+1}")
 
 def run_pipeline(model_args, data_args, training_args):
-    train_dataset, _ = CustomDataset.prepare(data_args, model_args.use_triplet_loss_trainer)
-    data_loader = tf.data.Dataset.from_tensor_slices(train_dataset).batch(training_args.per_device_train_batch_size)
+    train_dataset_fn, _ = create_dataset(data_args, model_args.use_triplet_loss_trainer)
+    train_dataset = tf.data.Dataset.from_tensor_slices(list(range(len(train_dataset_fn(0).values()[0])))).map(train_dataset_fn).batch(training_args.per_device_train_batch_size)
     model = T5Model()
     rng = jax.random.PRNGKey(42)
     state = create_train_state(rng, model, 0.001)
-    train(data_loader, training_args.num_train_epochs, state, model_args.use_triplet_loss_trainer)
-
-def resume_pipeline(model_args, data_args, training_args, checkpoint_path):
-    train_dataset, _ = CustomDataset.prepare(data_args, model_args.use_triplet_loss_trainer)
-    data_loader = tf.data.Dataset.from_tensor_slices(train_dataset).batch(training_args.per_device_train_batch_size)
-    model = T5Model()
-    state = train_state.TrainState.create(
-        apply_fn=model.apply,
-        params=jnp.load(checkpoint_path),
-    )
-    train(data_loader, training_args.num_train_epochs, state, model_args.use_triplet_loss_trainer)
+    train(train_dataset, training_args.num_train_epochs, state, model_args.use_triplet_loss_trainer)
 
 if __name__ == "__main__":
     model_args = ModelConfig(model_identifier="t5-base", chat_template="none", use_triplet_loss_trainer=True)
