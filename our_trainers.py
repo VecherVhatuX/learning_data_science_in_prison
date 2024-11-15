@@ -12,7 +12,7 @@ class TripletDataset(Dataset):
         self.num_negatives = num_negatives
 
     def __len__(self):
-        return len(self.samples) // self.batch_size + (1 if len(self.samples) % self.batch_size != 0 else 0)
+        return -(-len(self.samples) // self.batch_size)
 
     def __getitem__(self, idx):
         anchor_idx = np.arange(idx * self.batch_size, min((idx + 1) * self.batch_size, len(self.samples)))
@@ -38,8 +38,9 @@ class TripletNetwork(nn.Module):
         return self.model(inputs)
 
 class TripletModel:
-    def __init__(self, num_embeddings, embedding_dim, margin, learning_rate):
-        self.model = TripletNetwork(num_embeddings, embedding_dim)
+    def __init__(self, num_embeddings, embedding_dim, margin, learning_rate, device):
+        self.device = device
+        self.model = TripletNetwork(num_embeddings, embedding_dim).to(self.device)
         self.loss_fn = nn.MarginRankingLoss(margin=margin, reduction='mean')
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
 
@@ -47,9 +48,9 @@ class TripletModel:
         for epoch in range(epochs):
             total_loss = 0.0
             for i, data in enumerate(dataloader):
-                anchor_inputs = data['anchor_input_ids'].to('cuda' if torch.cuda.is_available() else 'cpu')
-                positive_inputs = data['positive_input_ids'].to('cuda' if torch.cuda.is_available() else 'cpu')
-                negative_inputs = data['negative_input_ids'].to('cuda' if torch.cuda.is_available() else 'cpu')
+                anchor_inputs = data['anchor_input_ids'].to(self.device)
+                positive_inputs = data['positive_input_ids'].to(self.device)
+                negative_inputs = data['negative_input_ids'].to(self.device)
                 anchor_embeddings = self.model(anchor_inputs)
                 positive_embeddings = self.model(positive_inputs)
                 negative_embeddings = self.model(negative_inputs)
@@ -61,17 +62,15 @@ class TripletModel:
                 loss.backward()
                 self.optimizer.step()
                 total_loss += loss.item()
-                if i >= len(dataloader.dataset) // dataloader.batch_size:
-                    break
             print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
     def evaluate(self, dataloader):
         total_loss = 0.0
         with torch.no_grad():
             for i, data in enumerate(dataloader):
-                anchor_inputs = data['anchor_input_ids'].to('cuda' if torch.cuda.is_available() else 'cpu')
-                positive_inputs = data['positive_input_ids'].to('cuda' if torch.cuda.is_available() else 'cpu')
-                negative_inputs = data['negative_input_ids'].to('cuda' if torch.cuda.is_available() else 'cpu')
+                anchor_inputs = data['anchor_input_ids'].to(self.device)
+                positive_inputs = data['positive_input_ids'].to(self.device)
+                negative_inputs = data['negative_input_ids'].to(self.device)
                 anchor_embeddings = self.model(anchor_inputs)
                 positive_embeddings = self.model(positive_inputs)
                 negative_embeddings = self.model(negative_inputs)
@@ -80,16 +79,15 @@ class TripletModel:
                 min_anchor_negative_distance = torch.min(anchor_negative_distance, dim=-1)[0]
                 loss = self.loss_fn(min_anchor_negative_distance, anchor_positive_distance, torch.ones_like(min_anchor_negative_distance))
                 total_loss += loss.item()
-                if i >= len(dataloader.dataset) // dataloader.batch_size:
-                    break
         print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
     def predict(self, input_ids):
-        return self.model(input_ids)
+        return self.model(input_ids.to(self.device))
 
 def main():
     np.random.seed(42)
     torch.manual_seed(42)
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     samples = np.random.randint(0, 100, (100, 10))
     labels = np.random.randint(0, 2, (100,))
     batch_size = 32
@@ -105,11 +103,10 @@ def main():
     validation_dataset = TripletDataset(samples, labels, batch_size, num_negatives)
     validation_dataloader = DataLoader(validation_dataset, batch_size=batch_size, shuffle=True)
 
-    model = TripletModel(num_embeddings, embedding_dim, margin, lr)
-    model.model.to('cuda' if torch.cuda.is_available() else 'cpu')
+    model = TripletModel(num_embeddings, embedding_dim, margin, lr, device)
     model.train(dataloader, epochs)
     model.evaluate(validation_dataloader)
-    input_ids = torch.tensor([1, 2, 3, 4, 5], dtype=torch.long).to('cuda' if torch.cuda.is_available() else 'cpu')
+    input_ids = torch.tensor([1, 2, 3, 4, 5], dtype=torch.long)
     output = model.predict(input_ids)
     print(output)
 
