@@ -27,7 +27,6 @@ class TripletModel:
         self.optimizer_init, self.optimizer_update, self.optimizer_get_params = optimizers.adam(Config.LEARNING_RATE)
         self.params = None
         self.optimizer_state = None
-
         self.model_init, self.model_apply = self._create_model(rng)
 
     def _create_model(self, rng):
