@@ -7,18 +7,17 @@ from transformers import AutoTokenizer
 import numpy as np
 import matplotlib.pyplot as plt
 
-def create_config():
-    return {
-        'INSTANCE_ID_KEY': 'instance_id',
-        'MAX_SEQUENCE_LENGTH': 512,
-        'MINIBATCH_SIZE': 16,
-        'NEGATIVE_SAMPLES_PER_POSITIVE': 3,
-        'EMBEDDING_SIZE': 128,
-        'FULLY_CONNECTED_SIZE': 64,
-        'DROPOUT_RATE': 0.2,
-        'LEARNING_RATE_VALUE': 1e-5,
-        'MAX_TRAINING_EPOCHS': 5
-    }
+class Config:
+    def __init__(self):
+        self.instance_id_key = 'instance_id'
+        self.max_sequence_length = 512
+        self.minibatch_size = 16
+        self.negative_samples_per_positive = 3
+        self.embedding_size = 128
+        self.fully_connected_size = 64
+        self.dropout_rate = 0.2
+        self.learning_rate_value = 1e-5
+        self.max_training_epochs = 5
 
 def load_json_data(file_path):
     try:
@@ -78,18 +77,18 @@ class TripletModel:
         self.config = config
         self.tokenizer = tokenizer
         self.model = tf.keras.models.Sequential([
-            layers.Dense(config['EMBEDDING_SIZE'], activation='relu', name='embedding_layer'),
-            layers.Dropout(config['DROPOUT_RATE'], name='dropout_layer_1'),
-            layers.Dense(config['FULLY_CONNECTED_SIZE'], activation='relu', name='fully_connected_layer'),
-            layers.Dropout(config['DROPOUT_RATE'], name='dropout_layer_2')
+            layers.Dense(config.embedding_size, activation='relu', name='embedding_layer'),
+            layers.Dropout(config.dropout_rate, name='dropout_layer_1'),
+            layers.Dense(config.fully_connected_size, activation='relu', name='fully_connected_layer'),
+            layers.Dropout(config.dropout_rate, name='dropout_layer_2')
         ])
-        self.model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=config['LEARNING_RATE_VALUE']))
+        self.model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=config.learning_rate_value))
 
     def create_dataset(self, triplets):
         return list(map(lambda triplet: {
-            'anchor': encode_text(triplet['anchor'], self.tokenizer, self.config['MAX_SEQUENCE_LENGTH']),
-            'positive': encode_text(triplet['positive'], self.tokenizer, self.config['MAX_SEQUENCE_LENGTH']),
-            'negative': encode_text(triplet['negative'], self.tokenizer, self.config['MAX_SEQUENCE_LENGTH'])
+            'anchor': encode_text(triplet['anchor'], self.tokenizer, self.config.max_sequence_length),
+            'positive': encode_text(triplet['positive'], self.tokenizer, self.config.max_sequence_length),
+            'negative': encode_text(triplet['negative'], self.tokenizer, self.config.max_sequence_length)
         }, triplets))
 
     def train_step(self, data):
@@ -105,14 +104,14 @@ class TripletModel:
 
     def train(self, dataset):
         total_loss = 0
-        for batch in batch_data(dataset, self.config['MINIBATCH_SIZE']):
+        for batch in batch_data(dataset, self.config.minibatch_size):
             loss = self.train_step(batch)[['loss']]
             total_loss += loss
         return total_loss / len(dataset)
 
     def evaluate(self, dataset):
         total_loss = 0
-        for batch in batch_data(dataset, self.config['MINIBATCH_SIZE']):
+        for batch in batch_data(dataset, self.config.minibatch_size):
             anchor, positive, negative = batch
             anchor_embedding = self.model(anchor, training=False)
             positive_embedding = self.model(positive, training=False)
@@ -141,7 +140,7 @@ class TripletTrainer:
         train_dataset = self.model.create_dataset(train_triplets)
         test_dataset = self.model.create_dataset(test_triplets)
         history = {'loss': [], 'val_loss': []}
-        for epoch in range(self.model.config['MAX_TRAINING_EPOCHS']):
+        for epoch in range(self.model.config.max_training_epochs):
             loss = self.model.train(train_dataset)
             val_loss = self.model.evaluate(test_dataset)
             history['loss'].append(loss)
@@ -152,7 +151,6 @@ class TripletTrainer:
         return history
 
 def plot_training_history(history):
-    import matplotlib.pyplot as plt
     plt.plot(history['loss'], label='Training Loss')
     plt.plot(history['val_loss'], label='Validation Loss')
     plt.legend()
@@ -162,7 +160,7 @@ def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
     tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
-    config = create_config()
+    config = Config()
     model = TripletModel(config, tokenizer)
     trainer = TripletTrainer(model, dataset_path, snippet_folder_path, tokenizer)
     history = trainer.train()
