@@ -20,9 +20,9 @@ class TripletDataset(Dataset):
         positive_idx = np.array([np.random.choice(np.where(self.labels == label)[0], size=1)[0] for label in anchor_labels])
         negative_idx = np.array([np.random.choice(np.where(self.labels != label)[0], size=self.num_negatives, replace=False) for label in anchor_labels])
         return {
-            'anchor_input_ids': self.samples[anchor_idx],
-            'positive_input_ids': self.samples[positive_idx],
-            'negative_input_ids': self.samples[negative_idx]
+            'anchor_input_ids': torch.tensor(self.samples[anchor_idx], dtype=torch.long),
+            'positive_input_ids': torch.tensor(self.samples[positive_idx], dtype=torch.long),
+            'negative_input_ids': torch.tensor(self.samples[negative_idx], dtype=torch.long)
         }
 
 class TripletNetwork(nn.Module):
@@ -47,6 +47,7 @@ class TripletModel:
     def train(self, dataloader, epochs):
         for epoch in range(epochs):
             total_loss = 0.0
+            self.model.train()
             for i, data in enumerate(dataloader):
                 anchor_inputs = data['anchor_input_ids'].to(self.device)
                 positive_inputs = data['positive_input_ids'].to(self.device)
@@ -66,6 +67,7 @@ class TripletModel:
 
     def evaluate(self, dataloader):
         total_loss = 0.0
+        self.model.eval()
         with torch.no_grad():
             for i, data in enumerate(dataloader):
                 anchor_inputs = data['anchor_input_ids'].to(self.device)
@@ -82,7 +84,9 @@ class TripletModel:
         print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
     def predict(self, input_ids):
-        return self.model(input_ids.to(self.device))
+        self.model.eval()
+        with torch.no_grad():
+            return self.model(input_ids.to(self.device))
 
 def main():
     np.random.seed(42)
