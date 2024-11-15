@@ -93,8 +93,8 @@ class TripletModel(tf.keras.Model):
 
     def create_dataset(self, triplets):
         dataset = tf.data.Dataset.from_tensor_slices((triplets))
-        dataset = dataset.map(self.encode_triplet)
-        return dataset.batch(self.config.minibatch_size)
+        dataset = dataset.map(self.encode_triplet, num_parallel_calls=tf.data.AUTOTUNE)
+        return dataset.batch(self.config.minibatch_size).prefetch(tf.data.AUTOTUNE)
 
     def encode_triplet(self, triplet):
         anchor = encode_text(triplet['anchor'], self.tokenizer, self.config.max_sequence_length)
@@ -123,7 +123,7 @@ class TripletTrainer:
         test_dataset = self.model.create_dataset(test_triplets)
         history = {'loss': [], 'val_loss': []}
         for epoch in range(self.model.config.max_training_epochs):
-            loss = self.model.fit(train_dataset).history['loss'][0]
+            loss = self.model.fit(train_dataset, epochs=1).history['loss'][0]
             val_loss = self.model.evaluate(test_dataset)
             history['loss'].append(loss)
             history['val_loss'].append(val_loss)
