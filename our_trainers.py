@@ -25,6 +25,18 @@ class TripletDataset(Dataset):
             'negative_input_ids': torch.tensor(self.samples[negative_idx], dtype=torch.long)
         }
 
+    def get_samples(self):
+        return self.samples
+
+    def get_labels(self):
+        return self.labels
+
+    def get_batch_size(self):
+        return self.batch_size
+
+    def get_num_negatives(self):
+        return self.num_negatives
+
 class TripletNetwork(nn.Module):
     def __init__(self, num_embeddings, embedding_dim):
         super(TripletNetwork, self).__init__()
@@ -36,6 +48,9 @@ class TripletNetwork(nn.Module):
 
     def forward(self, inputs):
         return self.model(inputs)
+
+    def get_embedding_dim(self):
+        return self.model[1].out_features
 
 class TripletModel:
     def __init__(self, num_embeddings, embedding_dim, margin, learning_rate, device):
@@ -88,6 +103,15 @@ class TripletModel:
         with torch.no_grad():
             return self.model(input_ids.to(self.device))
 
+    def get_device(self):
+        return self.device
+
+    def get_model(self):
+        return self.model
+
+    def get_optimizer(self):
+        return self.optimizer
+
 def main():
     np.random.seed(42)
     torch.manual_seed(42)
@@ -113,6 +137,15 @@ def main():
     input_ids = torch.tensor([1, 2, 3, 4, 5], dtype=torch.long)
     output = model.predict(input_ids)
     print(output)
+
+    # Example usage of new methods
+    print(dataset.get_samples())
+    print(dataset.get_labels())
+    print(dataset.get_batch_size())
+    print(dataset.get_num_negatives())
+    print(model.get_device())
+    print(model.get_model())
+    print(model.get_optimizer())
 
 if __name__ == "__main__":
     main()
