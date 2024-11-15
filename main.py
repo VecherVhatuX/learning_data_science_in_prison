@@ -61,6 +61,8 @@ class Dataset:
         self.data_args = data_args
         self.dataset = self._prepare_data(dataset)
         self.use_triplet = use_triplet
+        self.indices = np.arange(len(self.dataset["input_ids"]))
+        np.random.shuffle(self.indices)
 
     def _prepare_data(self, data):
         chat_template = self.data_args.chat_template if self.data_args.chat_template != "none" else ""
@@ -74,11 +76,15 @@ class Dataset:
         return len(self.dataset["input_ids"])
 
     def __getitem__(self, idx):
+        idx = self.indices[idx]
         if self.use_triplet:
             positive_labels = self.dataset["labels"][idx]
             negative_labels = np.random.choice(self.dataset["labels"], 1, replace=False)[0]
             return {"input_ids": self.dataset["input_ids"][idx], "positive_labels": positive_labels, "negative_labels": negative_labels}
         return {"input_ids": self.dataset["input_ids"][idx], "labels": self.dataset["labels"][idx]}
+
+    def on_epoch_end(self):
+        np.random.shuffle(self.indices)
 
     @staticmethod
     def load_json_file(file_name):
@@ -124,23 +130,22 @@ class T5Model(nn.Module):
             for batch in data_loader:
                 loss = self.train_step(batch, loss_fn, optimizer)
             print(f"Epoch {epoch+1}, Loss: {loss}")
+            data_loader.on_epoch_end()
 
 def run_pipeline(model_args, data_args, training_args):
     train_dataset, _ = Dataset.prepare(data_args, model_args.use_triplet_loss_trainer)
-    data_loader = keras.preprocessing.sequence.TimeseriesGenerator(train_dataset, batch_size=training_args.per_device_train_batch_size, shuffle=True)
     model = T5Model()
     loss_fn = model.get_loss_fn(model_args.use_triplet_loss_trainer)
     optimizer = jax.experimental.optimizers.adam(0.001)
-    model.train(data_loader, training_args.num_train_epochs, loss_fn, optimizer)
+    model.train(train_dataset, training_args.num_train_epochs, loss_fn, optimizer)
 
 def resume_pipeline(model_args, data_args, training_args, checkpoint_path):
     train_dataset, _ = Dataset.prepare(data_args, model_args.use_triplet_loss_trainer)
-    data_loader = keras.preprocessing.sequence.TimeseriesGenerator(train_dataset, batch_size=training_args.per_device_train_batch_size, shuffle=True)
     model = T5Model()
     model.load_state_dict(checkpoint_path)
     loss_fn = model.get_loss_fn(model_args.use_triplet_loss_trainer)
     optimizer = jax.experimental.optimizers.adam(0.001)
-    model.train(data_loader, training_args.num_train_epochs, loss_fn, optimizer)
+    model.train(train_dataset, training_args.num_train_epochs, loss_fn, optimizer)
 
 if __name__ == "__main__":
     model_args = ModelConfig(model_identifier="t5-base", chat_template="none", use_triplet_loss_trainer=True)
