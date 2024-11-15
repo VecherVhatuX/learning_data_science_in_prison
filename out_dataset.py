@@ -7,6 +7,7 @@ from transformers import AutoTokenizer
 import numpy as np
 import matplotlib.pyplot as plt
 
+# Constants
 class Config:
     INSTANCE_ID_KEY = 'instance_id'
     MAX_SEQUENCE_LENGTH = 512
@@ -18,8 +19,8 @@ class Config:
     LEARNING_RATE_VALUE = 1e-5
     MAX_TRAINING_EPOCHS = 5
 
+# Model
 class TripletModel(tf.keras.Model):
-    """Model for learning triplet-based embeddings"""
     def __init__(self, tokenizer):
         super(TripletModel, self).__init__()
         self.tokenizer = tokenizer
@@ -30,7 +31,6 @@ class TripletModel(tf.keras.Model):
         self.optimizer = tf.keras.optimizers.Adam(learning_rate=Config.LEARNING_RATE_VALUE)
 
     def encode_text(self, inputs):
-        """Encode text inputs using the tokenizer"""
         encoding = self.tokenizer.encode_plus(
             inputs, 
             max_length=Config.MAX_SEQUENCE_LENGTH, 
@@ -42,7 +42,6 @@ class TripletModel(tf.keras.Model):
         return encoding['input_ids'][:, 0, :]
 
     def call(self, x):
-        """Forward pass through the model"""
         x = self.embedding_layer(x)
         x = self.dropout_layer1(x)
         x = self.fully_connected_layer(x)
@@ -50,11 +49,9 @@ class TripletModel(tf.keras.Model):
         return x
 
     def triplet_loss(self, anchor, positive, negative):
-        """Compute the triplet loss"""
         return tf.reduce_mean(tf.maximum(tf.norm(anchor - positive, axis=1) - tf.norm(anchor - negative, axis=1) + 1.0, 0.0))
 
     def train_step(self, data):
-        """Perform a training step"""
         anchor, positive, negative = data
         with tf.GradientTape() as tape:
             anchor_embedding = self(anchor, training=True)
@@ -65,8 +62,8 @@ class TripletModel(tf.keras.Model):
         self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
         return {"loss": loss}
 
+# Dataset
 class TripletDataset:
-    """Dataset for triplet-based learning"""
     def __init__(self, triplets, tokenizer):
         self.triplets = triplets
         self.tokenizer = tokenizer
@@ -77,7 +74,6 @@ class TripletDataset:
         return len(self.triplets)
 
     def __getitem__(self, index):
-        """Get a single triplet"""
         triplet = self.triplets[index]
         anchor_encoding = self.tokenizer.encode_plus(
             triplet['anchor'],
@@ -110,11 +106,9 @@ class TripletDataset:
         }
 
     def shuffle_data(self):
-        """Shuffle the data"""
         random.shuffle(self.indices)
 
     def batch_data(self):
-        """Create batches of data"""
         self.shuffle_data()
         for i in range(0, len(self), self.minibatch_size):
             batch_indices = self.indices[i:i + self.minibatch_size]
@@ -124,8 +118,8 @@ class TripletDataset:
             negatives = np.stack([item['negative'] for item in batch])
             yield tf.data.Dataset.from_tensor_slices((anchors, positives, negatives)).batch(self.minibatch_size)
 
+# Data Loader
 def load_json_data(file_path):
-    """Load JSON data from a file"""
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             return json.load(f)
@@ -134,20 +128,17 @@ def load_json_data(file_path):
         return []
 
 def separate_code_snippets(snippets):
-    """Separate code snippets into bug and non-bug snippets"""
     return (
         [item['snippet'] for item in snippets if item.get('is_bug', False) and item.get('snippet')],
         [item['snippet'] for item in snippets if not item.get('is_bug', False) and item.get('snippet')]
     )
 
 def create_triplets(problem_statement, positive_snippets, negative_snippets, num_negatives_per_positive):
-    """Create triplets for training"""
     return [{'anchor': problem_statement, 'positive': positive_doc, 'negative': random.choice(negative_snippets)}
             for positive_doc in positive_snippets
             for _ in range(min(num_negatives_per_positive, len(negative_snippets)))]
 
 def create_triplet_dataset(dataset_path, snippet_folder_path):
-    """Create a dataset of triplets"""
     dataset = np.load(dataset_path, allow_pickle=True)
     instance_id_map = {item['instance_id']: item['problem_statement'] for item in dataset}
     folder_paths = [os.path.join(snippet_folder_path, f) for f in os.listdir(snippet_folder_path) if os.path.isdir(os.path.join(snippet_folder_path, f))]
@@ -159,7 +150,6 @@ def create_triplet_dataset(dataset_path, snippet_folder_path):
     return [item for sublist in triplets for item in sublist]
 
 def load_data(dataset_path, snippet_folder_path, tokenizer):
-    """Load data for training and testing"""
     triplets = create_triplet_dataset(dataset_path, snippet_folder_path)
     random.shuffle(triplets)
     train_triplets, test_triplets = triplets[:int(0.8 * len(triplets))], triplets[int(0.8 * len(triplets)):]
@@ -167,8 +157,8 @@ def load_data(dataset_path, snippet_folder_path, tokenizer):
     test_dataset = TripletDataset(test_triplets, tokenizer)
     return train_dataset, test_dataset
 
+# Model Trainer
 def train_model(model, dataset):
-    """Train the model"""
     total_loss = 0
     for batch in dataset.batch_data():
         loss = model.train_step(batch)
@@ -176,7 +166,6 @@ def train_model(model, dataset):
     return total_loss / len(dataset)
 
 def evaluate_model(model, dataset):
-    """Evaluate the model"""
     total_loss = 0
     for batch in dataset.batch_data():
         anchor, positive, negative = batch
@@ -187,23 +176,23 @@ def evaluate_model(model, dataset):
         total_loss += loss
     return total_loss / len(dataset)
 
+# Model Saver
 def save_model_weights(model, path):
-    """Save the model weights"""
     model.save_weights(path)
 
 def load_model_weights(path, tokenizer):
-    """Load the model weights"""
     model = TripletModel(tokenizer)
     model.load_weights(path)
     return model
 
+# Plotter
 def plot_training_history(history):
-    """Plot the training history"""
     plt.plot(history['loss'], label='Training Loss')
     plt.plot(history['val_loss'], label='Validation Loss')
     plt.legend()
     plt.show()
 
+# Main
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
