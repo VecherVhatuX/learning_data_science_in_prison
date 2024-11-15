@@ -2,15 +2,17 @@ import os
 import json
 from dataclasses import dataclass
 from typing import Dict
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torch.utils.data as data
-from torch.utils.data import Dataset, DataLoader
-import torchvision
-from torchvision import transforms
-from torchvision.utils import make_grid
-import torchvision.transforms.functional as TF
+import jax
+import jax.numpy as jnp
+from jax.experimental import jax2tf
+from jax.experimental.jax2tf import lower
+from flax import linen as nn
+from flax.training import train_state
+from flax.core import FrozenDict
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+from tensorflow.keras import backend as K
 import numpy as np
 
 # Model configuration
@@ -75,7 +77,7 @@ def prepare_dataset(data_args):
     return load_and_prepare_data("train.json"), load_and_prepare_data("test.json")
 
 # Define dataset class
-class Dataset(Dataset):
+class Dataset:
     def __init__(self, dataset, use_triplet):
         self.dataset = dataset
         self.use_triplet = use_triplet
@@ -100,16 +102,11 @@ def get_loss_fn(use_triplet):
 
 # Define model
 class T5Model(nn.Module):
-    def __init__(self):
-        super(T5Model, self).__init__()
-        self.fc1 = nn.Linear(128, 128)
-        self.fc2 = nn.Linear(128, 128)
-        self.fc3 = nn.Linear(128, 1000)
-
-    def forward(self, x):
-        x = torch.relu(self.fc1(x))
-        x = torch.relu(self.fc2(x))
-        x = self.fc3(x)
+    @nn.compact
+    def __call__(self, x):
+        x = nn.relu(nn.Dense(128)(x))
+        x = nn.relu(nn.Dense(128)(x))
+        x = nn.Dense(1000)(x)
         return x
 
 # Train model
@@ -117,41 +114,40 @@ def train_model(model, data_loader, num_epochs, loss_fn, optimizer):
     for epoch in range(num_epochs):
         for batch in data_loader:
             loss = train_step(model, batch, loss_fn, optimizer)
-        print(f"Epoch {epoch+1}, Loss: {loss.item()}")
+        print(f"Epoch {epoch+1}, Loss: {loss}")
 
 # Train step
 def train_step(model, batch, loss_fn, optimizer):
     if "positive_labels" in batch:
-        outputs = model(torch.tensor(batch["input_ids"]))
-        loss = loss_fn(outputs, torch.tensor(batch["positive_labels"]), torch.tensor(batch["negative_labels"]))
+        outputs = model(batch["input_ids"])
+        loss = loss_fn(outputs, batch["positive_labels"], batch["negative_labels"])
     else:
-        labels = torch.tensor(batch["labels"])
-        outputs = model(torch.tensor(batch["input_ids"]))
+        labels = batch["labels"]
+        outputs = model(batch["input_ids"])
         loss = loss_fn(outputs, labels)
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
+    grads = jax.grad(loss, model)
+    optimizer = optimizer.apply_gradient(optimizer, grads, model)
     return loss
 
 # Run pipeline
 def run_pipeline(model_args, data_args, training_args):
     train_data, _ = prepare_dataset(data_args)
     dataset = Dataset(train_data, model_args.use_triplet_loss_trainer)
-    data_loader = DataLoader(dataset, batch_size=training_args.per_device_train_batch_size, shuffle=True)
+    data_loader = keras.preprocessing.sequence.TimeseriesGenerator(dataset, batch_size=training_args.per_device_train_batch_size, shuffle=True)
     loss_fn = get_loss_fn(model_args.use_triplet_loss_trainer)
     model = T5Model()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = jax.experimental.optimizers.adam(0.001)
     train_model(model, data_loader, training_args.num_train_epochs, loss_fn, optimizer)
 
 # Resume pipeline
 def resume_pipeline(model_args, data_args, training_args, checkpoint_path):
     train_data, _ = prepare_dataset(data_args)
     dataset = Dataset(train_data, model_args.use_triplet_loss_trainer)
-    data_loader = DataLoader(dataset, batch_size=training_args.per_device_train_batch_size, shuffle=True)
+    data_loader = keras.preprocessing.sequence.TimeseriesGenerator(dataset, batch_size=training_args.per_device_train_batch_size, shuffle=True)
     model = T5Model()
-    model.load_state_dict(torch.load(checkpoint_path))
+    model.load_state_dict(checkpoint_path)
     loss_fn = get_loss_fn(model_args.use_triplet_loss_trainer)
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = jax.experimental.optimizers.adam(0.001)
     train_model(model, data_loader, training_args.num_train_epochs, loss_fn, optimizer)
 
 if __name__ == "__main__":
