@@ -74,6 +74,7 @@ class TripletDataset:
         self.triplets = triplets
         self.tokenizer = tokenizer
         self.batch_size = Config.BATCH_SIZE
+        self.indices = list(range(len(self.triplets)))
 
     def __len__(self):
         return len(self.triplets)
@@ -111,23 +112,17 @@ class TripletDataset:
         }
 
     def shuffle(self):
-        random.shuffle(self.triplets)
+        random.shuffle(self.indices)
 
     def batch(self):
+        self.shuffle()
         for i in range(0, len(self), self.batch_size):
-            batch = self.triplets[i:i + self.batch_size]
-            yield self._create_batch(batch)
-
-    def _create_batch(self, batch):
-        anchors = []
-        positives = []
-        negatives = []
-        for item in batch:
-            encoding = self.__getitem__(self.triplets.index(item))
-            anchors.append(encoding['anchor'])
-            positives.append(encoding['positive'])
-            negatives.append(encoding['negative'])
-        return np.stack(anchors), np.stack(positives), np.stack(negatives)
+            batch_indices = self.indices[i:i + self.batch_size]
+            batch = [self.__getitem__(index) for index in batch_indices]
+            anchors = np.stack([item['anchor'] for item in batch])
+            positives = np.stack([item['positive'] for item in batch])
+            negatives = np.stack([item['negative'] for item in batch])
+            yield anchors, positives, negatives
 
 def load_json_file(file_path):
     try:
@@ -210,7 +205,6 @@ def main():
     model_path = 'triplet_model.npy'
     history = {'loss': [], 'val_loss': []}
     for epoch in range(Config.MAX_EPOCHS):
-        train_dataset.shuffle()
         loss = train(model, train_dataset)
         val_loss = evaluate(model, test_dataset)
         history['loss'].append(loss)
