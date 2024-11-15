@@ -1,14 +1,11 @@
 import os
 import random
 import json
-import jax
-import jax.numpy as jnp
-from jax.experimental import stax
-from jax.experimental import optimizers
+import tensorflow as tf
+from tensorflow.keras import layers
 from transformers import AutoTokenizer
-from typing import List, Tuple
-import matplotlib.pyplot as plt
 import numpy as np
+import matplotlib.pyplot as plt
 
 class Config:
     INSTANCE_ID_FIELD = 'instance_id'
@@ -21,29 +18,15 @@ class Config:
     LEARNING_RATE = 1e-5
     MAX_EPOCHS = 5
 
-class TripletModel:
-    def __init__(self, rng: jax.random.PRNGKey, tokenizer: AutoTokenizer):
+class TripletModel(tf.keras.Model):
+    def __init__(self, tokenizer):
+        super(TripletModel, self).__init__()
         self.tokenizer = tokenizer
-        self.optimizer_init, self.optimizer_update, self.optimizer_get_params = optimizers.adam(Config.LEARNING_RATE)
-        self.params = None
-        self.optimizer_state = None
-        self.model_init, self.model_apply = self._create_model(rng)
-
-    def _create_model(self, rng):
-        init_fn, apply_fn = stax.serial(
-            stax.Dense(Config.EMBEDDING_DIM, W_init=jax.nn.initializers.zeros),
-            stax.Relu(),
-            stax.Dropout(Config.DROPOUT),
-            stax.Dense(Config.FC_DIM, W_init=jax.nn.initializers.zeros),
-            stax.Relu(),
-            stax.Dropout(Config.DROPOUT)
-        )
-        return init_fn, apply_fn
-
-    def init(self, rng, input_shape):
-        output_shape, self.params = self.model_init(rng, input_shape)
-        self.optimizer_state = self.optimizer_init(self.params)
-        return output_shape
+        self.embedding = layers.Dense(Config.EMBEDDING_DIM, activation='relu')
+        self.dropout1 = layers.Dropout(Config.DROPOUT)
+        self.fc = layers.Dense(Config.FC_DIM, activation='relu')
+        self.dropout2 = layers.Dropout(Config.DROPOUT)
+        self.optimizer = tf.keras.optimizers.Adam(learning_rate=Config.LEARNING_RATE)
 
     def encode(self, inputs):
         encoding = self.tokenizer.encode_plus(
@@ -52,22 +35,30 @@ class TripletModel:
             padding='max_length', 
             truncation=True, 
             return_attention_mask=True, 
-            return_tensors='jax'
+            return_tensors='tf'
         )
         return encoding['input_ids'][:, 0, :]
 
-    def forward(self, anchor, positive, negative):
-        anchor_embedding = self.model_apply(self.params, self.encode(anchor))
-        positive_embedding = self.model_apply(self.params, self.encode(positive))
-        negative_embedding = self.model_apply(self.params, self.encode(negative))
-        return anchor_embedding, positive_embedding, negative_embedding
+    def call(self, x):
+        x = self.embedding(x)
+        x = self.dropout1(x)
+        x = self.fc(x)
+        x = self.dropout2(x)
+        return x
 
     def loss(self, anchor, positive, negative):
-        return jnp.mean(jnp.clip(jnp.linalg.norm(anchor - positive, axis=1) - jnp.linalg.norm(anchor - negative, axis=1) + 1.0, a_min=0.0))
+        return tf.reduce_mean(tf.maximum(tf.norm(anchor - positive, axis=1) - tf.norm(anchor - negative, axis=1) + 1.0, 0.0))
 
-    def update(self, grads):
-        self.optimizer_state = self.optimizer_update(0, grads, self.optimizer_state)
-        self.params = self.optimizer_get_params(self.optimizer_state)
+    def train_step(self, data):
+        anchor, positive, negative = data
+        with tf.GradientTape() as tape:
+            anchor_embedding = self(anchor, training=True)
+            positive_embedding = self(positive, training=True)
+            negative_embedding = self(negative, training=True)
+            loss = self.loss(anchor_embedding, positive_embedding, negative_embedding)
+        gradients = tape.gradient(loss, self.trainable_variables)
+        self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+        return {"loss": loss}
 
 class TripletDataset:
     def __init__(self, triplets, tokenizer):
@@ -87,7 +78,7 @@ class TripletDataset:
             padding='max_length',
             truncation=True,
             return_attention_mask=True,
-            return_tensors='jax'
+            return_tensors='tf'
         )
         positive_encoding = self.tokenizer.encode_plus(
             triplet['positive'],
@@ -95,7 +86,7 @@ class TripletDataset:
             padding='max_length',
             truncation=True,
             return_attention_mask=True,
-            return_tensors='jax'
+            return_tensors='tf'
         )
         negative_encoding = self.tokenizer.encode_plus(
             triplet['negative'],
@@ -103,7 +94,7 @@ class TripletDataset:
             padding='max_length',
             truncation=True,
             return_attention_mask=True,
-            return_tensors='jax'
+            return_tensors='tf'
         )
         return {
             'anchor': anchor_encoding['input_ids'][:, 0, :],
@@ -122,7 +113,7 @@ class TripletDataset:
             anchors = np.stack([item['anchor'] for item in batch])
             positives = np.stack([item['positive'] for item in batch])
             negatives = np.stack([item['negative'] for item in batch])
-            yield jnp.array(anchors), jnp.array(positives), jnp.array(negatives)
+            yield tf.data.Dataset.from_tensor_slices((anchors, positives, negatives)).batch(self.batch_size)
 
 def load_json_file(file_path):
     try:
@@ -165,28 +156,27 @@ def load_data(dataset_path, snippet_folder_path, tokenizer):
 def train(model, dataset):
     total_loss = 0
     for batch in dataset.batch():
-        anchor, positive, negative = batch
-        anchor_embedding, positive_embedding, negative_embedding = model.forward(anchor, positive, negative)
-        loss = model.loss(anchor_embedding, positive_embedding, negative_embedding)
-        grads = jax.grad(lambda params: model.loss(model.model_apply(params, anchor), model.model_apply(params, positive), model.model_apply(params, negative)))(model.params)
-        model.update(grads)
-        total_loss += loss
+        loss = model.train_step(batch)
+        total_loss += loss['loss']
     return total_loss / len(dataset)
 
 def evaluate(model, dataset):
     total_loss = 0
     for batch in dataset.batch():
         anchor, positive, negative = batch
-        anchor_embedding, positive_embedding, negative_embedding = model.forward(anchor, positive, negative)
-        total_loss += model.loss(anchor_embedding, positive_embedding, negative_embedding)
+        anchor_embedding = model(anchor, training=False)
+        positive_embedding = model(positive, training=False)
+        negative_embedding = model(negative, training=False)
+        loss = model.loss(anchor_embedding, positive_embedding, negative_embedding)
+        total_loss += loss
     return total_loss / len(dataset)
 
 def save_model(model, path):
-    np.save(path, model.params)
+    model.save_weights(path)
 
 def load_model(path, tokenizer):
-    model = TripletModel(jax.random.PRNGKey(0), tokenizer)
-    model.params = np.load(path)
+    model = TripletModel(tokenizer)
+    model.load_weights(path)
     return model
 
 def plot_history(history):
@@ -200,9 +190,8 @@ def main():
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
     tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
     train_dataset, test_dataset = load_data(dataset_path, snippet_folder_path, tokenizer)
-    model = TripletModel(jax.random.PRNGKey(0), tokenizer)
-    model.init(jax.random.PRNGKey(0), (-1, Config.MAX_LENGTH))
-    model_path = 'triplet_model.npy'
+    model = TripletModel(tokenizer)
+    model_path = 'triplet_model.h5'
     history = {'loss': [], 'val_loss': []}
     for epoch in range(Config.MAX_EPOCHS):
         loss = train(model, train_dataset)
