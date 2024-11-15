@@ -77,12 +77,14 @@ class TripletModel:
         self.config = config
         self.tokenizer = tokenizer
         self.model = tf.keras.models.Sequential([
+            layers.Embedding(input_dim=1000, output_dim=config.embedding_size, input_length=config.max_sequence_length),
+            layers.GlobalAveragePooling1D(),
             layers.Dense(config.embedding_size, activation='relu', name='embedding_layer'),
             layers.Dropout(config.dropout_rate, name='dropout_layer_1'),
             layers.Dense(config.fully_connected_size, activation='relu', name='fully_connected_layer'),
             layers.Dropout(config.dropout_rate, name='dropout_layer_2')
         ])
-        self.model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=config.learning_rate_value))
+        self.model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=config.learning_rate_value), loss=triplet_loss)
 
     def create_dataset(self, triplets):
         return list(map(lambda triplet: {
@@ -105,14 +107,14 @@ class TripletModel:
     def train(self, dataset):
         total_loss = 0
         for batch in batch_data(dataset, self.config.minibatch_size):
-            loss = self.train_step(batch)[['loss']]
-            total_loss += loss
+            loss = self.train_step(next(iter(batch)))
+            total_loss += loss['loss']
         return total_loss / len(dataset)
 
     def evaluate(self, dataset):
         total_loss = 0
         for batch in batch_data(dataset, self.config.minibatch_size):
-            anchor, positive, negative = batch
+            anchor, positive, negative = next(iter(batch))
             anchor_embedding = self.model(anchor, training=False)
             positive_embedding = self.model(positive, training=False)
             negative_embedding = self.model(negative, training=False)
