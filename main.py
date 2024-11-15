@@ -11,7 +11,6 @@ from tensorflow.keras import layers
 import numpy as np
 import optax
 
-
 @dataclass
 class ModelConfig:
     model_identifier: str = "t5-base"
@@ -62,55 +61,82 @@ def load_json_file(file_name):
         return json.load(f)
 
 
-class FileLoader:
-    @staticmethod
-    def load_json_file(file_name):
-        with open(file_name, 'r') as f:
-            return json.load(f)
+def prepare_data(data_args, chat_template, data):
+    return {
+        "input_ids": [f"{chat_template} {example['input']}" for example in data],
+        "labels": [f"{chat_template} {example['output']}" for example in data],
+        "attention_mask": [1] * len(data)
+    }
 
 
-class DataPreparator:
-    @staticmethod
-    def prepare_data(data_args, chat_template):
-        def _prepare_data(data):
-            return {
-                "input_ids": [f"{chat_template} {example['input']}" for example in data],
-                "labels": [f"{chat_template} {example['output']}" for example in data],
-                "attention_mask": [1] * len(data)
-            }
-        return _prepare_data
+def prepare_triplet_data(data_args, chat_template, data, indices, use_triplet):
+    def _prepare_triplet_data(idx):
+        if use_triplet:
+            positive_labels = data["labels"][indices[idx]]
+            negative_labels_idx = np.random.randint(0, len(data["labels"]))
+            while negative_labels_idx == indices[idx]:
+                negative_labels_idx = np.random.randint(0, len(data["labels"]))
+            negative_labels = data["labels"][negative_labels_idx]
+            return {"input_ids": data["input_ids"][indices[idx]], "positive_labels": positive_labels, "negative_labels": negative_labels}
+        return {"input_ids": data["input_ids"][indices[idx]], "labels": data["labels"][indices[idx]]}
+    return _prepare_triplet_data
 
 
-class Dataset:
-    def __init__(self, data_args, use_triplet):
-        self.data_args = data_args
-        self.use_triplet = use_triplet
-        self.chat_template = data_args.chat_template if data_args.chat_template != "none" else ""
-        self.prepare_data_fn = DataPreparator.prepare_data(data_args, self.chat_template)
-        self.train_data = FileLoader.load_json_file("train.json")
-        self.test_data = FileLoader.load_json_file("test.json")
-        self.train_dataset = self.prepare_data_fn(self.train_data)
-        self.test_dataset = self.prepare_data_fn(self.test_data)
-        self.indices = list(range(len(self.train_dataset["input_ids"])))
+def create_train_state(rng, model, learning_rate):
+    params = model.init(rng, jnp.ones((1, 128)))
+    tx = optax.adam(learning_rate)
+    return train_state.TrainState.create(
+        apply_fn=model.apply,
+        params=params['params'],
+        tx=tx,
+    )
+
+
+def calculate_loss(params, batch, use_triplet):
+    model = Model()
+    if use_triplet:
+        outputs = model.apply({'params': params}, batch["input_ids"])
+        loss = (outputs - batch["positive_labels"])**2 - (outputs - batch["negative_labels"])**2
+    else:
+        labels = batch["labels"]
+        inputs = batch["input_ids"]
+        outputs = model.apply({'params': params}, inputs)
+        loss = (outputs - labels)**2
+    return jnp.mean(loss)
+
+
+def execute_train_step(state, batch, use_triplet):
+    grads = jax.grad(calculate_loss, argnums=0)(state.params, batch, use_triplet)
+    state = state.apply_gradients(grads=grads)
+    return state
+
+
+def run_pipeline(model_args, data_args, training_args):
+    train_data = load_json_file("train.json")
+    test_data = load_json_file("test.json")
+    chat_template = data_args.chat_template if data_args.chat_template != "none" else ""
+    train_dataset = prepare_data(data_args, chat_template, train_data)
+    test_dataset = prepare_data(data_args, chat_template, test_data)
+    indices = list(range(len(train_dataset["input_ids"])))
+    np.random.seed(42)
+    indices = np.random.permutation(indices)
+    data_loader = tf.data.Dataset.from_tensor_slices(indices).map(prepare_triplet_data(data_args, chat_template, train_dataset, indices, model_args.use_triplet_loss_trainer)).batch(training_args.per_device_train_batch_size)
+    model = Model()
+    rng = jax.random.PRNGKey(42)
+    state = create_train_state(rng, model, 0.001)
+    for epoch in range(training_args.num_train_epochs):
+        for batch in data_loader:
+            state = execute_train_step(state, batch, model_args.use_triplet_loss_trainer)
         np.random.seed(42)
-        self.indices = np.random.permutation(self.indices)
+        indices = np.random.permutation(indices)
+        print(f"Epoch {epoch+1}")
 
-    def __getitem__(self, idx):
-        if self.use_triplet:
-            positive_labels = self.train_dataset["labels"][self.indices[idx]]
-            negative_labels_idx = np.random.randint(0, len(self.train_dataset["labels"]))
-            while negative_labels_idx == self.indices[idx]:
-                negative_labels_idx = np.random.randint(0, len(self.train_dataset["labels"]))
-            negative_labels = self.train_dataset["labels"][negative_labels_idx]
-            return {"input_ids": self.train_dataset["input_ids"][self.indices[idx]], "positive_labels": positive_labels, "negative_labels": negative_labels}
-        return {"input_ids": self.train_dataset["input_ids"][self.indices[idx]], "labels": self.train_dataset["labels"][self.indices[idx]]}
 
-    def on_epoch_end(self):
-        np.random.seed(42)
-        self.indices = np.random.permutation(self.indices)
-
-    def __len__(self):
-        return len(self.train_dataset["input_ids"])
+if __name__ == "__main__":
+    model_args = ModelConfig(model_identifier="t5-base", chat_template="none", use_triplet_loss_trainer=True)
+    data_args = TrainingDataConfig(dataset_name="timdettmers/openassistant-guanaco")
+    training_args = TrainingConfig(output_dir="./results", num_train_epochs=3, per_device_train_batch_size=16)
+    run_pipeline(model_args, data_args, training_args)
 
 
 class Model(nn.Module):
@@ -120,70 +146,3 @@ class Model(nn.Module):
         x = nn.relu(nn.Dense(128)(x))
         x = nn.Dense(1000)(x)
         return x
-
-
-class TrainStateCreator:
-    @staticmethod
-    def create_train_state(rng, model, learning_rate):
-        params = model.init(rng, jnp.ones((1, 128)))
-        tx = optax.adam(learning_rate)
-        state = train_state.TrainState.create(
-            apply_fn=model.apply,
-            params=params['params'],
-            tx=tx,
-        )
-        return state
-
-
-class LossCalculator:
-    @staticmethod
-    def calculate_loss(params, batch, use_triplet):
-        model = Model()
-        if use_triplet:
-            outputs = model.apply({'params': params}, batch["input_ids"])
-            loss = (outputs - batch["positive_labels"])**2 - (outputs - batch["negative_labels"])**2
-        else:
-            labels = batch["labels"]
-            inputs = batch["input_ids"]
-            outputs = model.apply({'params': params}, inputs)
-            loss = (outputs - labels)**2
-        return jnp.mean(loss)
-
-
-class TrainStepExecutor:
-    @staticmethod
-    def execute_train_step(state, batch, use_triplet):
-        grads = jax.grad(LossCalculator.calculate_loss, argnums=0)(state.params, batch, use_triplet)
-        state = state.apply_gradients(grads=grads)
-        return state
-
-
-class Trainer:
-    @staticmethod
-    def train(data_loader, num_epochs, state, use_triplet):
-        for epoch in range(num_epochs):
-            for batch in data_loader:
-                state = TrainStepExecutor.execute_train_step(state, batch, use_triplet)
-            print(f"Epoch {epoch+1}")
-
-
-class PipelineRunner:
-    @staticmethod
-    def run_pipeline(model_args, data_args, training_args):
-        dataset = Dataset(data_args, model_args.use_triplet_loss_trainer)
-        data_loader = tf.data.Dataset.from_tensor_slices(list(range(len(dataset)))).map(lambda x: dataset[x]).batch(training_args.per_device_train_batch_size)
-        model = Model()
-        rng = jax.random.PRNGKey(42)
-        state = TrainStateCreator.create_train_state(rng, model, 0.001)
-        for epoch in range(training_args.num_train_epochs):
-            for batch in data_loader:
-                state = TrainStepExecutor.execute_train_step(state, batch, model_args.use_triplet_loss_trainer)
-            dataset.on_epoch_end()
-            print(f"Epoch {epoch+1}")
-
-
-if __name__ == "__main__":
-    model_args = ModelConfig(model_identifier="t5-base", chat_template="none", use_triplet_loss_trainer=True)
-    data_args = TrainingDataConfig(dataset_name="timdettmers/openassistant-guanaco")
-    training_args = TrainingConfig(output_dir="./results", num_train_epochs=3, per_device_train_batch_size=16)
-    PipelineRunner.run_pipeline(model_args, data_args, training_args)
