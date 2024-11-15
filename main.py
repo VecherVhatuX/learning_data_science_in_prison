@@ -121,6 +121,44 @@ def execute_train_step(state, batch, use_triplet):
     return state
 
 
+class Model(nn.Module):
+    """Model class."""
+    @nn.compact
+    def __call__(self, x):
+        """Calls the model."""
+        x = nn.relu(nn.Dense(128)(x))
+        x = nn.relu(nn.Dense(128)(x))
+        x = nn.Dense(1000)(x)
+        return x
+
+
+def train_epoch(model, state, dataset, use_triplet):
+    """Trains the model for an epoch."""
+    for batch in dataset:
+        state = execute_train_step(state, batch, use_triplet)
+    return state
+
+
+def run_pipeline(model_args, data_args, training_args):
+    """Runs the pipeline."""
+    train_data = load_json_file("train.json")
+    test_data = load_json_file("test.json")
+    chat_template = data_args.chat_template if data_args.chat_template != "none" else ""
+    train_dataset = prepare_data(data_args, chat_template, train_data)
+    test_dataset = prepare_data(data_args, chat_template, test_data)
+    
+    train_dataset = Dataset(train_dataset, training_args.per_device_train_batch_size, model_args.use_triplet_loss_trainer)
+    test_dataset = Dataset(test_dataset, training_args.per_device_eval_batch_size, model_args.use_triplet_loss_trainer)
+
+    model = Model()
+    rng = jax.random.PRNGKey(42)
+    state = create_train_state(rng, model, 0.001)
+
+    for epoch in range(training_args.num_train_epochs):
+        state = train_epoch(model, state, train_dataset.get_triplet_data() if model_args.use_triplet_loss_trainer else train_dataset.get_data(), model_args.use_triplet_loss_trainer)
+        print(f"Epoch {epoch+1}")
+
+
 class Dataset:
     """Dataset class."""
     def __init__(self, data, batch_size, use_triplet):
@@ -129,7 +167,6 @@ class Dataset:
         self.batch_size = batch_size
         self.use_triplet = use_triplet
         self.indices = list(range(len(self.data["input_ids"])))
-        self.shuffle()
 
     def shuffle(self):
         """Shuffles the dataset."""
@@ -161,41 +198,12 @@ class Dataset:
             yield batch_data
 
 
-def run_pipeline(model_args, data_args, training_args):
-    """Runs the pipeline."""
-    train_data = load_json_file("train.json")
-    test_data = load_json_file("test.json")
-    chat_template = data_args.chat_template if data_args.chat_template != "none" else ""
-    train_dataset = prepare_data(data_args, chat_template, train_data)
-    test_dataset = prepare_data(data_args, chat_template, test_data)
-    
-    train_dataset = Dataset(train_dataset, training_args.per_device_train_batch_size, model_args.use_triplet_loss_trainer)
-    test_dataset = Dataset(test_dataset, training_args.per_device_eval_batch_size, model_args.use_triplet_loss_trainer)
-
-    model = Model()
-    rng = jax.random.PRNGKey(42)
-    state = create_train_state(rng, model, 0.001)
-
-    for epoch in range(training_args.num_train_epochs):
-        train_dataset.shuffle()
-        for batch in train_dataset.get_triplet_data() if model_args.use_triplet_loss_trainer else train_dataset.get_data():
-            state = execute_train_step(state, batch, model_args.use_triplet_loss_trainer)
-        print(f"Epoch {epoch+1}")
-
-
-if __name__ == "__main__":
+def main():
     model_args = ModelConfig(model_identifier="t5-base", chat_template="none", use_triplet_loss_trainer=True)
     data_args = TrainingDataConfig(dataset_name="timdettmers/openassistant-guanaco")
     training_args = TrainingConfig(output_dir="./results", num_train_epochs=3, per_device_train_batch_size=16)
     run_pipeline(model_args, data_args, training_args)
 
 
-class Model(nn.Module):
-    """Model class."""
-    @nn.compact
-    def __call__(self, x):
-        """Calls the model."""
-        x = nn.relu(nn.Dense(128)(x))
-        x = nn.relu(nn.Dense(128)(x))
-        x = nn.Dense(1000)(x)
-        return x
+if __name__ == "__main__":
+    main()
