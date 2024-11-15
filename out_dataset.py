@@ -122,7 +122,7 @@ class TripletDataset:
             anchors = np.stack([item['anchor'] for item in batch])
             positives = np.stack([item['positive'] for item in batch])
             negatives = np.stack([item['negative'] for item in batch])
-            yield anchors, positives, negatives
+            yield jnp.array(anchors), jnp.array(positives), jnp.array(negatives)
 
 def load_json_file(file_path):
     try:
@@ -201,7 +201,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
     train_dataset, test_dataset = load_data(dataset_path, snippet_folder_path, tokenizer)
     model = TripletModel(jax.random.PRNGKey(0), tokenizer)
-    model.init(jax.random.PRNGKey(0), (-1, 768))
+    model.init(jax.random.PRNGKey(0), (-1, Config.MAX_LENGTH))
     model_path = 'triplet_model.npy'
     history = {'loss': [], 'val_loss': []}
     for epoch in range(Config.MAX_EPOCHS):
