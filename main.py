@@ -15,7 +15,6 @@ from tensorflow.keras import layers
 from tensorflow.keras import backend as K
 import numpy as np
 
-# Model configuration
 @dataclass
 class ModelConfig:
     model_identifier: str = "t5-base"
@@ -36,7 +35,6 @@ class ModelConfig:
     use_unsloth: bool = False
     use_triplet_loss_trainer: bool = False
 
-# Data configuration
 @dataclass
 class TrainingDataConfig:
     dataset_name: str = "timdettmers/openassistant-guanaco"
@@ -45,7 +43,6 @@ class TrainingDataConfig:
     splits: str = "train,test"
     tokenized_dataset_path: str = None
 
-# Training configuration
 @dataclass
 class TrainingConfig:
     output_dir: str = "./results"
@@ -60,27 +57,18 @@ class TrainingConfig:
     seed: int = 42
     resume_from_checkpoint: str = None
 
-# Load JSON file
-def load_json_file(file_name):
-    with open(file_name, 'r') as f:
-        return json.load(f)
+class Dataset:
+    def __init__(self, data_args, dataset, use_triplet):
+        self.data_args = data_args
+        self.dataset = self._prepare_data(dataset)
+        self.use_triplet = use_triplet
 
-# Prepare dataset
-def prepare_dataset(data_args):
-    def load_and_prepare_data(file_name):
-        data = load_json_file(file_name)
+    def _prepare_data(self, data):
         return {
-            "input_ids": np.array([f"{example['input']} " if data_args.chat_template != "none" else example["input"] for example in data]),
-            "labels": np.array([f"{example['output']} " if data_args.chat_template != "none" else example["output"] for example in data]),
+            "input_ids": np.array([f"{example['input']} " if self.data_args.chat_template != "none" else example["input"] for example in data]),
+            "labels": np.array([f"{example['output']} " if self.data_args.chat_template != "none" else example["output"] for example in data]),
             "attention_mask": np.ones(len(data))
         }
-    return load_and_prepare_data("train.json"), load_and_prepare_data("test.json")
-
-# Define dataset class
-class Dataset:
-    def __init__(self, dataset, use_triplet):
-        self.dataset = dataset
-        self.use_triplet = use_triplet
 
     def __len__(self):
         return len(self.dataset["input_ids"])
@@ -92,15 +80,17 @@ class Dataset:
             return {"input_ids": self.dataset["input_ids"][idx], "positive_labels": positive_labels, "negative_labels": negative_labels}
         return {"input_ids": self.dataset["input_ids"][idx], "labels": self.dataset["labels"][idx]}
 
-# Get loss function
-def get_loss_fn(use_triplet):
-    def triplet_loss_fn(x, y, z):
-        return (x - y)**2 - (x - z)**2
-    def mse_loss_fn(x, y):
-        return (x - y)**2
-    return triplet_loss_fn if use_triplet else mse_loss_fn
+    @staticmethod
+    def load_json_file(file_name):
+        with open(file_name, 'r') as f:
+            return json.load(f)
 
-# Define model
+    @classmethod
+    def prepare(cls, data_args):
+        train_data = cls.load_json_file("train.json")
+        test_data = cls.load_json_file("test.json")
+        return cls(data_args, train_data, data_args.use_triplet_loss_trainer), cls(data_args, test_data, data_args.use_triplet_loss_trainer)
+
 class T5Model(nn.Module):
     @nn.compact
     def __call__(self, x):
@@ -109,46 +99,48 @@ class T5Model(nn.Module):
         x = nn.Dense(1000)(x)
         return x
 
-# Train model
-def train_model(model, data_loader, num_epochs, loss_fn, optimizer):
-    for epoch in range(num_epochs):
-        for batch in data_loader:
-            loss = train_step(model, batch, loss_fn, optimizer)
-        print(f"Epoch {epoch+1}, Loss: {loss}")
+    @staticmethod
+    def get_loss_fn(use_triplet):
+        def triplet_loss_fn(x, y, z):
+            return (x - y)**2 - (x - z)**2
+        def mse_loss_fn(x, y):
+            return (x - y)**2
+        return triplet_loss_fn if use_triplet else mse_loss_fn
 
-# Train step
-def train_step(model, batch, loss_fn, optimizer):
-    if "positive_labels" in batch:
-        outputs = model(batch["input_ids"])
-        loss = loss_fn(outputs, batch["positive_labels"], batch["negative_labels"])
-    else:
-        labels = batch["labels"]
-        outputs = model(batch["input_ids"])
-        loss = loss_fn(outputs, labels)
-    grads = jax.grad(loss, model)
-    optimizer = optimizer.apply_gradient(optimizer, grads, model)
-    return loss
+    def train_step(self, batch, loss_fn, optimizer):
+        if "positive_labels" in batch:
+            outputs = self(batch["input_ids"])
+            loss = loss_fn(outputs, batch["positive_labels"], batch["negative_labels"])
+        else:
+            labels = batch["labels"]
+            outputs = self(batch["input_ids"])
+            loss = loss_fn(outputs, labels)
+        grads = jax.grad(loss, self)
+        optimizer = optimizer.apply_gradient(optimizer, grads, self)
+        return loss
 
-# Run pipeline
+    def train(self, data_loader, num_epochs, loss_fn, optimizer):
+        for epoch in range(num_epochs):
+            for batch in data_loader:
+                loss = self.train_step(batch, loss_fn, optimizer)
+            print(f"Epoch {epoch+1}, Loss: {loss}")
+
 def run_pipeline(model_args, data_args, training_args):
-    train_data, _ = prepare_dataset(data_args)
-    dataset = Dataset(train_data, model_args.use_triplet_loss_trainer)
-    data_loader = keras.preprocessing.sequence.TimeseriesGenerator(dataset, batch_size=training_args.per_device_train_batch_size, shuffle=True)
-    loss_fn = get_loss_fn(model_args.use_triplet_loss_trainer)
+    train_dataset, _ = Dataset.prepare(model_args)
+    data_loader = keras.preprocessing.sequence.TimeseriesGenerator(train_dataset, batch_size=training_args.per_device_train_batch_size, shuffle=True)
     model = T5Model()
+    loss_fn = model.get_loss_fn(model_args.use_triplet_loss_trainer)
     optimizer = jax.experimental.optimizers.adam(0.001)
-    train_model(model, data_loader, training_args.num_train_epochs, loss_fn, optimizer)
+    model.train(data_loader, training_args.num_train_epochs, loss_fn, optimizer)
 
-# Resume pipeline
 def resume_pipeline(model_args, data_args, training_args, checkpoint_path):
-    train_data, _ = prepare_dataset(data_args)
-    dataset = Dataset(train_data, model_args.use_triplet_loss_trainer)
-    data_loader = keras.preprocessing.sequence.TimeseriesGenerator(dataset, batch_size=training_args.per_device_train_batch_size, shuffle=True)
+    train_dataset, _ = Dataset.prepare(model_args)
+    data_loader = keras.preprocessing.sequence.TimeseriesGenerator(train_dataset, batch_size=training_args.per_device_train_batch_size, shuffle=True)
     model = T5Model()
     model.load_state_dict(checkpoint_path)
-    loss_fn = get_loss_fn(model_args.use_triplet_loss_trainer)
+    loss_fn = model.get_loss_fn(model_args.use_triplet_loss_trainer)
     optimizer = jax.experimental.optimizers.adam(0.001)
-    train_model(model, data_loader, training_args.num_train_epochs, loss_fn, optimizer)
+    model.train(data_loader, training_args.num_train_epochs, loss_fn, optimizer)
 
 if __name__ == "__main__":
     model_args = ModelConfig(model_identifier="t5-base", chat_template="none", use_triplet_loss_trainer=True)
