@@ -111,24 +111,59 @@ def execute_train_step(state, batch, use_triplet):
     return state
 
 
+class Dataset:
+    def __init__(self, data, batch_size, use_triplet):
+        self.data = data
+        self.batch_size = batch_size
+        self.use_triplet = use_triplet
+        self.indices = list(range(len(self.data["input_ids"])))
+        self.shuffle()
+
+    def shuffle(self):
+        np.random.seed(42)
+        self.indices = np.random.permutation(self.indices)
+
+    def get_triplet_data(self):
+        for i in range(0, len(self.indices), self.batch_size):
+            batch_indices = self.indices[i:i + self.batch_size]
+            batch_data = {}
+            for idx in batch_indices:
+                if self.use_triplet:
+                    positive_labels = self.data["labels"][idx]
+                    negative_labels_idx = np.random.randint(0, len(self.data["labels"]))
+                    while negative_labels_idx == idx:
+                        negative_labels_idx = np.random.randint(0, len(self.data["labels"]))
+                    negative_labels = self.data["labels"][negative_labels_idx]
+                    batch_data[idx] = {"input_ids": self.data["input_ids"][idx], "positive_labels": positive_labels, "negative_labels": negative_labels}
+                else:
+                    batch_data[idx] = {"input_ids": self.data["input_ids"][idx], "labels": self.data["labels"][idx]}
+            yield {k: np.array([v[k] for v in batch_data.values()]) for k in batch_data[batch_indices[0]].keys()}
+
+    def get_data(self):
+        for i in range(0, len(self.indices), self.batch_size):
+            batch_indices = self.indices[i:i + self.batch_size]
+            batch_data = {k: np.array([self.data[k][idx] for idx in batch_indices]) for k in self.data.keys()}
+            yield batch_data
+
+
 def run_pipeline(model_args, data_args, training_args):
     train_data = load_json_file("train.json")
     test_data = load_json_file("test.json")
     chat_template = data_args.chat_template if data_args.chat_template != "none" else ""
     train_dataset = prepare_data(data_args, chat_template, train_data)
     test_dataset = prepare_data(data_args, chat_template, test_data)
-    indices = list(range(len(train_dataset["input_ids"])))
-    np.random.seed(42)
-    indices = np.random.permutation(indices)
-    data_loader = tf.data.Dataset.from_tensor_slices(indices).map(prepare_triplet_data(data_args, chat_template, train_dataset, indices, model_args.use_triplet_loss_trainer)).batch(training_args.per_device_train_batch_size)
+    
+    train_dataset = Dataset(train_dataset, training_args.per_device_train_batch_size, model_args.use_triplet_loss_trainer)
+    test_dataset = Dataset(test_dataset, training_args.per_device_eval_batch_size, model_args.use_triplet_loss_trainer)
+
     model = Model()
     rng = jax.random.PRNGKey(42)
     state = create_train_state(rng, model, 0.001)
+
     for epoch in range(training_args.num_train_epochs):
-        for batch in data_loader:
+        train_dataset.shuffle()
+        for batch in train_dataset.get_triplet_data() if model_args.use_triplet_loss_trainer else train_dataset.get_data():
             state = execute_train_step(state, batch, model_args.use_triplet_loss_trainer)
-        np.random.seed(42)
-        indices = np.random.permutation(indices)
         print(f"Epoch {epoch+1}")
 
 
