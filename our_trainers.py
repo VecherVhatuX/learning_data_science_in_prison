@@ -4,8 +4,8 @@ from tensorflow.keras import backend as K
 import numpy as np
 from tensorflow.data import Dataset
 
-def create_triplet_dataset(samples: np.ndarray, labels: np.ndarray, batch_size: int, num_negatives: int):
-    """Creates a dataset generator for triplet data."""
+def generate_triplet_data(samples: np.ndarray, labels: np.ndarray, batch_size: int, num_negatives: int):
+    """Produces a dataset generator for triplet data."""
     def dataset():
         idx = 0
         while True:
@@ -23,17 +23,17 @@ def create_triplet_dataset(samples: np.ndarray, labels: np.ndarray, batch_size: 
                 idx = 0
     return dataset
 
-def create_triplet_loss(margin: float):
-    """Creates a triplet loss function."""
+def define_triplet_loss_function(margin: float):
+    """Constructs a triplet loss function."""
     def loss(y_true, y_pred):
         anchor, positive, negative = y_pred
         return tf.reduce_mean(tf.maximum(tf.norm(anchor - positive, axis=-1) - tf.reduce_min(tf.norm(anchor[:, tf.newaxis] - negative, axis=-1), axis=-1) + margin, 0))
     return loss
 
-class TripletModel(models.Model):
-    """A model for triplet learning."""
+class TripletNetwork(models.Model):
+    """Represents a deep learning model for triplet learning."""
     def __init__(self, num_embeddings: int, embedding_dim: int):
-        super(TripletModel, self).__init__()
+        super(TripletNetwork, self).__init__()
         self.embedding = layers.Embedding(input_dim=num_embeddings, output_dim=embedding_dim)
         self.pooling = layers.GlobalAveragePooling1D()
         self.normalize = layers.Lambda(lambda x: x / tf.norm(x, axis=-1, keepdims=True))
@@ -44,15 +44,15 @@ class TripletModel(models.Model):
         outputs = self.normalize(pooling)
         return outputs
 
-class TripletTrainer:
-    """A trainer for triplet learning."""
-    def __init__(self, model: TripletModel, loss_fn, optimizer: optimizers.Optimizer):
+class TripletTrainingEngine:
+    """Manages the training process for a triplet learning model."""
+    def __init__(self, model: TripletNetwork, loss_fn, optimizer: optimizers.Optimizer):
         self.model = model
         self.loss_fn = loss_fn
         self.optimizer = optimizer
 
-    def train(self, dataset: Dataset, epochs: int):
-        """Trains the model on the dataset."""
+    def execute_training(self, dataset: Dataset, epochs: int):
+        """Performs the training process on the given dataset."""
         for epoch in range(epochs):
             total_loss = 0
             for i, data in enumerate(dataset):
@@ -71,8 +71,8 @@ class TripletTrainer:
                     break
             print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
-    def evaluate(self, dataset: Dataset):
-        """Evaluates the model on the dataset."""
+    def evaluate_model(self, dataset: Dataset):
+        """Evaluates the model's performance on the given dataset."""
         total_loss = 0.0
         for i, data in enumerate(dataset):
             anchor_inputs = data['anchor_input_ids']
@@ -87,8 +87,8 @@ class TripletTrainer:
                 break
         print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
-    def predict(self, input_ids):
-        """Makes a prediction on the input ids."""
+    def make_prediction(self, input_ids):
+        """Generates a prediction for the given input ids."""
         return self.model(input_ids)
 
 def main():
@@ -104,21 +104,21 @@ def main():
     margin = 1.0
     lr = 1e-4
 
-    dataset = tf.data.Dataset.from_generator(create_triplet_dataset(samples, labels, batch_size, num_negatives), 
+    dataset = tf.data.Dataset.from_generator(generate_triplet_data(samples, labels, batch_size, num_negatives), 
                                              output_types={'anchor_input_ids': tf.int32, 'positive_input_ids': tf.int32, 'negative_input_ids': tf.int32})
     dataset = dataset.batch(batch_size)
-    validation_dataset = tf.data.Dataset.from_generator(create_triplet_dataset(samples, labels, batch_size, num_negatives), 
+    validation_dataset = tf.data.Dataset.from_generator(generate_triplet_data(samples, labels, batch_size, num_negatives), 
                                                         output_types={'anchor_input_ids': tf.int32, 'positive_input_ids': tf.int32, 'negative_input_ids': tf.int32})
     validation_dataset = validation_dataset.batch(batch_size)
 
-    model = TripletModel(num_embeddings, embedding_dim)
-    loss_fn = create_triplet_loss(margin)
+    model = TripletNetwork(num_embeddings, embedding_dim)
+    loss_fn = define_triplet_loss_function(margin)
     optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
-    trainer = TripletTrainer(model, loss_fn, optimizer)
-    trainer.train(dataset, epochs)
-    trainer.evaluate(validation_dataset)
+    trainer = TripletTrainingEngine(model, loss_fn, optimizer)
+    trainer.execute_training(dataset, epochs)
+    trainer.evaluate_model(validation_dataset)
     input_ids = tf.convert_to_tensor([1, 2, 3, 4, 5])
-    output = trainer.predict(input_ids)
+    output = trainer.make_prediction(input_ids)
     print(output)
 
 if __name__ == "__main__":
