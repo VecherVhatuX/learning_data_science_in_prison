@@ -20,7 +20,7 @@ class Config:
 
 class DataHelper:
     @staticmethod
-    def load_json_data(path):
+    def load_json_data(path: str) -> list:
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 return json.load(f)
@@ -29,7 +29,7 @@ class DataHelper:
             return []
 
     @staticmethod
-    def separate_code_snippets(snippets):
+    def separate_code_snippets(snippets: list) -> tuple:
         bug_snippets = []
         non_bug_snippets = []
         for item in snippets:
@@ -40,7 +40,7 @@ class DataHelper:
         return bug_snippets, non_bug_snippets
 
     @staticmethod
-    def create_triplets(problem_statement, positive_snippets, negative_snippets, num_negatives_per_positive):
+    def create_triplets(problem_statement: str, positive_snippets: list, negative_snippets: list, num_negatives_per_positive: int) -> list:
         triplets = []
         for _ in range(min(num_negatives_per_positive, len(negative_snippets))):
             for positive_doc in positive_snippets:
@@ -52,7 +52,7 @@ class DataHelper:
         return triplets
 
     @staticmethod
-    def create_triplet_dataset(dataset_path, snippet_folder_path):
+    def create_triplet_dataset(dataset_path: str, snippet_folder_path: str) -> list:
         dataset = np.load(dataset_path, allow_pickle=True)
         instance_id_map = {item['instance_id']: item['problem_statement'] for item in dataset}
         folder_paths = [os.path.join(snippet_folder_path, f) for f in os.listdir(snippet_folder_path) if os.path.isdir(os.path.join(snippet_folder_path, f))]
@@ -65,7 +65,7 @@ class DataHelper:
         return triplets
 
     @staticmethod
-    def encode_text(inputs, tokenizer, max_sequence_length):
+    def encode_text(inputs: str, tokenizer, max_sequence_length: int) -> tf.Tensor:
         encoding = tokenizer.encode_plus(
             inputs, 
             max_length=max_sequence_length, 
@@ -77,7 +77,7 @@ class DataHelper:
         return encoding['input_ids'][:, 0, :]
 
 class TripletModel(tf.keras.Model):
-    def __init__(self, config):
+    def __init__(self, config: Config):
         super(TripletModel, self).__init__()
         self.config = config
         self.tokenizer = None
@@ -89,21 +89,21 @@ class TripletModel(tf.keras.Model):
         self.dropout2 = layers.Dropout(config.dropout_rate)
         self.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=config.learning_rate_value), loss=self.triplet_loss)
 
-    def set_tokenizer(self, tokenizer):
+    def set_tokenizer(self, tokenizer: AutoTokenizer):
         self.tokenizer = tokenizer
 
-    def create_dataset(self, triplets):
+    def create_dataset(self, triplets: list) -> tf.data.Dataset:
         dataset = tf.data.Dataset.from_tensor_slices((triplets))
         dataset = dataset.map(self.encode_triplet, num_parallel_calls=tf.data.AUTOTUNE)
         return dataset.batch(self.config.minibatch_size).prefetch(tf.data.AUTOTUNE)
 
-    def encode_triplet(self, triplet):
+    def encode_triplet(self, triplet: dict) -> tuple:
         anchor = DataHelper.encode_text(triplet['anchor'], self.tokenizer, self.config.max_sequence_length)
         positive = DataHelper.encode_text(triplet['positive'], self.tokenizer, self.config.max_sequence_length)
         negative = DataHelper.encode_text(triplet['negative'], self.tokenizer, self.config.max_sequence_length)
         return anchor, positive, negative
 
-    def call(self, inputs):
+    def call(self, inputs: tuple) -> tuple:
         anchor, positive, negative = inputs
         anchor_embedding = self.dropout2(self.dense2(self.dropout1(self.dense1(self.pooling(self.embedding(anchor))))))
         positive_embedding = self.dropout2(self.dense2(self.dropout1(self.dense1(self.pooling(self.embedding(positive))))))
@@ -111,17 +111,17 @@ class TripletModel(tf.keras.Model):
         return anchor_embedding, positive_embedding, negative_embedding
 
     @staticmethod
-    def triplet_loss(y_true, y_pred):
+    def triplet_loss(y_true: tf.Tensor, y_pred: tuple) -> tf.Tensor:
         anchor, positive, negative = y_pred
         return tf.reduce_mean(tf.maximum(tf.norm(anchor - positive, axis=1) - tf.norm(anchor - negative, axis=1) + 1.0, 0.0))
 
 class TripletTrainer:
-    def __init__(self, model, dataset_path, snippet_folder_path):
+    def __init__(self, model: TripletModel, dataset_path: str, snippet_folder_path: str):
         self.model = model
         self.dataset_path = dataset_path
         self.snippet_folder_path = snippet_folder_path
 
-    def train(self):
+    def train(self) -> dict:
         triplets = DataHelper.create_triplet_dataset(self.dataset_path, self.snippet_folder_path)
         random.shuffle(triplets)
         train_triplets, test_triplets = triplets[:int(0.8 * len(triplets))], triplets[int(0.8 * len(triplets)):]
@@ -138,7 +138,7 @@ class TripletTrainer:
             print(f'Model saved at triplet_model_{epoch+1}.h5')
         return history
 
-def plot_training_history(history):
+def plot_training_history(history: dict):
     plt.plot(history['loss'], label='Training Loss')
     plt.plot(history['val_loss'], label='Validation Loss')
     plt.legend()
