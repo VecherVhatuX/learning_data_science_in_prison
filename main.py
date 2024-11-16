@@ -79,6 +79,23 @@ def prepare_triplet_data(data, indices, use_triplet):
     return _prepare_triplet_data
 
 
+class Dataset:
+    def __init__(self, data, batch_size, use_triplet):
+        self.data = data
+        self.batch_size = batch_size
+        self.use_triplet = use_triplet
+        self.indices = np.arange(len(data["input_ids"]))
+
+    def __iter__(self):
+        np.random.shuffle(self.indices)
+        batches = np.array_split(self.indices, self.batch_size)
+        for batch in batches:
+            if self.use_triplet:
+                yield {k: jnp.array([self.data[k][idx] for idx in batch]) for k in ["input_ids", "positive_labels", "negative_labels"]}
+            else:
+                yield {k: jnp.array([self.data[k][idx] for idx in batch]) for k in ["input_ids", "labels"]}
+
+
 def create_train_state(rng, model, learning_rate):
     params = model.init(rng, jnp.ones((1, 128)))
     tx = optax.adam(learning_rate)
@@ -119,7 +136,7 @@ class Model(nn.Module):
 
 def train_epoch(model, state, dataset, use_triplet):
     return jax.jit(lambda state, dataset: jax.lax.fori_loop(
-        0, len(dataset), lambda i, state: execute_train_step(state, dataset[i], use_triplet), state
+        0, len(dataset), lambda i, state: execute_train_step(state, next(dataset), use_triplet), state
     ))(state, dataset)
 
 
@@ -130,27 +147,15 @@ def run_pipeline(model_args, data_args, training_args):
     train_dataset = prepare_data(chat_template, train_data)
     test_dataset = prepare_data(chat_template, test_data)
 
-    batched_train_dataset = jnp.array_split(train_dataset["input_ids"], training_args.per_device_train_batch_size)
-    batched_test_dataset = jnp.array_split(test_dataset["input_ids"], training_args.per_device_eval_batch_size)
-
-    if model_args.use_triplet_loss_trainer:
-        train_dataset_triplet = [prepare_triplet_data(train_dataset, indices, model_args.use_triplet_loss_trainer) for indices in np.array_split(np.arange(len(train_dataset["input_ids"])), training_args.per_device_train_batch_size)]
-        test_dataset_triplet = [prepare_triplet_data(test_dataset, indices, model_args.use_triplet_loss_trainer) for indices in np.array_split(np.arange(len(test_dataset["input_ids"])), training_args.per_device_eval_batch_size)]
-        batched_train_dataset_triplet = [{k: jnp.array([v[idx][k] for v in values]) for k in values[0].keys()} for values in train_dataset_triplet]
-        batched_test_dataset_triplet = [{k: jnp.array([v[idx][k] for v in values]) for k in values[0].keys()} for values in test_dataset_triplet]
-    else:
-        batched_train_dataset_triplet = None
-        batched_test_dataset_triplet = None
+    train_dataset = Dataset(train_dataset, training_args.per_device_train_batch_size, model_args.use_triplet_loss_trainer)
+    test_dataset = Dataset(test_dataset, training_args.per_device_eval_batch_size, model_args.use_triplet_loss_trainer)
 
     model = Model()
     rng = jax.random.PRNGKey(42)
     state = create_train_state(rng, model, 0.001)
 
     for epoch in range(training_args.num_train_epochs):
-        if model_args.use_triplet_loss_trainer:
-            state = train_epoch(model, state, batched_train_dataset_triplet, model_args.use_triplet_loss_trainer)
-        else:
-            state = train_epoch(model, state, batched_train_dataset, model_args.use_triplet_loss_trainer)
+        state = train_epoch(model, state, train_dataset, model_args.use_triplet_loss_trainer)
         print(f"Epoch {epoch+1}")
 
 
