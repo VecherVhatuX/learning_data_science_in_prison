@@ -58,7 +58,7 @@ def load_json_file(file_name):
         return json.load(f)
 
 
-def prepare_data(data_args, chat_template, data):
+def prepare_data(chat_template, data):
     return {
         "input_ids": [f"{chat_template} {example['input']}" for example in data],
         "labels": [f"{chat_template} {example['output']}" for example in data],
@@ -66,7 +66,7 @@ def prepare_data(data_args, chat_template, data):
     }
 
 
-def prepare_triplet_data(data_args, chat_template, data, indices, use_triplet):
+def prepare_triplet_data(data, indices, use_triplet):
     def _prepare_triplet_data(idx):
         if use_triplet:
             positive_labels = data["labels"][indices[idx]]
@@ -118,70 +118,44 @@ class Model(nn.Module):
 
 
 def train_epoch(model, state, dataset, use_triplet):
-    for batch in dataset:
-        state = execute_train_step(state, batch, use_triplet)
-    return state
+    return jax.jit(lambda state, dataset: jax.lax.fori_loop(
+        0, len(dataset), lambda i, state: execute_train_step(state, dataset[i], use_triplet), state
+    ))(state, dataset)
 
 
 def run_pipeline(model_args, data_args, training_args):
     train_data = load_json_file("train.json")
     test_data = load_json_file("test.json")
-    chat_template = data_args.chat_template if data_args.chat_template != "none" else ""
-    train_dataset = prepare_data(data_args, chat_template, train_data)
-    test_dataset = prepare_data(data_args, chat_template, test_data)
-    
-    train_dataset = Dataset(train_dataset, training_args.per_device_train_batch_size, model_args.use_triplet_loss_trainer)
-    test_dataset = Dataset(test_dataset, training_args.per_device_eval_batch_size, model_args.use_triplet_loss_trainer)
+    chat_template = model_args.chat_template if model_args.chat_template != "none" else ""
+    train_dataset = prepare_data(chat_template, train_data)
+    test_dataset = prepare_data(chat_template, test_data)
+
+    batched_train_dataset = jnp.array_split(train_dataset["input_ids"], training_args.per_device_train_batch_size)
+    batched_test_dataset = jnp.array_split(test_dataset["input_ids"], training_args.per_device_eval_batch_size)
+
+    if model_args.use_triplet_loss_trainer:
+        train_dataset_triplet = [prepare_triplet_data(train_dataset, indices, model_args.use_triplet_loss_trainer) for indices in np.array_split(np.arange(len(train_dataset["input_ids"])), training_args.per_device_train_batch_size)]
+        test_dataset_triplet = [prepare_triplet_data(test_dataset, indices, model_args.use_triplet_loss_trainer) for indices in np.array_split(np.arange(len(test_dataset["input_ids"])), training_args.per_device_eval_batch_size)]
+        batched_train_dataset_triplet = [{k: jnp.array([v[idx][k] for v in values]) for k in values[0].keys()} for values in train_dataset_triplet]
+        batched_test_dataset_triplet = [{k: jnp.array([v[idx][k] for v in values]) for k in values[0].keys()} for values in test_dataset_triplet]
+    else:
+        batched_train_dataset_triplet = None
+        batched_test_dataset_triplet = None
 
     model = Model()
     rng = jax.random.PRNGKey(42)
     state = create_train_state(rng, model, 0.001)
 
     for epoch in range(training_args.num_train_epochs):
-        state = train_epoch(model, state, train_dataset.get_triplet_data() if model_args.use_triplet_loss_trainer else train_dataset.get_data(), model_args.use_triplet_loss_trainer)
+        if model_args.use_triplet_loss_trainer:
+            state = train_epoch(model, state, batched_train_dataset_triplet, model_args.use_triplet_loss_trainer)
+        else:
+            state = train_epoch(model, state, batched_train_dataset, model_args.use_triplet_loss_trainer)
         print(f"Epoch {epoch+1}")
 
 
-class Dataset:
-    def __init__(self, data, batch_size, use_triplet):
-        self.data = data
-        self.batch_size = batch_size
-        self.use_triplet = use_triplet
-        self.indices = list(range(len(self.data["input_ids"])))
-
-    def shuffle(self):
-        np.random.seed(42)
-        self.indices = np.random.permutation(self.indices)
-
-    def get_triplet_data(self):
-        for i in range(0, len(self.indices), self.batch_size):
-            batch_indices = self.indices[i:i + self.batch_size]
-            batch_data = {}
-            for idx in batch_indices:
-                if self.use_triplet:
-                    positive_labels = self.data["labels"][idx]
-                    negative_labels_idx = np.random.randint(0, len(self.data["labels"]))
-                    while negative_labels_idx == idx:
-                        negative_labels_idx = np.random.randint(0, len(self.data["labels"]))
-                    negative_labels = self.data["labels"][negative_labels_idx]
-                    batch_data[idx] = {"input_ids": self.data["input_ids"][idx], "positive_labels": positive_labels, "negative_labels": negative_labels}
-                else:
-                    batch_data[idx] = {"input_ids": self.data["input_ids"][idx], "labels": self.data["labels"][idx]}
-            yield {k: np.array([v[k] for v in batch_data.values()]) for k in batch_data[batch_indices[0]].keys()}
-
-    def get_data(self):
-        for i in range(0, len(self.indices), self.batch_size):
-            batch_indices = self.indices[i:i + self.batch_size]
-            batch_data = {k: np.array([self.data[k][idx] for idx in batch_indices]) for k in self.data.keys()}
-            yield batch_data
-
-
-def main(model_args, data_args, training_args):
-    run_pipeline(model_args, data_args, training_args)
-
-
 def pipeline(model_args, data_args, training_args):
-    return lambda: main(model_args, data_args, training_args)
+    return lambda: run_pipeline(model_args, data_args, training_args)
 
 
 def compose(f, g):
