@@ -57,76 +57,71 @@ def load_data(chat_format):
         train_data = json.load(f)
     with open("test.json", 'r') as f:
         test_data = json.load(f)
-    train_data = prepare_data(chat_format, train_data)
-    test_data = prepare_data(chat_format, test_data)
-    return train_data, test_data
+    return prepare_data(chat_format, train_data), prepare_data(chat_format, test_data)
 
-class Dataset:
-    def __init__(self, data, batch_size, negative_samples, triplet_mode):
-        self.indices = np.arange(len(data["input_ids"]))
-        self.batch_size = batch_size
-        self.negative_samples = negative_samples
-        self.triplet_mode = triplet_mode
-        self.data = data
+def create_dataset(data, batch_size, negative_samples, triplet_mode):
+    indices = np.arange(len(data["input_ids"]))
+    return ({k: jnp.array([data[k][idx] for idx in batch_indices]) 
+             for k in ["input_ids"] + (["labels"] if not triplet_mode else ["positive_labels", "negative_labels"])}, 
+            indices) if not triplet_mode else (
+            {k: jnp.array([data[k][idx] for idx in batch_indices]) for k in ["input_ids"]}, 
+            {k: jnp.array([data[k][idx] for idx in positive_indices]) for k in ["positive_labels"]}, 
+            np.array([[data["labels"][idx] for idx in sample] for sample in negative_indices]), 
+            indices)
 
-    def __iter__(self):
-        np.random.shuffle(self.indices)
-        for _ in range(len(self.indices) // self.batch_size):
-            batch_indices = self.indices[_ * self.batch_size:(_ + 1) * self.batch_size]
-            batch = {k: jnp.array([self.data[k][idx] for idx in batch_indices]) for k in ["input_ids"]}
-            if self.triplet_mode:
-                positive_indices = np.random.choice(batch_indices, size=self.batch_size)
-                negative_indices = np.random.choice(self.indices, size=(self.batch_size, self.negative_samples), replace=False)
-                batch["positive_labels"] = jnp.array([self.data["labels"][idx] for idx in positive_indices])
-                batch["negative_labels"] = jnp.array([[self.data["labels"][idx] for idx in sample] for sample in negative_indices])
+def dataset_generator(data, batch_size, negative_samples, triplet_mode):
+    indices = np.arange(len(data["input_ids"]))
+    while True:
+        np.random.shuffle(indices)
+        for _ in range(len(indices) // batch_size):
+            batch_indices = indices[_ * batch_size:(_ + 1) * batch_size]
+            if not triplet_mode:
+                yield create_dataset(data, batch_size, negative_samples, triplet_mode)
             else:
-                batch["labels"] = jnp.array([self.data["labels"][idx] for idx in batch_indices])
-            yield batch
+                positive_indices = np.random.choice(batch_indices, size=batch_size)
+                negative_indices = np.random.choice(indices, size=(batch_size, negative_samples), replace=False)
+                yield create_dataset(data, batch_size, negative_samples, triplet_mode)
 
-class Trainer:
-    def __init__(self, config):
-        self.config = config
+def create_model():
+    class NeuralNetwork(nn.Module):
+        @nn.compact
+        def __call__(self, x):
+            x = nn.relu(nn.Dense(128)(x))
+            x = nn.relu(nn.Dense(128)(x))
+            x = nn.Dense(1000)(x)
+            return x
+    return NeuralNetwork()
 
-    def create_train_state(self, rng, model, learning_rate):
-        return optax.TrainState.create(
-            apply_fn=model.apply,
-            params=model.init(rng, jnp.ones((1, 128)))['params'],
-            tx=optax.adam(learning_rate)
-        )
+def create_train_state(rng, model, learning_rate):
+    return optax.TrainState.create(
+        apply_fn=model.apply,
+        params=model.init(rng, jnp.ones((1, 128)))['params'],
+        tx=optax.adam(learning_rate)
+    )
 
-    def calculate_loss(self, params, batch, model):
-        if self.config.triplet_loss_training:
-            return jnp.mean(jnp.maximum((model.apply({'params': params}, batch["input_ids"]) - batch["positive_labels"])**2 - (model.apply({'params': params}, batch["input_ids"]) - batch["negative_labels"])**2, 0))
-        else:
-            return jnp.mean((model.apply({'params': params}, batch["input_ids"]) - batch["labels"])**2)
+def calculate_loss(params, batch, model, triplet_loss_training):
+    if triplet_loss_training:
+        return jnp.mean(jnp.maximum((model.apply({'params': params}, batch["input_ids"]) - batch["positive_labels"])**2 - (model.apply({'params': params}, batch["input_ids"]) - batch["negative_labels"])**2, 0))
+    else:
+        return jnp.mean((model.apply({'params': params}, batch["input_ids"]) - batch["labels"])**2)
 
-    def execute_train_step(self, state, batch, model):
-        grads = jax.grad(self.calculate_loss, argnums=0)(state.params, batch, model)
-        return state.apply_gradients(grads=grads)
+def train_step(state, batch, model, triplet_loss_training):
+    grads = jax.grad(calculate_loss, argnums=0)(state.params, batch, model, triplet_loss_training)
+    return state.apply_gradients(grads=grads)
 
-    def train_epoch(self, model, state, dataset):
-        for batch in dataset:
-            state = self.execute_train_step(state, batch, model)
-        return state
-
-class NeuralNetwork(nn.Module):
-    @nn.compact
-    def __call__(self, x):
-        x = nn.relu(nn.Dense(128)(x))
-        x = nn.relu(nn.Dense(128)(x))
-        x = nn.Dense(1000)(x)
-        return x
+def train_epoch(model, state, dataset, triplet_loss_training):
+    for batch in dataset:
+        state = train_step(state, batch, model, triplet_loss_training)
+    return state
 
 def train(config):
     train_data, test_data = load_data(config.chat_format)
-    train_dataset = Dataset(train_data, config.train_batch_size, 5, config.triplet_loss_training)
-    test_dataset = Dataset(test_data, config.eval_batch_size, 5, config.triplet_loss_training)
-    model = NeuralNetwork()
+    model = create_model()
     rng = jax.random.PRNGKey(42)
-    trainer = Trainer(config)
-    state = trainer.create_train_state(rng, model, 0.001)
+    state = create_train_state(rng, model, 0.001)
+    train_dataset = dataset_generator(train_data, config.train_batch_size, 5, config.triplet_loss_training)
     for epoch in range(config.num_epochs):
-        state = trainer.train_epoch(model, state, train_dataset)
+        state = train_epoch(model, state, train_dataset, config.triplet_loss_training)
         print(f"Epoch {epoch+1}")
 
 if __name__ == "__main__":
