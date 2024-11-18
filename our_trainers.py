@@ -7,16 +7,16 @@ import numpy as np
 
 class TripletNetwork(Model):
     """
-    Triplet network model for embedding learning.
+    A neural network designed to learn embeddings by optimizing a triplet loss function.
     """
     def __init__(self, num_embeddings, embedding_dim, margin):
         """
-        Initializes the triplet network model.
+        Initializes the TripletNetwork model.
 
         Args:
-            num_embeddings (int): Number of possible embeddings.
-            embedding_dim (int): Dimensionality of the embeddings.
-            margin (float): Margin value for the triplet loss function.
+            num_embeddings (int): The number of unique embeddings to learn.
+            embedding_dim (int): The dimensionality of each embedding.
+            margin (float): The margin value used in the triplet loss function.
         """
         super(TripletNetwork, self).__init__()
         self.margin = margin
@@ -30,11 +30,11 @@ class TripletNetwork(Model):
         Defines the forward pass of the model.
 
         Args:
-            inputs: Input data.
-            training: Whether the model is in training mode.
+            inputs: The input data to the model.
+            training: A boolean indicating whether the model is in training mode.
 
         Returns:
-            Embeddings for the input data.
+            The learned embeddings for the input data.
         """
         x = self.embedding(inputs)
         x = self.pooling(x)
@@ -47,13 +47,13 @@ def triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, ma
     Computes the triplet loss for the given embeddings.
 
     Args:
-        anchor_embeddings: Anchor embeddings.
-        positive_embeddings: Positive embeddings.
-        negative_embeddings: Negative embeddings.
-        margin: Margin value for the triplet loss function.
+        anchor_embeddings: The embeddings of the anchor samples.
+        positive_embeddings: The embeddings of the positive samples.
+        negative_embeddings: The embeddings of the negative samples.
+        margin: The margin value used in the triplet loss function.
 
     Returns:
-        Triplet loss value.
+        The triplet loss value.
     """
     anchor_positive_distance = tf.norm(anchor_embeddings - positive_embeddings, axis=-1)
     anchor_negative_distance = tf.norm(anchor_embeddings[:, None] - negative_embeddings, axis=-1)
@@ -63,17 +63,17 @@ def triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, ma
 
 class TripletDataset:
     """
-    Dataset class for generating triplet batches.
+    A dataset class designed to generate batches of triplets.
     """
     def __init__(self, samples, labels, batch_size, num_negatives):
         """
-        Initializes the dataset.
+        Initializes the TripletDataset.
 
         Args:
-            samples: Input data samples.
-            labels: Corresponding labels for the samples.
-            batch_size: Batch size for generating triplet batches.
-            num_negatives: Number of negative samples per anchor.
+            samples: The input data samples.
+            labels: The corresponding labels for the samples.
+            batch_size: The batch size to use when generating triplets.
+            num_negatives: The number of negative samples to include in each triplet.
         """
         self.samples = samples
         self.labels = labels
@@ -91,10 +91,10 @@ class TripletDataset:
         Returns a batch of triplets.
 
         Args:
-            idx: Batch index.
+            idx: The index of the batch to retrieve.
 
         Returns:
-            Batch of triplets.
+            A batch of triplets.
         """
         start_idx = idx * self.batch_size
         end_idx = min((idx + 1) * self.batch_size, len(self.samples))
@@ -146,18 +146,18 @@ class TripletDataset:
 
 class TripletModel:
     """
-    Triplet model class for training and evaluation.
+    A model class designed to train and evaluate a triplet network.
     """
     def __init__(self, num_embeddings, embedding_dim, margin, lr, device):
         """
-        Initializes the triplet model.
+        Initializes the TripletModel.
 
         Args:
-            num_embeddings (int): Number of possible embeddings.
-            embedding_dim (int): Dimensionality of the embeddings.
-            margin (float): Margin value for the triplet loss function.
-            lr (float): Learning rate for the optimizer.
-            device (str): Device to use for training.
+            num_embeddings (int): The number of unique embeddings to learn.
+            embedding_dim (int): The dimensionality of each embedding.
+            margin (float): The margin value used in the triplet loss function.
+            lr (float): The learning rate to use for training.
+            device (str): The device to use for training.
         """
         self.network = TripletNetwork(num_embeddings, embedding_dim, margin)
         self.margin = margin
@@ -170,8 +170,8 @@ class TripletModel:
         Trains the model on the given dataset.
 
         Args:
-            dataset: Dataset to train on.
-            epochs (int): Number of epochs to train for.
+            dataset: The dataset to train on.
+            epochs (int): The number of epochs to train for.
         """
         for epoch in range(epochs):
             total_loss = 0.0
@@ -196,7 +196,7 @@ class TripletModel:
         Evaluates the model on the given dataset.
 
         Args:
-            dataset: Dataset to evaluate on.
+            dataset: The dataset to evaluate on.
         """
         total_loss = 0.0
         for i, data in enumerate(dataset):
@@ -217,10 +217,10 @@ class TripletModel:
         Makes predictions on the given input data.
 
         Args:
-            input_ids: Input data to make predictions on.
+            input_ids: The input data to make predictions on.
 
         Returns:
-            Embeddings for the input data.
+            The learned embeddings for the input data.
         """
         return self.network(input_ids)
 
@@ -229,7 +229,7 @@ class TripletModel:
         Saves the model to the given path.
 
         Args:
-            path (str): Path to save the model to.
+            path (str): The path to save the model to.
         """
         self.network.save(path)
 
@@ -238,7 +238,7 @@ class TripletModel:
         Loads the model from the given path.
 
         Args:
-            path (str): Path to load the model from.
+            path (str): The path to load the model from.
         """
         self.network = tf.keras.models.load_model(path)
 
