@@ -112,10 +112,11 @@ def execute_train_step(state, batch, use_triplet):
     state = state.apply_gradients(grads=grads)
     return state
 
+@jax.jit
 def train_epoch(model, state, dataset, use_triplet):
-    return jax.jit(lambda state, dataset: jax.lax.fori_loop(
+    return jax.lax.fori_loop(
         0, len(dataset), lambda i, state: execute_train_step(state, next(iter(dataset)), use_triplet), state
-    ))(state, dataset)
+    )
 
 class Trainer:
     def __init__(self, model_args, data_args, training_args):
