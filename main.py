@@ -114,7 +114,7 @@ def execute_train_step(state, batch, use_triplet):
 
 def train_epoch(model, state, dataset, use_triplet):
     return jax.jit(lambda state, dataset: jax.lax.fori_loop(
-        0, len(dataset), lambda i, state: execute_train_step(state, next(dataset), use_triplet), state
+        0, len(dataset), lambda i, state: execute_train_step(state, next(iter(dataset)), use_triplet), state
     ))(state, dataset)
 
 class Trainer:
@@ -132,7 +132,7 @@ class Trainer:
         state = create_train_state(rng, model, 0.001)
 
         for epoch in range(self.training_args.num_train_epochs):
-            state = train_epoch(model, state, train_dataset, self.model_args.use_triplet_loss_trainer)
+            state = train_epoch(model, state, iter(train_dataset), self.model_args.use_triplet_loss_trainer)
             print(f"Epoch {epoch+1}")
 
 if __name__ == "__main__":
