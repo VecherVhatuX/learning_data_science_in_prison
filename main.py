@@ -140,42 +140,40 @@ def train_epoch(model, state, dataset, use_triplet):
     ))(state, dataset)
 
 
-def run_pipeline(model_args, data_args, training_args):
+def load_data(model_args):
     train_data = load_json_file("train.json")
     test_data = load_json_file("test.json")
     chat_template = model_args.chat_template if model_args.chat_template != "none" else ""
-    train_dataset = prepare_data(chat_template, train_data)
-    test_dataset = prepare_data(chat_template, test_data)
+    return prepare_data(chat_template, train_data), prepare_data(chat_template, test_data)
 
-    train_dataset = Dataset(train_dataset, training_args.per_device_train_batch_size, model_args.use_triplet_loss_trainer)
-    test_dataset = Dataset(test_dataset, training_args.per_device_eval_batch_size, model_args.use_triplet_loss_trainer)
 
-    model = Model()
+def create_dataset(data, batch_size, use_triplet):
+    return Dataset(data, batch_size, use_triplet)
+
+
+def create_model():
+    return Model()
+
+
+def create_train_state_(rng, model, learning_rate):
+    return create_train_state(rng, model, learning_rate)
+
+
+def train(model_args, data_args, training_args):
+    train_data, test_data = load_data(model_args)
+    train_dataset = create_dataset(train_data, training_args.per_device_train_batch_size, model_args.use_triplet_loss_trainer)
+    test_dataset = create_dataset(test_data, training_args.per_device_eval_batch_size, model_args.use_triplet_loss_trainer)
+    model = create_model()
     rng = jax.random.PRNGKey(42)
-    state = create_train_state(rng, model, 0.001)
+    state = create_train_state_(rng, model, 0.001)
 
     for epoch in range(training_args.num_train_epochs):
         state = train_epoch(model, state, train_dataset, model_args.use_triplet_loss_trainer)
         print(f"Epoch {epoch+1}")
 
 
-def pipeline(model_args, data_args, training_args):
-    return lambda: run_pipeline(model_args, data_args, training_args)
-
-
-def compose(f, g):
-    return lambda *a, **kw: f(g(*a, **kw))
-
-
-def main_pipeline(model_args, data_args, training_args):
-    return compose(
-        lambda f: f(),
-        lambda: pipeline(model_args, data_args, training_args)()
-    )
-
-
 def run(model_args, data_args, training_args):
-    return main_pipeline(model_args, data_args, training_args)()
+    return train(model_args, data_args, training_args)
 
 
 if __name__ == "__main__":
