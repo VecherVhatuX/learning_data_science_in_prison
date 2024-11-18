@@ -8,8 +8,10 @@ from flax import linen as nn
 import numpy as np
 import optax
 
+
 @dataclass
 class ModelConfig:
+    """Configuration for the model."""
     model_identifier: str = "t5-base" 
     chat_template: str = "none" 
     lora_alpha: int = 16 
@@ -31,6 +33,7 @@ class ModelConfig:
 
 @dataclass
 class TrainingDataConfig:
+    """Configuration for the training data."""
     dataset_name: str = "timdettmers/openassistant-guanaco" 
     append_concat_token: bool = False 
     add_special_tokens: bool = False 
@@ -40,6 +43,7 @@ class TrainingDataConfig:
 
 @dataclass
 class TrainingConfig:
+    """Configuration for the training process."""
     output_dir: str = "./results" 
     num_train_epochs: int = 3 
     per_device_train_batch_size: int = 16 
@@ -54,11 +58,13 @@ class TrainingConfig:
 
 
 def load_json_file(file_name):
+    """Loads a JSON file."""
     with open(file_name, 'r') as f:
         return json.load(f)
 
 
 def prepare_data(chat_template, data):
+    """Prepares the data by adding the chat template."""
     return {
         "input_ids": [f"{chat_template} {example['input']}" for example in data],
         "labels": [f"{chat_template} {example['output']}" for example in data],
@@ -67,6 +73,7 @@ def prepare_data(chat_template, data):
 
 
 def prepare_triplet_data(data, indices, use_triplet):
+    """Prepares the triplet data."""
     def _prepare_triplet_data(idx):
         if use_triplet:
             positive_labels = data["labels"][indices[idx]]
@@ -80,6 +87,7 @@ def prepare_triplet_data(data, indices, use_triplet):
 
 
 class Dataset:
+    """A dataset class."""
     def __init__(self, data, batch_size, use_triplet):
         self.data = data
         self.batch_size = batch_size
@@ -87,6 +95,7 @@ class Dataset:
         self.indices = np.arange(len(data["input_ids"]))
 
     def __iter__(self):
+        """Returns an iterator over the dataset."""
         np.random.shuffle(self.indices)
         batches = np.array_split(self.indices, self.batch_size)
         for batch in batches:
@@ -97,6 +106,7 @@ class Dataset:
 
 
 def create_train_state(rng, model, learning_rate):
+    """Creates the train state."""
     params = model.init(rng, jnp.ones((1, 128)))
     tx = optax.adam(learning_rate)
     return train_state.TrainState.create(
@@ -107,6 +117,7 @@ def create_train_state(rng, model, learning_rate):
 
 
 def calculate_loss(params, batch, use_triplet):
+    """Calculates the loss."""
     model = Model()
     if use_triplet:
         outputs = model.apply({'params': params}, batch["input_ids"])
@@ -120,12 +131,14 @@ def calculate_loss(params, batch, use_triplet):
 
 
 def execute_train_step(state, batch, use_triplet):
+    """Executes a train step."""
     grads = jax.grad(calculate_loss, argnums=0)(state.params, batch, use_triplet)
     state = state.apply_gradients(grads=grads)
     return state
 
 
 class Model(nn.Module):
+    """A model class."""
     @nn.compact
     def __call__(self, x):
         x = nn.relu(nn.Dense(128)(x))
@@ -135,12 +148,14 @@ class Model(nn.Module):
 
 
 def train_epoch(model, state, dataset, use_triplet):
+    """Trains an epoch."""
     return jax.jit(lambda state, dataset: jax.lax.fori_loop(
         0, len(dataset), lambda i, state: execute_train_step(state, next(dataset), use_triplet), state
     ))(state, dataset)
 
 
 def load_data(model_args):
+    """Loads the data."""
     train_data = load_json_file("train.json")
     test_data = load_json_file("test.json")
     chat_template = model_args.chat_template if model_args.chat_template != "none" else ""
@@ -148,18 +163,22 @@ def load_data(model_args):
 
 
 def create_dataset(data, batch_size, use_triplet):
+    """Creates a dataset."""
     return Dataset(data, batch_size, use_triplet)
 
 
 def create_model():
+    """Creates a model."""
     return Model()
 
 
 def create_train_state_(rng, model, learning_rate):
+    """Creates a train state."""
     return create_train_state(rng, model, learning_rate)
 
 
 def train(model_args, data_args, training_args):
+    """Trains the model."""
     train_data, test_data = load_data(model_args)
     train_dataset = create_dataset(train_data, training_args.per_device_train_batch_size, model_args.use_triplet_loss_trainer)
     test_dataset = create_dataset(test_data, training_args.per_device_eval_batch_size, model_args.use_triplet_loss_trainer)
@@ -173,6 +192,7 @@ def train(model_args, data_args, training_args):
 
 
 def run(model_args, data_args, training_args):
+    """Runs the training."""
     return train(model_args, data_args, training_args)
 
 
