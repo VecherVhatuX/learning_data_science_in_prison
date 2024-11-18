@@ -9,7 +9,6 @@ import numpy as np
 import optax
 from functools import partial
 
-# Model Configuration Data Class
 @dataclass
 class ModelConfig:
     model_id: str = "t5-base"
@@ -30,7 +29,6 @@ class ModelConfig:
     unsloth: bool = False
     triplet_loss_training: bool = False
 
-# Dataset Configuration Data Class
 @dataclass
 class DatasetConfig:
     dataset_name: str = "timdettmers/openassistant-guanaco"
@@ -39,7 +37,6 @@ class DatasetConfig:
     data_splits: str = "train,test"
     tokenized_data_path: str = None
 
-# Training Configuration Data Class
 @dataclass
 class TrainingConfig:
     output_path: str = "./results"
@@ -54,7 +51,6 @@ class TrainingConfig:
     random_seed: int = 42
     resume_checkpoint: str = None
 
-# Custom Dataset Class
 class Dataset:
     def __init__(self, data, batch_size, negative_samples, triplet_mode):
         self.data = data
@@ -77,7 +73,6 @@ class Dataset:
                 batch["labels"] = jnp.array([self.data["labels"][idx] for idx in batch_indices])
             yield batch
 
-# Neural Network Model
 class NeuralNetwork(nn.Module):
     @nn.compact
     def __call__(self, x):
@@ -86,44 +81,40 @@ class NeuralNetwork(nn.Module):
         x = nn.Dense(1000)(x)
         return x
 
-# Prepare Data for Training
-prepare_data = lambda chat_format, data: {
-    "input_ids": [f"{chat_format} {example['input']}" for example in data],
-    "labels": [f"{chat_format} {example['output']}" for example in data],
-    "attention_mask": [1] * len(data)
-}
+def prepare_data(chat_format, data):
+    return {
+        "input_ids": [f"{chat_format} {example['input']}" for example in data],
+        "labels": [f"{chat_format} {example['output']}" for example in data],
+        "attention_mask": [1] * len(data)
+    }
 
-# Load Dataset from JSON Files
-load_data = lambda chat_format: (
-    prepare_data(chat_format, json.load(open("train.json", 'r'))),
-    prepare_data(chat_format, json.load(open("test.json", 'r')))
-)
+def load_data(chat_format):
+    train_data = prepare_data(chat_format, json.load(open("train.json", 'r')))
+    test_data = prepare_data(chat_format, json.load(open("test.json", 'r')))
+    return train_data, test_data
 
-# Create Initial State for Training
-create_train_state = lambda rng, model, learning_rate: optax.TrainState.create(
-    apply_fn=model.apply,
-    params=model.init(rng, jnp.ones((1, 128)))['params'],
-    tx=optax.adam(learning_rate)
-)
+def create_train_state(rng, model, learning_rate):
+    return optax.TrainState.create(
+        apply_fn=model.apply,
+        params=model.init(rng, jnp.ones((1, 128)))['params'],
+        tx=optax.adam(learning_rate)
+    )
 
-# Calculate Loss Function
-calculate_loss = lambda params, batch, triplet_mode, model: (
-    jnp.mean((model.apply({'params': params}, batch["input_ids"]) - batch["positive_labels"])**2 - (model.apply({'params': params}, batch["input_ids"]) - batch["negative_labels"])**2)
-    if triplet_mode
-    else jnp.mean((model.apply({'params': params}, batch["input_ids"]) - batch["labels"])**2)
-)
+def calculate_loss(params, batch, triplet_mode, model):
+    if triplet_mode:
+        return jnp.mean((model.apply({'params': params}, batch["input_ids"]) - batch["positive_labels"])**2 - (model.apply({'params': params}, batch["input_ids"]) - batch["negative_labels"])**2)
+    else:
+        return jnp.mean((model.apply({'params': params}, batch["input_ids"]) - batch["labels"])**2)
 
-# Execute a Single Training Step
-execute_train_step = lambda state, batch, triplet_mode, model: state.apply_gradients(
-    grads=jax.grad(calculate_loss, argnums=0)(state.params, batch, triplet_mode, model)
-)
+def execute_train_step(state, batch, triplet_mode, model):
+    grads = jax.grad(calculate_loss, argnums=0)(state.params, batch, triplet_mode, model)
+    return state.apply_gradients(grads=grads)
 
-# Train a Single Epoch
-train_epoch = lambda model, state, dataset, triplet_mode: jax.lax.fori_loop(
-    0, len(dataset), lambda i, state: execute_train_step(state, next(iter(dataset)), triplet_mode, model), state
-)
+def train_epoch(model, state, dataset, triplet_mode):
+    for batch in dataset:
+        state = execute_train_step(state, batch, triplet_mode, model)
+    return state
 
-# Trainer Class
 class Trainer:
     def __init__(self, model_config, dataset_config, training_config):
         self.model_config = model_config
