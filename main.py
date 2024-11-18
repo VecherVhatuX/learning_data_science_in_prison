@@ -102,7 +102,7 @@ def create_train_state(rng, model, learning_rate):
 
 def calculate_loss(params, batch, triplet_mode, model):
     if triplet_mode:
-        return jnp.mean((model.apply({'params': params}, batch["input_ids"]) - batch["positive_labels"])**2 - (model.apply({'params': params}, batch["input_ids"]) - batch["negative_labels"])**2)
+        return jnp.mean(jnp.maximum((model.apply({'params': params}, batch["input_ids"]) - batch["positive_labels"])**2 - (model.apply({'params': params}, batch["input_ids"]) - batch["negative_labels"])**2, 0))
     else:
         return jnp.mean((model.apply({'params': params}, batch["input_ids"]) - batch["labels"])**2)
 
