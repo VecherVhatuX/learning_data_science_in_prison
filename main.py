@@ -50,21 +50,27 @@ class Training:
     seed: int = 42
     resume_from_checkpoint: str = None
 
-class DataProcessor:
-    def __init__(self, data, batch_size, use_triplet):
+class Dataset:
+    def __init__(self, data, batch_size, num_negative_samples, use_triplet):
         self.data = data
         self.batch_size = batch_size
+        self.num_negative_samples = num_negative_samples
         self.use_triplet = use_triplet
         self.indices = np.arange(len(data["input_ids"]))
 
     def __iter__(self):
         np.random.shuffle(self.indices)
-        batches = np.array_split(self.indices, self.batch_size)
-        for batch in batches:
+        for _ in range(len(self.indices) // self.batch_size):
+            batch_indices = self.indices[_ * self.batch_size:(_ + 1) * self.batch_size]
+            batch = {k: jnp.array([self.data[k][idx] for idx in batch_indices]) for k in ["input_ids"]}
             if self.use_triplet:
-                yield {k: jnp.array([self.data[k][idx] for idx in batch]) for k in ["input_ids", "positive_labels", "negative_labels"]}
+                positive_indices = np.random.choice(batch_indices, size=self.batch_size)
+                negative_indices = np.random.choice(self.indices, size=(self.batch_size, self.num_negative_samples), replace=False)
+                batch["positive_labels"] = jnp.array([self.data["labels"][idx] for idx in positive_indices])
+                batch["negative_labels"] = jnp.array([[self.data["labels"][idx] for idx in sample] for sample in negative_indices])
             else:
-                yield {k: jnp.array([self.data[k][idx] for idx in batch]) for k in ["input_ids", "labels"]}
+                batch["labels"] = jnp.array([self.data["labels"][idx] for idx in batch_indices])
+            yield batch
 
 class NeuralNetwork(nn.Module):
     @nn.compact
@@ -126,8 +132,8 @@ class Trainer:
 
     def train(self):
         train_data, test_data = load_data(self.model_args.chat_template)
-        train_dataset = DataProcessor(train_data, self.training_args.per_device_train_batch_size, self.model_args.use_triplet_loss_trainer)
-        test_dataset = DataProcessor(test_data, self.training_args.per_device_eval_batch_size, self.model_args.use_triplet_loss_trainer)
+        train_dataset = Dataset(train_data, self.training_args.per_device_train_batch_size, 5, self.model_args.use_triplet_loss_trainer)
+        test_dataset = Dataset(test_data, self.training_args.per_device_eval_batch_size, 5, self.model_args.use_triplet_loss_trainer)
         model = NeuralNetwork()
         rng = jax.random.PRNGKey(42)
         state = create_train_state(rng, model, 0.001)
