@@ -5,13 +5,21 @@ from tensorflow.keras.optimizers import Adam
 from tensorflow.keras import backend as K
 import numpy as np
 
-def create_triplet_network(num_embeddings, embedding_dim):
-    inputs = Input(shape=(10,))
-    x = Embedding(num_embeddings, embedding_dim, input_length=10)(inputs)
-    x = GlobalAveragePooling1D()(x)
-    x = Dense(embedding_dim)(x)
-    x = Lambda(lambda x: x / K.linalg.norm(x, axis=-1, keepdims=True))(x)
-    return Model(inputs=inputs, outputs=x)
+class TripletNetwork(Model):
+    def __init__(self, num_embeddings, embedding_dim, margin):
+        super(TripletNetwork, self).__init__()
+        self.margin = margin
+        self.embedding = Embedding(num_embeddings, embedding_dim, input_length=10)
+        self.pooling = GlobalAveragePooling1D()
+        self.dense = Dense(embedding_dim)
+        self.normalize = Lambda(lambda x: x / K.linalg.norm(x, axis=-1, keepdims=True))
+
+    def call(self, inputs, training=None):
+        x = self.embedding(inputs)
+        x = self.pooling(x)
+        x = self.dense(x)
+        x = self.normalize(x)
+        return x
 
 def triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, margin):
     anchor_positive_distance = tf.norm(anchor_embeddings - positive_embeddings, axis=-1)
@@ -19,54 +27,6 @@ def triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, ma
 
     min_anchor_negative_distance = tf.reduce_min(anchor_negative_distance, axis=-1)
     return tf.reduce_mean(tf.maximum(0.0, anchor_positive_distance - min_anchor_negative_distance + margin))
-
-def train_network(network, dataset, epochs, lr, device):
-    optimizer = Adam(learning_rate=lr)
-    for epoch in range(epochs):
-        total_loss = 0.0
-        for i, data in enumerate(dataset):
-            with tf.device(device):
-                anchor_inputs = data['anchor_input_ids']
-                positive_inputs = data['positive_input_ids']
-                negative_inputs = data['negative_input_ids']
-
-                anchor_embeddings = network(anchor_inputs)
-                positive_embeddings = network(positive_inputs)
-                negative_embeddings = network(negative_inputs)
-
-                loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, network.margin)
-
-                with tf.GradientTape() as tape:
-                    tape.watch(network.trainable_variables)
-                    loss_value = loss
-                grads = tape.gradient(loss_value, network.trainable_variables)
-                optimizer.apply_gradients(zip(grads, network.trainable_variables))
-                total_loss += loss_value.numpy()
-        print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
-
-def evaluate_network(network, dataset):
-    total_loss = 0.0
-    for i, data in enumerate(dataset):
-        anchor_inputs = data['anchor_input_ids']
-        positive_inputs = data['positive_input_ids']
-        negative_inputs = data['negative_input_ids']
-
-        anchor_embeddings = network(anchor_inputs)
-        positive_embeddings = network(positive_inputs)
-        negative_embeddings = network(negative_inputs)
-
-        loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, network.margin)
-        total_loss += loss.numpy()
-    print(f'Validation Loss: {total_loss / (i+1):.3f}')
-
-def predict(network, input_ids):
-    return network(input_ids)
-
-def save_model(network, path):
-    network.save(path)
-
-def load_model(path):
-    return tf.keras.models.load_model(path)
 
 class TripletDataset:
     def __init__(self, samples, labels, batch_size, num_negatives):
@@ -114,25 +74,54 @@ class TripletDataset:
 
 class TripletModel:
     def __init__(self, num_embeddings, embedding_dim, margin, lr, device):
-        self.network = create_triplet_network(num_embeddings, embedding_dim)
+        self.network = TripletNetwork(num_embeddings, embedding_dim, margin)
         self.margin = margin
         self.lr = lr
         self.device = device
+        self.optimizer = Adam(learning_rate=lr)
 
     def train(self, dataset, epochs):
-        train_network(self.network, dataset, epochs, self.lr, self.device)
+        for epoch in range(epochs):
+            total_loss = 0.0
+            for i, data in enumerate(dataset):
+                with tf.device(self.device):
+                    anchor_inputs = data['anchor_input_ids']
+                    positive_inputs = data['positive_input_ids']
+                    negative_inputs = data['negative_input_ids']
+
+                    with tf.GradientTape() as tape:
+                        anchor_embeddings = self.network(anchor_inputs, training=True)
+                        positive_embeddings = self.network(positive_inputs, training=True)
+                        negative_embeddings = self.network(negative_inputs, training=True)
+                        loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, self.margin)
+                    grads = tape.gradient(loss, self.network.trainable_variables)
+                    self.optimizer.apply_gradients(zip(grads, self.network.trainable_variables))
+                    total_loss += loss.numpy()
+            print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
     def evaluate(self, dataset):
-        evaluate_network(self.network, dataset)
+        total_loss = 0.0
+        for i, data in enumerate(dataset):
+            anchor_inputs = data['anchor_input_ids']
+            positive_inputs = data['positive_input_ids']
+            negative_inputs = data['negative_input_ids']
+
+            anchor_embeddings = self.network(anchor_inputs)
+            positive_embeddings = self.network(positive_inputs)
+            negative_embeddings = self.network(negative_inputs)
+
+            loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, self.margin)
+            total_loss += loss.numpy()
+        print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
     def predict(self, input_ids):
-        return predict(self.network, input_ids)
+        return self.network(input_ids)
 
     def save_model(self, path):
-        save_model(self.network, path)
+        self.network.save(path)
 
     def load_model(self, path):
-        self.network = load_model(path)
+        self.network = tf.keras.models.load_model(path)
 
 def main():
     np.random.seed(42)
