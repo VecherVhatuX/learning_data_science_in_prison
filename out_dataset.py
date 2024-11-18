@@ -7,57 +7,53 @@ from transformers import AutoTokenizer
 import numpy as np
 import matplotlib.pyplot as plt
 
-def load_json_data(path: str) -> list:
+def load_json_data(file_path):
     try:
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(file_path, 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception as e:
-        print(f"Failed to load JSON file: {path}, error: {str(e)}")
+        print(f"Failed to load JSON file: {file_path}, error: {str(e)}")
         return []
 
-def load_dataset(path: str) -> np.ndarray:
-    return np.load(path, allow_pickle=True)
+def load_dataset(file_path):
+    return np.load(file_path, allow_pickle=True)
 
-def load_snippets(snippet_folder_path: str) -> list:
-    folder_paths = [os.path.join(snippet_folder_path, f) for f in os.listdir(snippet_folder_path) if os.path.isdir(os.path.join(snippet_folder_path, f))]
-    return [load_json_data(os.path.join(folder_path, 'snippet.json')) for folder_path in folder_paths]
+def load_snippets(folder_path):
+    return [(os.path.join(folder_path, f), os.path.join(folder_path, f, 'snippet.json')) 
+            for f in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, f))]
 
-def separate_code_snippets(snippets: list) -> tuple:
+def separate_code_snippets(snippets):
     bug_snippets = []
     non_bug_snippets = []
-    for item in snippets:
-        if item.get('is_bug', False) and item.get('snippet'):
-            bug_snippets.append(item['snippet'])
-        elif not item.get('is_bug', False) and item.get('snippet'):
-            non_bug_snippets.append(item['snippet'])
+    for folder_path, snippet_file_path in snippets:
+        snippet_data = load_json_data(snippet_file_path)
+        if snippet_data.get('is_bug', False) and snippet_data.get('snippet'):
+            bug_snippets.append(snippet_data['snippet'])
+        elif not snippet_data.get('is_bug', False) and snippet_data.get('snippet'):
+            non_bug_snippets.append(snippet_data['snippet'])
     return bug_snippets, non_bug_snippets
 
-def create_triplets(problem_statement: str, positive_snippets: list, negative_snippets: list, num_negatives_per_positive: int) -> list:
-    triplets = []
-    for _ in range(min(num_negatives_per_positive, len(negative_snippets))):
-        for positive_doc in positive_snippets:
-            triplets.append({
-                'anchor': problem_statement,
-                'positive': positive_doc,
-                'negative': random.choice(negative_snippets)
-            })
-    return triplets
+def create_triplets(problem_statement, positive_snippets, negative_snippets, num_negatives_per_positive):
+    return [{'anchor': problem_statement, 'positive': positive_doc, 'negative': random.choice(negative_snippets)} 
+            for positive_doc in positive_snippets 
+            for _ in range(min(num_negatives_per_positive, len(negative_snippets)))]
 
-def create_triplet_dataset(dataset_path: str, snippet_folder_path: str) -> list:
+def create_triplet_dataset(dataset_path, snippet_folder_path):
     dataset = load_dataset(dataset_path)
     instance_id_map = {item['instance_id']: item['problem_statement'] for item in dataset}
     snippets = load_snippets(snippet_folder_path)
     triplets = []
-    for i, folder_path in enumerate([os.path.join(snippet_folder_path, f) for f in os.listdir(snippet_folder_path) if os.path.isdir(os.path.join(snippet_folder_path, f))]):
-        bug_snippets, non_bug_snippets = separate_code_snippets(snippets[i])
+    for folder_path, _ in snippets:
+        bug_snippets, non_bug_snippets = separate_code_snippets([snippets[snippets.index((folder_path, os.path.join(folder_path, 'snippet.json')))]])
         problem_statement = instance_id_map.get(os.path.basename(folder_path))
         triplets.extend(create_triplets(problem_statement, bug_snippets, non_bug_snippets, 3))
     return triplets
 
-def shuffle_samples(samples: list) -> None:
+def shuffle_samples(samples):
     random.shuffle(samples)
+    return samples
 
-def encode_triplet(triplet: dict, max_sequence_length: int, tokenizer: AutoTokenizer) -> tuple:
+def encode_triplet(triplet, max_sequence_length, tokenizer):
     anchor = tf.squeeze(tokenizer.encode_plus(triplet['anchor'], 
                                                max_length=max_sequence_length, 
                                                padding='max_length', 
@@ -78,8 +74,8 @@ def encode_triplet(triplet: dict, max_sequence_length: int, tokenizer: AutoToken
                                                  return_tensors='tf')['input_ids'])
     return anchor, positive, negative
 
-def create_dataset(triplets: list, max_sequence_length: int, minibatch_size: int, tokenizer: AutoTokenizer) -> tf.data.Dataset:
-    shuffle_samples(triplets)
+def create_dataset(triplets, max_sequence_length, minibatch_size, tokenizer):
+    triplets = shuffle_samples(triplets)
     anchor_docs = []
     positive_docs = []
     negative_docs = []
@@ -96,7 +92,7 @@ def create_dataset(triplets: list, max_sequence_length: int, minibatch_size: int
     dataset = tf.data.Dataset.zip((anchor_dataset, positive_dataset, negative_dataset))
     return dataset.batch(minibatch_size).prefetch(tf.data.AUTOTUNE)
 
-def create_model(embedding_size: int, fully_connected_size: int, dropout_rate: int, max_sequence_length: int, learning_rate_value: float) -> tf.keras.Model:
+def create_model(embedding_size, fully_connected_size, dropout_rate, max_sequence_length, learning_rate_value):
     model = tf.keras.Sequential([
         layers.Embedding(input_dim=1000, output_dim=embedding_size, input_length=max_sequence_length),
         layers.GlobalAveragePooling1D(),
@@ -105,14 +101,14 @@ def create_model(embedding_size: int, fully_connected_size: int, dropout_rate: i
         layers.Dense(fully_connected_size, activation='relu'),
         layers.Dropout(dropout_rate)
     ])
-    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate_value), loss=triplet_loss)
+    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate_value), loss=triplet_loss_function)
     return model
 
-def triplet_loss(y_true: tf.Tensor, y_pred: tuple) -> tf.Tensor:
+def triplet_loss_function(y_true, y_pred):
     anchor, positive, negative = y_pred
     return tf.reduce_mean(tf.maximum(tf.norm(anchor - positive, axis=1) - tf.norm(anchor - negative, axis=1) + 1.0, 0.0))
 
-def train_model(model: tf.keras.Model, train_dataset: tf.data.Dataset, test_dataset: tf.data.Dataset, max_training_epochs: int) -> dict:
+def train_model(model, train_dataset, test_dataset, max_training_epochs):
     checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
         filepath="triplet_model_{epoch:02d}.h5",
         save_weights_only=True,
@@ -123,7 +119,7 @@ def train_model(model: tf.keras.Model, train_dataset: tf.data.Dataset, test_data
                         validation_data=test_dataset, callbacks=[checkpoint_callback])
     return history.history
 
-def plot_results(history: dict) -> None:
+def plot_results(history):
     plt.plot(history['loss'], label='Training Loss')
     plt.plot(history['val_loss'], label='Validation Loss')
     plt.legend()
@@ -135,7 +131,6 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
     
     triplets = create_triplet_dataset(dataset_path, snippet_folder_path)
-    random.shuffle(triplets)
     train_triplets, test_triplets = triplets[:int(0.8 * len(triplets))], triplets[int(0.8 * len(triplets)):]
     
     train_dataset = create_dataset(train_triplets, max_sequence_length=512, minibatch_size=16, tokenizer=tokenizer)
