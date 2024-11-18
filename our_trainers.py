@@ -1,6 +1,6 @@
 import tensorflow as tf
 from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input, Embedding, Lambda, Layer
+from tensorflow.keras.layers import Input, Embedding, Lambda, Dense
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras import backend as K
 import numpy as np
@@ -49,11 +49,12 @@ class TripletDataset:
         print(f"  Batch Size: {self.batch_size}")
         print(f"  Number of Negatives: {self.num_negatives}")
 
+
 class TripletNetwork(Model):
     def __init__(self, num_embeddings, embedding_dim):
         super(TripletNetwork, self).__init__()
         self.embedding = Embedding(num_embeddings, embedding_dim, input_length=10)
-        self.dense = tf.keras.layers.Dense(embedding_dim)
+        self.dense = Dense(embedding_dim)
         self.lambda_layer = Lambda(lambda x: x / K.linalg.norm(x, axis=-1, keepdims=True))
 
     def call(self, inputs):
@@ -61,6 +62,7 @@ class TripletNetwork(Model):
         x = self.dense(tf.math.reduce_mean(x, axis=1))
         x = self.lambda_layer(x)
         return x
+
 
 class TripletModel:
     def __init__(self, num_embeddings, embedding_dim, margin, learning_rate, device):
@@ -87,10 +89,14 @@ class TripletModel:
                     
                     min_anchor_negative_distance = tf.reduce_min(anchor_negative_distance, axis=-1)
                     loss = self.loss_fn(min_anchor_negative_distance, anchor_positive_distance)
-                    loss += margin * tf.reduce_mean(tf.maximum(0.0, anchor_positive_distance - min_anchor_negative_distance))
+                    loss += self.model.loss_fn.margin * tf.reduce_mean(tf.maximum(0.0, anchor_positive_distance - min_anchor_negative_distance))
                     
-                    self.optimizer.minimize(loss, self.model.trainable_variables)
-                    total_loss += loss.numpy()
+                    with tf.GradientTape() as tape:
+                        tape.watch(self.model.trainable_variables)
+                        loss_value = loss
+                    grads = tape.gradient(loss_value, self.model.trainable_variables)
+                    self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
+                    total_loss += loss_value.numpy()
             print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
     def evaluate_model(self, dataset):
@@ -117,6 +123,7 @@ class TripletModel:
     def make_prediction(self, input_ids):
         return self.model(input_ids)
 
+
 def main():
     np.random.seed(42)
     tf.random.set_seed(42)
@@ -131,24 +138,14 @@ def main():
     margin = 1.0
     lr = 1e-4
 
-    dataset = tf.data.Dataset.from_tensor_slices(samples).batch(batch_size)
-    dataset = dataset.map(lambda x: {'anchor_input_ids': x, 'positive_input_ids': x, 'negative_input_ids': x})
-    dataset = dataset.map(lambda data: {
-        'anchor_input_ids': data['anchor_input_ids'],
-        'positive_input_ids': tf.random.shuffle(data['positive_input_ids']),
-        'negative_input_ids': tf.random.shuffle(data['negative_input_ids'])
-    })
-    dataset = dataset.map(lambda data: {
-        'anchor_input_ids': data['anchor_input_ids'],
-        'positive_input_ids': data['positive_input_ids'][:num_negatives],
-        'negative_input_ids': data['negative_input_ids'][:num_negatives]
-    })
+    dataset = TripletDataset(samples, labels, batch_size, num_negatives)
 
     model = TripletModel(num_embeddings, embedding_dim, margin, lr, device)
     model.train_model(dataset, epochs)
     input_ids = tf.constant([1, 2, 3, 4, 5], dtype=tf.int32)[None, :]
     output = model.make_prediction(input_ids)
     print(output)
+
 
 if __name__ == "__main__":
     main()
