@@ -7,6 +7,7 @@ from transformers import AutoTokenizer
 import numpy as np
 import matplotlib.pyplot as plt
 
+# Data Loading Functions
 def load_json_data(file_path):
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -22,6 +23,7 @@ def load_snippets(folder_path):
     return [(os.path.join(folder_path, f), os.path.join(folder_path, f, 'snippet.json')) 
             for f in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, f))]
 
+# Data Preparation Functions
 def separate_code_snippets(snippets):
     bug_snippets = []
     non_bug_snippets = []
@@ -49,10 +51,12 @@ def create_triplet_dataset(dataset_path, snippet_folder_path):
         triplets.extend(create_triplets(problem_statement, bug_snippets, non_bug_snippets, 3))
     return triplets
 
+# Data Shuffling Function
 def shuffle_samples(samples):
     random.shuffle(samples)
     return samples
 
+# Encoding Function
 def encode_triplet(triplet, max_sequence_length, tokenizer):
     anchor = tf.squeeze(tokenizer.encode_plus(triplet['anchor'], 
                                                max_length=max_sequence_length, 
@@ -74,6 +78,7 @@ def encode_triplet(triplet, max_sequence_length, tokenizer):
                                                  return_tensors='tf')['input_ids'])
     return anchor, positive, negative
 
+# Dataset Creation Function
 def create_dataset(triplets, max_sequence_length, minibatch_size, tokenizer):
     triplets = shuffle_samples(triplets)
     anchor_docs = []
@@ -92,6 +97,7 @@ def create_dataset(triplets, max_sequence_length, minibatch_size, tokenizer):
     dataset = tf.data.Dataset.zip((anchor_dataset, positive_dataset, negative_dataset))
     return dataset.batch(minibatch_size).prefetch(tf.data.AUTOTUNE)
 
+# Model Creation Function
 def create_model(embedding_size, fully_connected_size, dropout_rate, max_sequence_length, learning_rate_value):
     model = tf.keras.Sequential([
         layers.Embedding(input_dim=1000, output_dim=embedding_size, input_length=max_sequence_length),
@@ -104,10 +110,12 @@ def create_model(embedding_size, fully_connected_size, dropout_rate, max_sequenc
     model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate_value), loss=triplet_loss_function)
     return model
 
+# Triplet Loss Function
 def triplet_loss_function(y_true, y_pred):
     anchor, positive, negative = y_pred
     return tf.reduce_mean(tf.maximum(tf.norm(anchor - positive, axis=1) - tf.norm(anchor - negative, axis=1) + 1.0, 0.0))
 
+# Model Training Function
 def train_model(model, train_dataset, test_dataset, max_training_epochs):
     checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
         filepath="triplet_model_{epoch:02d}.h5",
@@ -119,12 +127,14 @@ def train_model(model, train_dataset, test_dataset, max_training_epochs):
                         validation_data=test_dataset, callbacks=[checkpoint_callback])
     return history.history
 
+# Plotting Function
 def plot_results(history):
     plt.plot(history['loss'], label='Training Loss')
     plt.plot(history['val_loss'], label='Validation Loss')
     plt.legend()
     plt.show()
 
+# Main Function
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
