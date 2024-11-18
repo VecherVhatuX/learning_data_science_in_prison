@@ -114,6 +114,11 @@ class TripletModel:
     def predict(self, input_ids):
         return self.network(input_ids)
 
+    def save_model(self, path):
+        self.network.save(path)
+
+    def load_model(self, path):
+        self.network = tf.keras.models.load_model(path)
 
 def main():
     np.random.seed(42)
@@ -136,7 +141,9 @@ def main():
     input_ids = tf.constant([1, 2, 3, 4, 5], dtype=tf.int32)[None, :]
     output = model.predict(input_ids)
     print(output)
-
+    model.save_model("triplet_model.h5")
+    model.load_model("triplet_model.h5")
+    print("Model saved and loaded successfully.")
 
 if __name__ == "__main__":
     main()
