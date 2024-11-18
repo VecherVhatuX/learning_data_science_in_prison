@@ -1,6 +1,6 @@
 import tensorflow as tf
 from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input, Embedding, Lambda, Dense
+from tensorflow.keras.layers import Input, Embedding, Lambda, Dense, GlobalAveragePooling1D
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras import backend as K
 import numpy as np
@@ -54,12 +54,14 @@ class TripletNetwork(Model):
     def __init__(self, num_embeddings, embedding_dim):
         super(TripletNetwork, self).__init__()
         self.embedding = Embedding(num_embeddings, embedding_dim, input_length=10)
+        self.pooling = GlobalAveragePooling1D()
         self.dense = Dense(embedding_dim)
         self.lambda_layer = Lambda(lambda x: x / K.linalg.norm(x, axis=-1, keepdims=True))
     
     def call(self, inputs):
         x = self.embedding(inputs)
-        x = self.dense(tf.math.reduce_mean(x, axis=1))
+        x = self.pooling(x)
+        x = self.dense(x)
         x = self.lambda_layer(x)
         return x
 
@@ -69,8 +71,15 @@ class TripletModel:
         self.device = device
         self.model = TripletNetwork(num_embeddings, embedding_dim)
         self.optimizer = Adam(learning_rate=learning_rate)
-        self.loss_fn = tf.keras.losses.MeanSquaredError()
         self.margin = margin
+    
+    def triplet_loss(self, anchor_embeddings, positive_embeddings, negative_embeddings):
+        anchor_positive_distance = tf.norm(anchor_embeddings - positive_embeddings, axis=-1)
+        anchor_negative_distance = tf.norm(anchor_embeddings[:, None] - negative_embeddings, axis=-1)
+        
+        min_anchor_negative_distance = tf.reduce_min(anchor_negative_distance, axis=-1)
+        loss = tf.reduce_mean(tf.maximum(0.0, anchor_positive_distance - min_anchor_negative_distance + self.margin))
+        return loss
     
     def train(self, dataset, epochs):
         for epoch in range(epochs):
@@ -85,12 +94,7 @@ class TripletModel:
                     positive_embeddings = self.model(positive_inputs)
                     negative_embeddings = self.model(negative_inputs)
                     
-                    anchor_positive_distance = tf.norm(anchor_embeddings - positive_embeddings, axis=-1)
-                    anchor_negative_distance = tf.norm(anchor_embeddings[:, None] - negative_embeddings, axis=-1)
-                    
-                    min_anchor_negative_distance = tf.reduce_min(anchor_negative_distance, axis=-1)
-                    loss = self.loss_fn(min_anchor_negative_distance, anchor_positive_distance)
-                    loss += self.margin * tf.reduce_mean(tf.maximum(0.0, anchor_positive_distance - min_anchor_negative_distance))
+                    loss = self.triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
                     
                     with tf.GradientTape() as tape:
                         tape.watch(self.model.trainable_variables)
@@ -111,13 +115,7 @@ class TripletModel:
             positive_embeddings = self.model(positive_inputs)
             negative_embeddings = self.model(negative_inputs)
             
-            anchor_positive_distance = tf.norm(anchor_embeddings - positive_embeddings, axis=-1)
-            anchor_negative_distance = tf.norm(anchor_embeddings[:, None] - negative_embeddings, axis=-1)
-            
-            min_anchor_negative_distance = tf.reduce_min(anchor_negative_distance, axis=-1)
-            loss = self.loss_fn(min_anchor_negative_distance, anchor_positive_distance)
-            loss += 1 * tf.reduce_mean(tf.maximum(0.0, anchor_positive_distance - min_anchor_negative_distance))
-            
+            loss = self.triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
             total_loss += loss.numpy()
         print(f'Validation Loss: {total_loss / (i+1):.3f}')
     
