@@ -6,18 +6,7 @@ from tensorflow.keras import backend as K
 import numpy as np
 
 class TripletNetwork(Model):
-    """
-    A neural network designed to learn embeddings by optimizing a triplet loss function.
-    """
     def __init__(self, num_embeddings, embedding_dim, margin):
-        """
-        Initializes the TripletNetwork model.
-
-        Args:
-            num_embeddings (int): The number of unique embeddings to learn.
-            embedding_dim (int): The dimensionality of each embedding.
-            margin (float): The margin value used in the triplet loss function.
-        """
         super(TripletNetwork, self).__init__()
         self.margin = margin
         self.embedding = Embedding(num_embeddings, embedding_dim, input_length=10)
@@ -25,17 +14,7 @@ class TripletNetwork(Model):
         self.dense = Dense(embedding_dim)
         self.normalize = Lambda(lambda x: x / K.linalg.norm(x, axis=-1, keepdims=True))
 
-    def call(self, inputs, training=None):
-        """
-        Defines the forward pass of the model.
-
-        Args:
-            inputs: The input data to the model.
-            training: A boolean indicating whether the model is in training mode.
-
-        Returns:
-            The learned embeddings for the input data.
-        """
+    def call(self, inputs):
         x = self.embedding(inputs)
         x = self.pooling(x)
         x = self.dense(x)
@@ -43,59 +22,22 @@ class TripletNetwork(Model):
         return x
 
 def triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, margin):
-    """
-    Computes the triplet loss for the given embeddings.
-
-    Args:
-        anchor_embeddings: The embeddings of the anchor samples.
-        positive_embeddings: The embeddings of the positive samples.
-        negative_embeddings: The embeddings of the negative samples.
-        margin: The margin value used in the triplet loss function.
-
-    Returns:
-        The triplet loss value.
-    """
     anchor_positive_distance = tf.norm(anchor_embeddings - positive_embeddings, axis=-1)
     anchor_negative_distance = tf.norm(anchor_embeddings[:, None] - negative_embeddings, axis=-1)
-
     min_anchor_negative_distance = tf.reduce_min(anchor_negative_distance, axis=-1)
     return tf.reduce_mean(tf.maximum(0.0, anchor_positive_distance - min_anchor_negative_distance + margin))
 
 class TripletDataset:
-    """
-    A dataset class designed to generate batches of triplets.
-    """
     def __init__(self, samples, labels, batch_size, num_negatives):
-        """
-        Initializes the TripletDataset.
-
-        Args:
-            samples: The input data samples.
-            labels: The corresponding labels for the samples.
-            batch_size: The batch size to use when generating triplets.
-            num_negatives: The number of negative samples to include in each triplet.
-        """
         self.samples = samples
         self.labels = labels
         self.batch_size = batch_size
         self.num_negatives = num_negatives
 
     def __len__(self):
-        """
-        Returns the number of batches in the dataset.
-        """
         return -(-len(self.samples) // self.batch_size)
 
     def __getitem__(self, idx):
-        """
-        Returns a batch of triplets.
-
-        Args:
-            idx: The index of the batch to retrieve.
-
-        Returns:
-            A batch of triplets.
-        """
         start_idx = idx * self.batch_size
         end_idx = min((idx + 1) * self.batch_size, len(self.samples))
         anchor_idx = np.arange(start_idx, end_idx)
@@ -110,55 +52,8 @@ class TripletDataset:
             'negative_input_ids': self.samples[negative_idx]
         }
 
-    def get_samples(self):
-        """
-        Returns the input data samples.
-        """
-        return self.samples
-
-    def get_labels(self):
-        """
-        Returns the corresponding labels.
-        """
-        return self.labels
-
-    def get_batch_size(self):
-        """
-        Returns the batch size.
-        """
-        return self.batch_size
-
-    def get_num_negatives(self):
-        """
-        Returns the number of negative samples per anchor.
-        """
-        return self.num_negatives
-
-    def print_info(self):
-        """
-        Prints information about the dataset.
-        """
-        print("Dataset Information:")
-        print(f"  Number of Samples: {self.samples.shape}")
-        print(f"  Number of Labels: {self.labels.shape}")
-        print(f"  Batch Size: {self.batch_size}")
-        print(f"  Number of Negatives: {self.num_negatives}")
-
 class TripletModel:
-    """
-    A model class designed to train and evaluate a triplet network.
-    """
     def __init__(self, num_embeddings, embedding_dim, margin, lr, device):
-        """
-        Initializes the TripletModel.
-
-        Args:
-            num_embeddings (int): The number of unique embeddings to learn.
-            embedding_dim (int): The dimensionality of each embedding.
-            margin (float): The margin value used in the triplet loss function.
-            lr (float): The learning rate to use for training.
-            device (str): The device to use for training.
-        """
         self.network = TripletNetwork(num_embeddings, embedding_dim, margin)
         self.margin = margin
         self.lr = lr
@@ -166,13 +61,6 @@ class TripletModel:
         self.optimizer = Adam(learning_rate=lr)
 
     def train(self, dataset, epochs):
-        """
-        Trains the model on the given dataset.
-
-        Args:
-            dataset: The dataset to train on.
-            epochs (int): The number of epochs to train for.
-        """
         for epoch in range(epochs):
             total_loss = 0.0
             for i, data in enumerate(dataset):
@@ -192,12 +80,6 @@ class TripletModel:
             print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
     def evaluate(self, dataset):
-        """
-        Evaluates the model on the given dataset.
-
-        Args:
-            dataset: The dataset to evaluate on.
-        """
         total_loss = 0.0
         for i, data in enumerate(dataset):
             anchor_inputs = data['anchor_input_ids']
@@ -213,33 +95,12 @@ class TripletModel:
         print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
     def predict(self, input_ids):
-        """
-        Makes predictions on the given input data.
-
-        Args:
-            input_ids: The input data to make predictions on.
-
-        Returns:
-            The learned embeddings for the input data.
-        """
         return self.network(input_ids)
 
     def save_model(self, path):
-        """
-        Saves the model to the given path.
-
-        Args:
-            path (str): The path to save the model to.
-        """
         self.network.save(path)
 
     def load_model(self, path):
-        """
-        Loads the model from the given path.
-
-        Args:
-            path (str): The path to load the model from.
-        """
         self.network = tf.keras.models.load_model(path)
 
 def main():
@@ -257,7 +118,6 @@ def main():
     lr = 1e-4
 
     dataset = TripletDataset(samples, labels, batch_size, num_negatives)
-
     model = TripletModel(num_embeddings, embedding_dim, margin, lr, device)
     model.train(dataset, epochs)
     input_ids = tf.constant([1, 2, 3, 4, 5], dtype=tf.int32)[None, :]
