@@ -11,10 +11,10 @@ class TripletDataset:
         self.labels = labels
         self.batch_size = batch_size
         self.num_negatives = num_negatives
-
+    
     def __len__(self):
         return -(-len(self.samples) // self.batch_size)
-
+    
     def __getitem__(self, idx):
         start_idx = idx * self.batch_size
         end_idx = min((idx + 1) * self.batch_size, len(self.samples))
@@ -29,20 +29,20 @@ class TripletDataset:
             'positive_input_ids': self.samples[positive_idx],
             'negative_input_ids': self.samples[negative_idx]
         }
-
-    def fetch_samples(self):
+    
+    def get_samples(self):
         return self.samples
-
-    def fetch_labels(self):
+    
+    def get_labels(self):
         return self.labels
-
-    def fetch_batch_size(self):
+    
+    def get_batch_size(self):
         return self.batch_size
-
-    def fetch_num_negatives(self):
+    
+    def get_num_negatives(self):
         return self.num_negatives
-
-    def print_dataset_info(self):
+    
+    def print_info(self):
         print("Dataset Information:")
         print(f"  Number of Samples: {self.samples.shape}")
         print(f"  Number of Labels: {self.labels.shape}")
@@ -56,7 +56,7 @@ class TripletNetwork(Model):
         self.embedding = Embedding(num_embeddings, embedding_dim, input_length=10)
         self.dense = Dense(embedding_dim)
         self.lambda_layer = Lambda(lambda x: x / K.linalg.norm(x, axis=-1, keepdims=True))
-
+    
     def call(self, inputs):
         x = self.embedding(inputs)
         x = self.dense(tf.math.reduce_mean(x, axis=1))
@@ -70,8 +70,9 @@ class TripletModel:
         self.model = TripletNetwork(num_embeddings, embedding_dim)
         self.optimizer = Adam(learning_rate=learning_rate)
         self.loss_fn = tf.keras.losses.MeanSquaredError()
-
-    def train_model(self, dataset, epochs):
+        self.margin = margin
+    
+    def train(self, dataset, epochs):
         for epoch in range(epochs):
             total_loss = 0.0
             for i, data in enumerate(dataset):
@@ -89,7 +90,7 @@ class TripletModel:
                     
                     min_anchor_negative_distance = tf.reduce_min(anchor_negative_distance, axis=-1)
                     loss = self.loss_fn(min_anchor_negative_distance, anchor_positive_distance)
-                    loss += self.model.loss_fn.margin * tf.reduce_mean(tf.maximum(0.0, anchor_positive_distance - min_anchor_negative_distance))
+                    loss += self.margin * tf.reduce_mean(tf.maximum(0.0, anchor_positive_distance - min_anchor_negative_distance))
                     
                     with tf.GradientTape() as tape:
                         tape.watch(self.model.trainable_variables)
@@ -98,8 +99,8 @@ class TripletModel:
                     self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
                     total_loss += loss_value.numpy()
             print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
-
-    def evaluate_model(self, dataset):
+    
+    def evaluate(self, dataset):
         total_loss = 0.0
         for i, data in enumerate(dataset):
             anchor_inputs = data['anchor_input_ids']
@@ -119,8 +120,8 @@ class TripletModel:
             
             total_loss += loss.numpy()
         print(f'Validation Loss: {total_loss / (i+1):.3f}')
-
-    def make_prediction(self, input_ids):
+    
+    def predict(self, input_ids):
         return self.model(input_ids)
 
 
@@ -141,9 +142,9 @@ def main():
     dataset = TripletDataset(samples, labels, batch_size, num_negatives)
 
     model = TripletModel(num_embeddings, embedding_dim, margin, lr, device)
-    model.train_model(dataset, epochs)
+    model.train(dataset, epochs)
     input_ids = tf.constant([1, 2, 3, 4, 5], dtype=tf.int32)[None, :]
-    output = model.make_prediction(input_ids)
+    output = model.predict(input_ids)
     print(output)
 
 
