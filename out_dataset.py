@@ -120,6 +120,8 @@ class TripletTrainer:
         self.model = model
         self.dataset_path = dataset_path
         self.snippet_folder_path = snippet_folder_path
+        self.checkpoint_path = "triplet_model_{epoch:02d}.h5"
+        self.checkpoint_dir = os.path.dirname(self.checkpoint_path)
 
     def train(self) -> dict:
         triplets = DataHelper.create_triplet_dataset(self.dataset_path, self.snippet_folder_path)
@@ -127,22 +129,21 @@ class TripletTrainer:
         train_triplets, test_triplets = triplets[:int(0.8 * len(triplets))], triplets[int(0.8 * len(triplets)):]
         train_dataset = self.model.create_dataset(train_triplets)
         test_dataset = self.model.create_dataset(test_triplets)
-        history = {'loss': [], 'val_loss': []}
-        for epoch in range(self.model.config.max_training_epochs):
-            loss = self.model.fit(train_dataset, epochs=1).history['loss'][0]
-            val_loss = self.model.evaluate(test_dataset)
-            history['loss'].append(loss)
-            history['val_loss'].append(val_loss)
-            print(f'Epoch {epoch+1}, Loss: {loss:.4f}, Val Loss: {val_loss:.4f}')
-            self.model.save_weights(f'triplet_model_{epoch+1}.h5')
-            print(f'Model saved at triplet_model_{epoch+1}.h5')
-        return history
+        checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
+            filepath=self.checkpoint_path,
+            save_weights_only=True,
+            save_freq="epoch",
+            verbose=1
+        )
+        history = self.model.fit(train_dataset, epochs=self.model.config.max_training_epochs, 
+                                 validation_data=test_dataset, callbacks=[checkpoint_callback])
+        return history.history
 
-def plot_training_history(history: dict):
-    plt.plot(history['loss'], label='Training Loss')
-    plt.plot(history['val_loss'], label='Validation Loss')
-    plt.legend()
-    plt.show()
+    def plot_history(self, history: dict):
+        plt.plot(history['loss'], label='Training Loss')
+        plt.plot(history['val_loss'], label='Validation Loss')
+        plt.legend()
+        plt.show()
 
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
@@ -153,7 +154,7 @@ def main():
     model.set_tokenizer(tokenizer)
     trainer = TripletTrainer(model, dataset_path, snippet_folder_path)
     history = trainer.train()
-    plot_training_history(history)
+    trainer.plot_history(history)
 
 if __name__ == "__main__":
     main()
