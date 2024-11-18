@@ -106,9 +106,10 @@ class TripletModel:
             positive_inputs = data['positive_input_ids']
             negative_inputs = data['negative_input_ids']
 
-            anchor_embeddings = self.network(anchor_inputs)
-            positive_embeddings = self.network(positive_inputs)
-            negative_embeddings = self.network(negative_inputs)
+            with tf.device(self.device):
+                anchor_embeddings = self.network(anchor_inputs)
+                positive_embeddings = self.network(positive_inputs)
+                negative_embeddings = self.network(negative_inputs)
 
             loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, self.margin)
             total_loss += loss.numpy()
