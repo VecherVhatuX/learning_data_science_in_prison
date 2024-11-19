@@ -21,9 +21,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from transformers import AutoModel, AutoTokenizer
+from typing import Tuple, List
 
 class TripletModel:
-    def __init__(self, embedding_size=128, fully_connected_size=64, dropout_rate=0.2, max_sequence_length=512, learning_rate_value=1e-5):
+    def __init__(self, embedding_size: int = 128, fully_connected_size: int = 64, dropout_rate: float = 0.2, max_sequence_length: int = 512, learning_rate_value: float = 1e-5):
         self.embedding_size = embedding_size
         self.fully_connected_size = fully_connected_size
         self.dropout_rate = dropout_rate
@@ -32,7 +33,7 @@ class TripletModel:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
 
-    def load_json_data(self, file_path):
+    def load_json_data(self, file_path: str) -> List:
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
@@ -40,14 +41,14 @@ class TripletModel:
             print(f"Failed to load JSON file: {file_path}, error: {str(e)}")
             return []
 
-    def load_dataset(self, file_path):
+    def load_dataset(self, file_path: str) -> np.ndarray:
         return np.load(file_path, allow_pickle=True)
 
-    def load_snippets(self, folder_path):
+    def load_snippets(self, folder_path: str) -> List:
         return [(os.path.join(folder_path, f), os.path.join(folder_path, f, 'snippet.json')) 
                 for f in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, f))]
 
-    def separate_code_snippets(self, snippets):
+    def separate_code_snippets(self, snippets: List) -> Tuple[List, List]:
         return tuple(map(list, zip(*[
             ((snippet_data['snippet'], True) if snippet_data.get('is_bug', False) else (snippet_data['snippet'], False)) 
             for folder_path, snippet_file_path in snippets 
@@ -55,12 +56,12 @@ class TripletModel:
             if snippet_data.get('snippet')
         ])))
 
-    def create_triplets(self, problem_statement, positive_snippets, negative_snippets, num_negatives_per_positive):
+    def create_triplets(self, problem_statement: str, positive_snippets: List[str], negative_snippets: List[str], num_negatives_per_positive: int) -> List:
         return [{'anchor': problem_statement, 'positive': positive_doc, 'negative': random.choice(negative_snippets)} 
                 for positive_doc in positive_snippets 
                 for _ in range(min(num_negatives_per_positive, len(negative_snippets)))]
 
-    def create_triplet_dataset(self, dataset_path, snippet_folder_path):
+    def create_triplet_dataset(self, dataset_path: str, snippet_folder_path: str) -> List:
         dataset = self.load_dataset(dataset_path)
         instance_id_map = {item['instance_id']: item['problem_statement'] for item in dataset}
         snippets = self.load_snippets(snippet_folder_path)
@@ -72,11 +73,11 @@ class TripletModel:
             for bug_snippet, non_bug_snippet in [(bug, non_bug) for bug in bug_snippets for non_bug in non_bug_snippets]
         ]
 
-    def shuffle_samples(self, samples):
+    def shuffle_samples(self, samples: List) -> List:
         random.shuffle(samples)
         return samples
 
-    def encode_triplet(self, triplet):
+    def encode_triplet(self, triplet: dict) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         anchor = self.tokenizer.encode_plus(triplet['anchor'], 
                                              max_length=self.max_sequence_length, 
                                              padding='max_length', 
@@ -97,7 +98,7 @@ class TripletModel:
                                                return_tensors='pt')['input_ids'].to(self.device)
         return anchor, positive, negative
 
-    def create_dataset(self, triplets):
+    def create_dataset(self, triplets: List) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         anchor_docs = []
         positive_docs = []
         negative_docs = []
@@ -108,7 +109,7 @@ class TripletModel:
             negative_docs.append(negative)
         return torch.stack(anchor_docs), torch.stack(positive_docs), torch.stack(negative_docs)
 
-    def create_model(self):
+    def create_model(self) -> nn.Module:
         class Model(nn.Module):
             def __init__(self):
                 super(Model, self).__init__()
@@ -117,7 +118,7 @@ class TripletModel:
                 self.fc1 = nn.Linear(self.distilbert.config.hidden_size, self.fully_connected_size)
                 self.fc2 = nn.Linear(self.fully_connected_size, self.embedding_size)
 
-            def forward(self, input_ids):
+            def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
                 outputs = self.distilbert(input_ids)
                 pooled_output = outputs.pooler_output
                 pooled_output = self.dropout(pooled_output)
@@ -127,7 +128,7 @@ class TripletModel:
                 return pooled_output
         return Model()
 
-    def train_model(self, model, anchor_docs, positive_docs, negative_docs, max_training_epochs):
+    def train_model(self, model: nn.Module, anchor_docs: torch.Tensor, positive_docs: torch.Tensor, negative_docs: torch.Tensor, max_training_epochs: int) -> nn.Module:
         model.to(self.device)
         optimizer = optim.Adam(model.parameters(), lr=self.learning_rate_value)
         loss_fn = nn.TripletMarginLoss()
@@ -143,12 +144,12 @@ class TripletModel:
             print(f'Epoch {epoch+1}, Loss: {loss.item()}')
         return model
 
-    def plot_results(self, history):
+    def plot_results(self, history: dict) -> None:
         plt.plot(history['loss'], label='Training Loss')
         plt.legend()
         plt.show()
 
-    def pipeline(self, dataset_path, snippet_folder_path, num_negatives_per_positive=1, max_training_epochs=5):
+    def pipeline(self, dataset_path: str, snippet_folder_path: str, num_negatives_per_positive: int = 1, max_training_epochs: int = 5) -> None:
         triplets = self.create_triplet_dataset(dataset_path, snippet_folder_path)
         train_triplets, test_triplets = train_test_split(triplets, test_size=0.2, random_state=42)
         train_triplets = self.shuffle_samples(train_triplets)
