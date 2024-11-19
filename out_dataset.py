@@ -130,7 +130,7 @@ class TripletModel:
     def train_model(self, model, anchor_docs, positive_docs, negative_docs, max_training_epochs):
         model.to(self.device)
         optimizer = optim.Adam(model.parameters(), lr=self.learning_rate_value)
-        loss_fn = nn.TripletLoss()
+        loss_fn = nn.TripletMarginLoss()
         for epoch in range(max_training_epochs):
             model.train()
             optimizer.zero_grad()
@@ -151,9 +151,36 @@ class TripletModel:
     def pipeline(self, dataset_path, snippet_folder_path, num_negatives_per_positive=1, max_training_epochs=5):
         triplets = self.create_triplet_dataset(dataset_path, snippet_folder_path)
         train_triplets, test_triplets = train_test_split(triplets, test_size=0.2, random_state=42)
+        train_triplets = self.shuffle_samples(train_triplets)
+        test_triplets = self.shuffle_samples(test_triplets)
+        train_triplets = [{'anchor': t[0], 'positive': t[1], 'negative': t[2]} for t in train_triplets]
+        test_triplets = [{'anchor': t[0], 'positive': t[1], 'negative': t[2]} for t in test_triplets]
         anchor_docs, positive_docs, negative_docs = self.create_dataset(train_triplets)
         model = self.create_model()
         model = self.train_model(model, anchor_docs, positive_docs, negative_docs, max_training_epochs)
+        
+        # Test model
+        test_anchor_docs, test_positive_docs, test_negative_docs = self.create_dataset(test_triplets)
+        model.eval()
+        with torch.no_grad():
+            test_anchor_embeddings = model(test_anchor_docs)
+            test_positive_embeddings = model(test_positive_docs)
+            test_negative_embeddings = model(test_negative_docs)
+            test_loss = nn.TripletMarginLoss()(test_anchor_embeddings, test_positive_embeddings, test_negative_embeddings)
+            print(f'Test Loss: {test_loss.item()}')
+            
+            # Evaluate model
+            correct = 0
+            with torch.no_grad():
+                for i in range(len(test_anchor_embeddings)):
+                    anchor = test_anchor_embeddings[i]
+                    positive = test_positive_embeddings[i]
+                    negative = test_negative_embeddings[i]
+                    pos_dist = torch.pairwise_distance(anchor, positive)
+                    neg_dist = torch.pairwise_distance(anchor, negative)
+                    if pos_dist < neg_dist:
+                        correct += 1
+            print(f'Test Accuracy: {correct / len(test_anchor_embeddings)}')
 
 
 if __name__ == "__main__":
