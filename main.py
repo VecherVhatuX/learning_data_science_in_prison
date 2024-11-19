@@ -48,21 +48,27 @@ class Config:
 
 # Model Functions
 
-def initialize_model():
-    return {
-        'layer1': jax.random.normal(jax.random.PRNGKey(42), (128, 128)),
-        'layer2': jax.random.normal(jax.random.PRNGKey(43), (128, 128)),
-        'layer3': jax.random.normal(jax.random.PRNGKey(44), (128, 1000)),
-    }
+class Model(nn.Module):
+    @nn.compact
+    def __call__(self, x):
+        x = nn.relu(nn.Dense(128, kernel_init=jax.nn.initializers.normal())(x))
+        x = nn.relu(nn.Dense(128, kernel_init=jax.nn.initializers.normal())(x))
+        x = nn.Dense(1000, kernel_init=jax.nn.initializers.normal())(x)
+        return x
 
-def model(params, x):
-    return jnp.matmul(jnp.matmul(jax.nn.relu(jnp.matmul(x, params['layer1'])), params['layer2']), params['layer3'])
+def initialize_model():
+    model = Model()
+    rng = jax.random.PRNGKey(42)
+    input_shape = (1, 128)
+    params = model.init(rng, jnp.ones(input_shape))
+    return params
 
 def calculate_loss(params, batch):
+    model = Model()
     if len(batch) == 3:
-        return jnp.mean(jnp.maximum((model(params, batch[0]) - batch[1])**2 - (model(params, batch[0]) - batch[2])**2, 0))
+        return jnp.mean(jnp.maximum((model.apply(params, batch[0]) - batch[1])**2 - (model.apply(params, batch[0]) - batch[2])**2, 0))
     else:
-        return jnp.mean((model(params, batch[0]) - batch[1])**2)
+        return jnp.mean((model.apply(params, batch[0]) - batch[1])**2)
 
 # Dataset
 
@@ -82,35 +88,26 @@ def load_data(chat_format):
 
 # Training Functions
 
-def update_params(params, grads, learning_rate):
-    return {k: v - learning_rate * g for k, v, g in zip(params.keys(), params.values(), grads.values())}
-
-def train_step(params, batch):
+@jax.jit
+def train_step(params, batch, optimizer_state):
     loss, grads = jax.value_and_grad(lambda p: calculate_loss(p, batch))(params)
-    return update_params(params, grads, 0.001), loss
+    updates, new_optimizer_state = optimizer_state.update(grads, optimizer_state)
+    new_params = optax.apply_updates(params, updates)
+    return new_params, new_optimizer_state, loss
 
-def train_epoch(params, dataset):
-    return jax.jit(lambda params, dataset: params, static_argnums=(1,))(params, dataset)
-
-def map_over_batches(params, dataset):
-    def train_batch(params, batch):
-        return train_step(params, batch)
-    return jax.jit(lambda params, dataset: params, static_argnums=(1,))(params, dataset)
-
-def map_over_epochs(params, dataset, num_epochs):
-    def train_epoch(params, dataset):
-        return map_over_batches(params, dataset)
-    def train_loop(carry, _):
-        params, dataset = carry
-        params = train_epoch(params, dataset)
-        return (params, dataset), None
-    return jax.jit(lambda params, dataset, num_epochs: params, static_argnums=(2,))(params, dataset, num_epochs)
+def train_epoch(params, dataset, optimizer_state):
+    batches = np.array_split(dataset, len(dataset) // 16)
+    for batch in batches:
+        params, optimizer_state, _ = train_step(params, batch, optimizer_state)
+    return params, optimizer_state
 
 def train(config):
     train_data, _ = load_data(config.chat_format)
     dataset = np.array(train_data["input_ids"]), np.array(train_data["labels"])
     params = initialize_model()
-    params = map_over_epochs(params, dataset, config.num_epochs)
+    optimizer_state = optax.adamw(0.001, b1=0.9, b2=0.999, eps=1e-8)
+    for _ in range(config.num_epochs):
+        params, optimizer_state = train_epoch(params, dataset, optimizer_state)
     return params
 
 def main():
