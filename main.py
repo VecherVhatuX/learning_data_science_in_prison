@@ -45,7 +45,8 @@ class Config:
     resume_checkpoint: str = None  
 
 def load_json_data(file_name: str) -> Dict:
-    return json.load(open(file_name, 'r'))
+    with open(file_name, 'r') as f:
+        return json.load(f)
 
 def prepare_data(chat_format: str, data: Dict) -> Dict:
     return {
