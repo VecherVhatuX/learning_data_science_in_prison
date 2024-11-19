@@ -45,8 +45,7 @@ class Config:
     resume_checkpoint: str = None  
 
 def load_json_data(file_name: str) -> Dict:
-    with open(file_name, 'r') as f:
-        return json.load(f)
+    return json.load(open(file_name, 'r'))
 
 def prepare_data(chat_format: str, data: Dict) -> Dict:
     return {
@@ -81,59 +80,32 @@ def create_dataset(data: Dict, batch_size: int, negative_samples: int, triplet_m
                 )
     return dataset
 
-def calculate_loss(model: callable, params: Dict, batch: Tuple[jnp.ndarray, ...]) -> jnp.ndarray:
+def calculate_loss(params: Dict, batch: Tuple[jnp.ndarray, ...]) -> jnp.ndarray:
+    model = lambda x: jnp.matmul(jnp.matmul(jax.nn.relu(jnp.matmul(x, params['layer1'])), params['layer2']), params['layer3'])
     if len(batch) == 3:
-        return _calculate_triplet_loss(model, params, batch)
+        return jnp.mean(jnp.maximum((model(batch[0]) - batch[1])**2 - (model(batch[0]) - batch[2])**2, 0))
     else:
-        return _calculate_standard_loss(model, params, batch)
+        return jnp.mean((model(batch[0]) - batch[1])**2)
 
-def _calculate_standard_loss(model: callable, params: Dict, batch: Tuple[jnp.ndarray, ...]) -> jnp.ndarray:
-    input_ids, labels = batch
-    return jnp.mean((model(params, input_ids) - labels)**2)
+def train_step(params: Dict, batch: Tuple[jnp.ndarray, ...]) -> Tuple[Dict, jnp.ndarray]:
+    loss, grads = jax.value_and_grad(lambda p: calculate_loss(p, batch))(params)
+    return {k: v - 0.001 * g for k, v, g in zip(params.keys(), params.values(), grads)}, loss
 
-def _calculate_triplet_loss(model: callable, params: Dict, batch: Tuple[jnp.ndarray, ...]) -> jnp.ndarray:
-    input_ids, positive_labels, negative_labels = batch
-    return jnp.mean(jnp.maximum((model(params, input_ids) - positive_labels)**2 - (model(params, input_ids) - negative_labels)**2, 0))
-
-def train_step(model: callable, state: optax.TrainState, batch: Tuple[jnp.ndarray, ...]) -> Tuple[optax.TrainState, jnp.ndarray]:
-    loss, grads = jax.value_and_grad(lambda params: calculate_loss(model, params, batch))(state.params)
-    updates, new_state = state.apply_gradients(grads=grads)
-    return new_state, loss
-
-def train_epoch(model: callable, state: optax.TrainState, dataset: callable) -> optax.TrainState:
+def train_epoch(params: Dict, dataset: callable) -> Dict:
     for batch in dataset():
-        state, _ = train_step(model, state, batch)
-    return state
-
-def create_neural_network(key: jax.random.PRNGKey) -> callable:
-    init_params = nn.initializers.zeros()
-    @jax.jit
-    def neural_network(params, x):
-        x = jax.nn.relu(jnp.matmul(x, params['layer1']))
-        x = jax.nn.relu(jnp.matmul(x, params['layer2']))
-        return jnp.matmul(x, params['layer3'])
-    key1, key2, key3 = jax.random.split(key, 3)
-    layer1 = jax.random.normal(key1, (128, 128))
-    layer2 = jax.random.normal(key2, (128, 128))
-    layer3 = jax.random.normal(key3, (128, 1000))
-    return neural_network, {'layer1': layer1, 'layer2': layer2, 'layer3': layer3}
-
-def create_train_state(model: callable, params: Dict, rng: jax.random.PRNGKey, learning_rate: float) -> optax.TrainState:
-    optimizer = optax.adam(learning_rate)
-    return optax.TrainState.create(
-        apply_fn=model,
-        params=params,
-        tx=optimizer
-    )
+        params, _ = train_step(params, batch)
+    return params
 
 def train(config: Config):
     train_data, _ = load_data(config.chat_format)
-    rng = jax.random.PRNGKey(42)
-    model, params = create_neural_network(rng)
-    state = create_train_state(model, params, rng, 0.001)
+    params = {
+        'layer1': jax.random.normal(jax.random.PRNGKey(42), (128, 128)),
+        'layer2': jax.random.normal(jax.random.PRNGKey(43), (128, 128)),
+        'layer3': jax.random.normal(jax.random.PRNGKey(44), (128, 1000)),
+    }
     dataset = create_dataset(train_data, config.train_batch_size, 5, config.triplet_loss_training)
     for epoch in range(config.num_epochs):
-        state = train_epoch(model, state, dataset)
+        params = train_epoch(params, dataset)
         print(f"Epoch {epoch+1}")
 
 if __name__ == "__main__":
