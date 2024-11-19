@@ -1,206 +1,117 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
 import numpy as np
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import layers
-from sklearn.preprocessing import LabelEncoder
 
-class TripletNetwork(keras.Model):
-    """
-    Implementation of a triplet network for learning embeddings.
-    
-    Attributes:
-    - num_embeddings (int): The number of possible embeddings.
-    - embedding_dim (int): The dimensionality of the embedding space.
-    - margin (float): The margin used in the triplet loss function.
-    """
+class TripletNetwork(nn.Module):
     def __init__(self, num_embeddings, embedding_dim, margin):
         super(TripletNetwork, self).__init__()
-        self.embedding = layers.Embedding(num_embeddings, embedding_dim)
-        self.pooling = layers.GlobalAveragePooling1D()
-        self.dense = layers.Dense(embedding_dim)
-        self.normalize = layers.BatchNormalization()
+        self.embedding = nn.Embedding(num_embeddings, embedding_dim)
+        self.pooling = nn.AdaptiveAvgPool1d((1,))
+        self.dense = nn.Linear(embedding_dim, embedding_dim)
+        self.normalize = nn.BatchNorm1d(embedding_dim)
         self.margin = margin
 
-    def call(self, inputs):
-        """
-        Forward pass of the network.
-        
-        Args:
-        - inputs: The input tensor.
-        
-        Returns:
-        - The normalized output embeddings.
-        """
+    def forward(self, inputs):
         embedding = self.embedding(inputs)
-        pooling = self.pooling(embedding)
+        pooling = self.pooling(embedding.permute(0, 2, 1)).squeeze(2)
         dense = self.dense(pooling)
         normalize = self.normalize(dense)
-        outputs = normalize / tf.norm(normalize, axis=1, keepdims=True)
+        outputs = normalize / torch.norm(normalize, dim=1, keepdim=True)
         return outputs
 
     def triplet_loss(self, anchor_embeddings, positive_embeddings, negative_embeddings):
-        """
-        Computes the triplet loss.
-        
-        Args:
-        - anchor_embeddings: The embeddings of the anchor samples.
-        - positive_embeddings: The embeddings of the positive samples.
-        - negative_embeddings: The embeddings of the negative samples.
-        
-        Returns:
-        - The computed triplet loss.
-        """
-        return tf.reduce_mean(tf.maximum(
-            tf.norm(anchor_embeddings - positive_embeddings, axis=1) 
-            - tf.reduce_min(tf.norm(anchor_embeddings[:, None] - negative_embeddings, axis=2), axis=1) + self.margin, 0))
+        return torch.mean(torch.clamp(torch.norm(anchor_embeddings - positive_embeddings, dim=1) 
+                                      - torch.norm(anchor_embeddings.unsqueeze(1) - negative_embeddings, dim=2).min(dim=1)[0] + self.margin, min=0))
 
-class TripletDataset(tf.keras.utils.Sequence):
-    """
-    A custom dataset class for generating triplet batches.
-    
-    Attributes:
-    - samples (np.ndarray): The input samples.
-    - labels (np.ndarray): The labels corresponding to the samples.
-    - batch_size (int): The batch size.
-    - num_negatives (int): The number of negative samples per anchor.
-    """
-    def __init__(self, samples, labels, batch_size, num_negatives):
+class TripletDataset(Dataset):
+    def __init__(self, samples, labels, num_negatives):
         self.samples = samples
         self.labels = labels
-        self.batch_size = batch_size
         self.num_negatives = num_negatives
 
     def __len__(self):
-        """
-        Returns the number of batches.
-        """
-        return -(-len(self.samples) // self.batch_size)
+        return len(self.samples)
 
     def __getitem__(self, idx):
-        """
-        Generates a batch of triplets.
-        
-        Args:
-        - idx: The batch index.
-        
-        Returns:
-        - A dictionary containing the anchor, positive, and negative inputs.
-        """
-        start_idx = idx * self.batch_size
-        end_idx = min((idx + 1) * self.batch_size, len(self.samples))
-        anchor_idx = np.arange(start_idx, end_idx)
-        anchor_labels = self.labels[anchor_idx]
+        anchor_idx = idx
+        anchor_label = self.labels[idx]
 
-        positive_idx = np.array([np.random.choice(np.where(self.labels == label)[0], size=1)[0] for label in anchor_labels])
-        negative_idx = np.array([np.random.choice(np.where(self.labels != label)[0], size=self.num_negatives, replace=False) for label in anchor_labels])
+        positive_idx = np.random.choice(np.where(self.labels == anchor_label)[0], size=1)[0]
+        negative_idx = np.random.choice(np.where(self.labels != anchor_label)[0], size=self.num_negatives, replace=False)
 
         return {
-            'anchor_input_ids': self.samples[anchor_idx],
-            'positive_input_ids': self.samples[positive_idx],
-            'negative_input_ids': self.samples[negative_idx]
+            'anchor_input_ids': torch.tensor(self.samples[anchor_idx], dtype=torch.long),
+            'positive_input_ids': torch.tensor(self.samples[positive_idx], dtype=torch.long),
+            'negative_input_ids': torch.tensor(self.samples[negative_idx], dtype=torch.long)
         }
 
-def train_triplet_network(network, dataset, epochs, learning_rate):
-    """
-    Trains the triplet network.
-    
-    Args:
-    - network: The triplet network instance.
-    - dataset: The dataset instance.
-    - epochs (int): The number of training epochs.
-    - learning_rate (float): The learning rate.
-    """
-    optimizer = keras.optimizers.Adam(learning_rate)
+def train_triplet_network(network, dataset, epochs, learning_rate, batch_size):
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    network.to(device)
+    optimizer = optim.Adam(network.parameters(), lr=learning_rate)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
     for epoch in range(epochs):
         total_loss = 0.0
-        for i, data in enumerate(dataset):
-            with tf.GradientTape() as tape:
-                anchor_embeddings = network(data['anchor_input_ids'])
-                positive_embeddings = network(data['positive_input_ids'])
-                negative_embeddings = network(data['negative_input_ids'])
-                loss = network.triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
-            gradients = tape.gradient(loss, network.trainable_variables)
-            optimizer.apply_gradients(zip(gradients, network.trainable_variables))
-            total_loss += loss
+        for i, data in enumerate(dataloader):
+            anchor_input_ids = data['anchor_input_ids'].to(device)
+            positive_input_ids = data['positive_input_ids'].to(device)
+            negative_input_ids = data['negative_input_ids'].to(device)
+
+            optimizer.zero_grad()
+            anchor_embeddings = network(anchor_input_ids)
+            positive_embeddings = network(positive_input_ids)
+            negative_embeddings = network(negative_input_ids)
+            loss = network.triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
         print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
-def evaluate_triplet_network(network, dataset):
-    """
-    Evaluates the triplet network.
-    
-    Args:
-    - network: The triplet network instance.
-    - dataset: The dataset instance.
-    """
+def evaluate_triplet_network(network, dataset, batch_size):
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    network.to(device)
+    network.eval()
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     total_loss = 0.0
-    for i, data in enumerate(dataset):
-        anchor_embeddings = network(data['anchor_input_ids'])
-        positive_embeddings = network(data['positive_input_ids'])
-        negative_embeddings = network(data['negative_input_ids'])
-        loss = network.triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
-        total_loss += loss
+    with torch.no_grad():
+        for i, data in enumerate(dataloader):
+            anchor_input_ids = data['anchor_input_ids'].to(device)
+            positive_input_ids = data['positive_input_ids'].to(device)
+            negative_input_ids = data['negative_input_ids'].to(device)
+
+            anchor_embeddings = network(anchor_input_ids)
+            positive_embeddings = network(positive_input_ids)
+            negative_embeddings = network(negative_input_ids)
+            loss = network.triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
+            total_loss += loss.item()
     print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
-def predict_with_triplet_network(network, input_ids):
-    """
-    Makes predictions with the triplet network.
-    
-    Args:
-    - network: The triplet network instance.
-    - input_ids: The input IDs.
-    
-    Returns:
-    - The predicted embeddings.
-    """
-    return network(input_ids)
+def predict_with_triplet_network(network, input_ids, batch_size):
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    network.to(device)
+    network.eval()
+    dataloader = DataLoader(input_ids, batch_size=batch_size, shuffle=False)
+    predictions = []
+    with torch.no_grad():
+        for data in dataloader:
+            data = data.to(device)
+            output = network(data)
+            predictions.extend(output.cpu().numpy())
+    return predictions
 
 def save_triplet_model(network, path):
-    """
-    Saves the triplet network.
-    
-    Args:
-    - network: The triplet network instance.
-    - path: The save path.
-    """
-    network.save(path)
+    torch.save(network.state_dict(), path)
 
-def load_triplet_model(path):
-    """
-    Loads a saved triplet network.
-    
-    Args:
-    - path: The load path.
-    
-    Returns:
-    - The loaded triplet network instance.
-    """
-    return keras.models.load_model(path)
+def load_triplet_model(network, path):
+    network.load_state_dict(torch.load(path))
 
 def calculate_distance(embedding1, embedding2):
-    """
-    Calculates the distance between two embeddings.
-    
-    Args:
-    - embedding1: The first embedding.
-    - embedding2: The second embedding.
-    
-    Returns:
-    - The computed distance.
-    """
-    return tf.norm(embedding1 - embedding2, axis=1)
+    return torch.norm(embedding1 - embedding2, dim=1)
 
 def calculate_similarity(embedding1, embedding2):
-    """
-    Calculates the similarity between two embeddings.
-    
-    Args:
-    - embedding1: The first embedding.
-    - embedding2: The second embedding.
-    
-    Returns:
-    - The computed similarity.
-    """
-    return tf.reduce_sum(embedding1 * embedding2, axis=1) / (tf.norm(embedding1, axis=1) * tf.norm(embedding2, axis=1))
+    return torch.sum(embedding1 * embedding2, dim=1) / (torch.norm(embedding1, dim=1) * torch.norm(embedding2, dim=1))
 
 def main():
     np.random.seed(42)
@@ -215,24 +126,25 @@ def main():
     learning_rate = 1e-4
 
     network = TripletNetwork(num_embeddings, embedding_dim, margin)
-    dataset = TripletDataset(samples, labels, batch_size, num_negatives)
-    train_triplet_network(network, dataset, epochs, learning_rate)
-    input_ids = np.array([1, 2, 3, 4, 5])[None, :]
-    output = predict_with_triplet_network(network, input_ids)
+    dataset = TripletDataset(samples, labels, num_negatives)
+    train_triplet_network(network, dataset, epochs, learning_rate, batch_size)
+    input_ids = torch.tensor([1, 2, 3, 4, 5], dtype=torch.long).unsqueeze(0)
+    output = predict_with_triplet_network(network, input_ids, batch_size=1)
     print(output)
-    save_triplet_model(network, "triplet_model.h5")
-    loaded_network = load_triplet_model("triplet_model.h5")
+    save_triplet_model(network, "triplet_model.pth")
+    loaded_network = TripletNetwork(num_embeddings, embedding_dim, margin)
+    load_triplet_model(loaded_network, "triplet_model.pth")
     print("Model saved and loaded successfully.")
 
-    evaluate_triplet_network(network, dataset)
+    evaluate_triplet_network(network, dataset, batch_size)
 
-    predicted_embeddings = predict_with_triplet_network(network, np.array([1, 2, 3, 4, 5])[None, :])
+    predicted_embeddings = predict_with_triplet_network(network, torch.tensor([1, 2, 3, 4, 5], dtype=torch.long).unsqueeze(0), batch_size=1)
     print(predicted_embeddings)
 
-    distance = calculate_distance(predicted_embeddings, predicted_embeddings)
+    distance = calculate_distance(torch.tensor(predicted_embeddings[0]), torch.tensor(predicted_embeddings[0]))
     print(distance)
 
-    similarity = calculate_similarity(predicted_embeddings, predicted_embeddings)
+    similarity = calculate_similarity(torch.tensor(predicted_embeddings[0]), torch.tensor(predicted_embeddings[0]))
     print(similarity)
 
 if __name__ == "__main__":
