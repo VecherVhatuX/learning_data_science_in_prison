@@ -113,6 +113,19 @@ def calculate_distance(embedding1, embedding2):
 def calculate_similarity(embedding1, embedding2):
     return torch.sum(embedding1 * embedding2, dim=1) / (torch.norm(embedding1, dim=1) * torch.norm(embedding2, dim=1))
 
+def calculate_cosine_distance(embedding1, embedding2):
+    return 1 - calculate_similarity(embedding1, embedding2)
+
+def get_nearest_neighbors(embeddings, target_embedding, k=5):
+    distances = calculate_distance(embeddings, target_embedding)
+    _, indices = torch.topk(distances, k, largest=False)
+    return indices
+
+def get_similar_embeddings(embeddings, target_embedding, k=5):
+    similarities = calculate_similarity(embeddings, target_embedding)
+    _, indices = torch.topk(similarities, k, largest=True)
+    return indices
+
 def main():
     np.random.seed(42)
     samples = np.random.randint(0, 100, (100, 10))
@@ -146,6 +159,16 @@ def main():
 
     similarity = calculate_similarity(torch.tensor(predicted_embeddings[0]), torch.tensor(predicted_embeddings[0]))
     print(similarity)
+
+    cosine_distance = calculate_cosine_distance(torch.tensor(predicted_embeddings[0]), torch.tensor(predicted_embeddings[0]))
+    print(cosine_distance)
+
+    all_embeddings = predict_with_triplet_network(network, torch.tensor(samples, dtype=torch.long), batch_size=32)
+    nearest_neighbors = get_nearest_neighbors(torch.tensor(all_embeddings), torch.tensor(predicted_embeddings[0]), k=5)
+    print(nearest_neighbors)
+
+    similar_embeddings = get_similar_embeddings(torch.tensor(all_embeddings), torch.tensor(predicted_embeddings[0]), k=5)
+    print(similar_embeddings)
 
 if __name__ == "__main__":
     main()
