@@ -2,14 +2,12 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
+import numpy as np
 from sklearn.preprocessing import LabelEncoder
 
 class TripletNetwork(nn.Module):
     def __init__(self, num_embeddings, embedding_dim, margin):
         super(TripletNetwork, self).__init__()
-        self.num_embeddings = num_embeddings
-        self.embedding_dim = embedding_dim
-        self.margin = margin
         self.embedding = nn.Embedding(num_embeddings, embedding_dim)
         self.pooling = nn.AdaptiveAvgPool1d(1)
         self.dense = nn.Linear(embedding_dim, embedding_dim)
@@ -43,9 +41,9 @@ class TripletDataset(Dataset):
         negative_idx = np.array([np.random.choice(np.where(self.labels != label)[0], size=self.num_negatives, replace=False) for label in anchor_labels])
 
         return {
-            'anchor_input_ids': self.samples[anchor_idx],
-            'positive_input_ids': self.samples[positive_idx],
-            'negative_input_ids': self.samples[negative_idx]
+            'anchor_input_ids': torch.tensor(self.samples[anchor_idx]),
+            'positive_input_ids': torch.tensor(self.samples[positive_idx]),
+            'negative_input_ids': torch.tensor(self.samples[negative_idx])
         }
 
 def triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, margin):
@@ -60,16 +58,12 @@ class Trainer:
         self.margin = margin
         self.optimizer = optim.Adam(network.parameters(), lr=lr)
 
-    def _train_step(self, data):
-        anchor_inputs = data['anchor_input_ids']
-        positive_inputs = data['positive_input_ids']
-        negative_inputs = data['negative_input_ids']
-
-        anchor_embeddings = self.network(anchor_inputs)
-        positive_embeddings = self.network(positive_inputs)
-        negative_embeddings = self.network(negative_inputs)
-        loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, self.margin)
+    def train_step(self, data):
         self.optimizer.zero_grad()
+        anchor_embeddings = self.network(data['anchor_input_ids'])
+        positive_embeddings = self.network(data['positive_input_ids'])
+        negative_embeddings = self.network(data['negative_input_ids'])
+        loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, self.margin)
         loss.backward()
         self.optimizer.step()
         return loss.item()
@@ -79,7 +73,7 @@ class Trainer:
         for epoch in range(epochs):
             total_loss = 0.0
             for i, data in enumerate(data_loader):
-                total_loss += self._train_step(data)
+                total_loss += self.train_step(data)
             print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
     def evaluate(self, dataset):
@@ -87,14 +81,9 @@ class Trainer:
         total_loss = 0.0
         with torch.no_grad():
             for i, data in enumerate(data_loader):
-                anchor_inputs = data['anchor_input_ids']
-                positive_inputs = data['positive_input_ids']
-                negative_inputs = data['negative_input_ids']
-
-                anchor_embeddings = self.network(anchor_inputs)
-                positive_embeddings = self.network(positive_inputs)
-                negative_embeddings = self.network(negative_inputs)
-
+                anchor_embeddings = self.network(data['anchor_input_ids'])
+                positive_embeddings = self.network(data['positive_input_ids'])
+                negative_embeddings = self.network(data['negative_input_ids'])
                 loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, self.margin)
                 total_loss += loss.item()
         print(f'Validation Loss: {total_loss / (i+1):.3f}')
