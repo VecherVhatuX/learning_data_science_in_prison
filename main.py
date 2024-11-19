@@ -8,6 +8,8 @@ from flax import linen as nn
 import numpy as np
 import optax
 
+# Data Classes
+
 @dataclass
 class Config:
     model_id: str = "t5-base"  
@@ -44,6 +46,8 @@ class Config:
     random_seed: int = 42  
     resume_checkpoint: str = None  
 
+# Data Loading Functions
+
 def load_json_data(file_name: str) -> Dict:
     with open(file_name, 'r') as f:
         return json.load(f)
@@ -60,6 +64,8 @@ def load_data(chat_format: str) -> Tuple[Dict, Dict]:
         prepare_data(chat_format, load_json_data("train.json")),
         prepare_data(chat_format, load_json_data("test.json"))
     )
+
+# Dataset Creation Functions
 
 def create_dataset(data: Dict, batch_size: int, negative_samples: int, triplet_mode: bool) -> callable:
     indices = np.arange(len(data["input_ids"]))
@@ -82,6 +88,8 @@ def create_dataset(data: Dict, batch_size: int, negative_samples: int, triplet_m
                 )
     return dataset
 
+# Model Functions
+
 def model(params: Dict, x: jnp.ndarray) -> jnp.ndarray:
     return jnp.matmul(jnp.matmul(jax.nn.relu(jnp.matmul(x, params['layer1'])), params['layer2']), params['layer3'])
 
@@ -90,6 +98,8 @@ def calculate_loss(params: Dict, batch: Tuple[jnp.ndarray, ...]) -> jnp.ndarray:
         return jnp.mean(jnp.maximum((model(params, batch[0]) - batch[1])**2 - (model(params, batch[0]) - batch[2])**2, 0))
     else:
         return jnp.mean((model(params, batch[0]) - batch[1])**2)
+
+# Training Functions
 
 def update_params(params: Dict, grads: Dict, learning_rate: float) -> Dict:
     return {k: v - learning_rate * g for k, v, g in zip(params.keys(), params.values(), grads.values())}
@@ -100,6 +110,8 @@ def train_step(params: Dict, batch: Tuple[jnp.ndarray, ...]) -> Tuple[Dict, jnp.
 
 def train_epoch(params: Dict, dataset: callable) -> Dict:
     return reduce(lambda params, batch: train_step(params, batch)[0], dataset(), params)
+
+# Main Training Function
 
 def train(config: Config):
     train_data, _ = load_data(config.chat_format)
