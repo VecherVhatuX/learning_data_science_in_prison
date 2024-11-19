@@ -22,14 +22,11 @@ class TripletDataset(Dataset):
 
     def __getitem__(self, idx):
         triplet = self.triplets[idx]
-        anchor = self.tokenizer.encode(triplet['anchor'], max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt')
-        positive = self.tokenizer.encode(triplet['positive'], max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt')
-        negative = self.tokenizer.encode(triplet['negative'], max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt')
-        return {'anchor': anchor, 'positive': positive, 'negative': negative}
-
-    def shuffle_samples(self):
-        random.shuffle(self.triplets)
-
+        return {
+            'anchor': self.tokenizer.encode(triplet['anchor'], max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt'),
+            'positive': self.tokenizer.encode(triplet['positive'], max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt'),
+            'negative': self.tokenizer.encode(triplet['negative'], max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt')
+        }
 
 class TripletModel(LightningModule):
     def __init__(self, embedding_size=128, fully_connected_size=64, dropout_rate=0.2, max_sequence_length=512, learning_rate_value=1e-5):
@@ -97,20 +94,16 @@ class TripletModel(LightningModule):
         return fc2_output
 
     def training_step(self, batch, batch_idx):
-        anchor_input_ids = batch['anchor']['input_ids'].squeeze(1)
-        anchor_attention_masks = batch['anchor']['attention_mask'].squeeze(1)
-        positive_input_ids = batch['positive']['input_ids'].squeeze(1)
-        positive_attention_masks = batch['positive']['attention_mask'].squeeze(1)
-        negative_input_ids = batch['negative']['input_ids'].squeeze(1)
-        negative_attention_masks = batch['negative']['attention_mask'].squeeze(1)
-        anchor_embeddings = self.forward(anchor_input_ids, anchor_attention_masks)
-        positive_embeddings = self.forward(positive_input_ids, positive_attention_masks)
-        negative_embeddings = self.forward(negative_input_ids, negative_attention_masks)
-        loss = torch.mean((anchor_embeddings - positive_embeddings) ** 2) + torch.mean((anchor_embeddings - negative_embeddings) ** 2)
+        loss = self.calculate_loss(batch)
         self.log('train_loss', loss)
         return loss
 
     def validation_step(self, batch, batch_idx):
+        loss = self.calculate_loss(batch)
+        self.log('val_loss', loss)
+        return loss
+
+    def calculate_loss(self, batch):
         anchor_input_ids = batch['anchor']['input_ids'].squeeze(1)
         anchor_attention_masks = batch['anchor']['attention_mask'].squeeze(1)
         positive_input_ids = batch['positive']['input_ids'].squeeze(1)
@@ -120,9 +113,7 @@ class TripletModel(LightningModule):
         anchor_embeddings = self.forward(anchor_input_ids, anchor_attention_masks)
         positive_embeddings = self.forward(positive_input_ids, positive_attention_masks)
         negative_embeddings = self.forward(negative_input_ids, negative_attention_masks)
-        loss = torch.mean((anchor_embeddings - positive_embeddings) ** 2) + torch.mean((anchor_embeddings - negative_embeddings) ** 2)
-        self.log('val_loss', loss)
-        return loss
+        return torch.mean((anchor_embeddings - positive_embeddings) ** 2) + torch.mean((anchor_embeddings - negative_embeddings) ** 2)
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.learning_rate_value)
@@ -152,7 +143,6 @@ class TripletModel(LightningModule):
         model = self
         trainer = Trainer(max_epochs=max_training_epochs, callbacks=[ModelCheckpoint(save_top_k=1, monitor='val_loss'), LearningRateMonitor()])
         trainer.fit(model, train_loader, test_loader)
-
 
 if __name__ == "__main__":
     dataset_path = 'datasets/SWE-bench_oracle.npy'
