@@ -1,13 +1,12 @@
 import os
 import json
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, Tuple
 import jax
 import jax.numpy as jnp
 from flax import linen as nn
 import numpy as np
 import optax
-from functools import partial
 
 @dataclass
 class Config:
@@ -61,7 +60,7 @@ def load_data(chat_format: str) -> Tuple[Dict, Dict]:
     test_data = load_json_data("test.json")
     return prepare_data(chat_format, train_data), prepare_data(chat_format, test_data)
 
-class DataLoader:
+class Dataset:
     def __init__(self, data: Dict, batch_size: int, negative_samples: int, triplet_mode: bool):
         self.data = data
         self.batch_size = batch_size
@@ -69,25 +68,23 @@ class DataLoader:
         self.triplet_mode = triplet_mode
         self.indices = np.arange(len(data["input_ids"]))
 
-    def _create_batch(self, batch_indices: np.ndarray) -> Tuple[jnp.ndarray, ...]:
-        if not self.triplet_mode:
-            return (
-                jnp.array([self.data["input_ids"][idx] for idx in batch_indices]),
-                jnp.array([self.data["labels"][idx] for idx in batch_indices]),
-            )
-        else:
-            positive_indices = np.random.choice(batch_indices, size=self.batch_size)
-            negative_indices = np.random.choice(self.indices, size=(self.batch_size, self.negative_samples), replace=False)
-            return (
-                jnp.array([self.data["input_ids"][idx] for idx in batch_indices]),
-                jnp.array([self.data["labels"][idx] for idx in positive_indices]),
-                jnp.array([[self.data["labels"][idx] for idx in sample] for sample in negative_indices]),
-            )
-
     def __iter__(self):
         np.random.shuffle(self.indices)
         for i in range(0, len(self.indices), self.batch_size):
-            yield self._create_batch(self.indices[i:i + self.batch_size])
+            batch_indices = self.indices[i:i + self.batch_size]
+            if not self.triplet_mode:
+                yield (
+                    jnp.array([self.data["input_ids"][idx] for idx in batch_indices]),
+                    jnp.array([self.data["labels"][idx] for idx in batch_indices]),
+                )
+            else:
+                positive_indices = np.random.choice(batch_indices, size=self.batch_size)
+                negative_indices = np.random.choice(self.indices, size=(self.batch_size, self.negative_samples), replace=False)
+                yield (
+                    jnp.array([self.data["input_ids"][idx] for idx in batch_indices]),
+                    jnp.array([self.data["labels"][idx] for idx in positive_indices]),
+                    jnp.array([[self.data["labels"][idx] for idx in sample] for sample in negative_indices]),
+                )
 
 class NeuralNetwork(nn.Module):
     @nn.compact
@@ -124,7 +121,7 @@ def train_step(model: NeuralNetwork, state: optax.TrainState, batch: Tuple[jnp.n
     updates, new_state = state.apply_gradients(grads=grads)
     return new_state, loss
 
-def train_epoch(model: NeuralNetwork, state: optax.TrainState, dataset: DataLoader) -> optax.TrainState:
+def train_epoch(model: NeuralNetwork, state: optax.TrainState, dataset: Dataset) -> optax.TrainState:
     for batch in dataset:
         state, loss = train_step(model, state, batch)
     return state
@@ -134,7 +131,7 @@ def train(config: Config):
     model = NeuralNetwork()
     rng = jax.random.PRNGKey(42)
     state = create_train_state(model, rng, 0.001)
-    dataset = DataLoader(train_data, config.train_batch_size, 5, config.triplet_loss_training)
+    dataset = Dataset(train_data, config.train_batch_size, 5, config.triplet_loss_training)
     for epoch in range(config.num_epochs):
         state = train_epoch(model, state, dataset)
         print(f"Epoch {epoch+1}")
