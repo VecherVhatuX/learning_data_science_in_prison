@@ -10,6 +10,7 @@ from torch.utils.data import Dataset, DataLoader
 from transformers import DistilBertTokenizer, DistilBertModel
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
+from torch.nn import CosineSimilarity
 
 class TripletDataset(Dataset):
     def __init__(self, triplets, max_sequence_length, tokenizer):
@@ -41,6 +42,7 @@ class TripletModel(LightningModule):
         self.dropout = nn.Dropout(self.dropout_rate)
         self.fc1 = nn.Linear(self.distilbert.config.hidden_size, self.fully_connected_size)
         self.fc2 = nn.Linear(self.fully_connected_size, self.embedding_size)
+        self.cosine_similarity = CosineSimilarity()
 
     def load_json_data(self, file_path):
         try:
@@ -125,24 +127,52 @@ class TripletModel(LightningModule):
         negative_embeddings = self.forward(test_negative_input_ids, test_negative_attention_masks)
         similarities = []
         for i in range(len(anchor_embeddings)):
-            similarity_positive = torch.nn.CosineSimilarity()(anchor_embeddings[i], positive_embeddings[i])
-            similarity_negative = torch.nn.CosineSimilarity()(anchor_embeddings[i], negative_embeddings[i])
+            similarity_positive = self.cosine_similarity(anchor_embeddings[i], positive_embeddings[i])
+            similarity_negative = self.cosine_similarity(anchor_embeddings[i], negative_embeddings[i])
             similarities.append(similarity_positive > similarity_negative)
         accuracy = torch.mean(torch.tensor(similarities, dtype=torch.float))
         print('Test Accuracy:', accuracy)
+
+    def prepare_test_data(self, test_triplets):
+        test_anchor_input_ids = []
+        test_anchor_attention_masks = []
+        test_positive_input_ids = []
+        test_positive_attention_masks = []
+        test_negative_input_ids = []
+        test_negative_attention_masks = []
+        for triplet in test_triplets:
+            anchor_input_ids = self.tokenizer.encode(triplet['anchor'], max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt')
+            anchor_attention_masks = self.tokenizer.encode(triplet['anchor'], max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt')
+            positive_input_ids = self.tokenizer.encode(triplet['positive'], max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt')
+            positive_attention_masks = self.tokenizer.encode(triplet['positive'], max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt')
+            negative_input_ids = self.tokenizer.encode(triplet['negative'], max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt')
+            negative_attention_masks = self.tokenizer.encode(triplet['negative'], max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt')
+            test_anchor_input_ids.append(anchor_input_ids)
+            test_anchor_attention_masks.append(anchor_attention_masks)
+            test_positive_input_ids.append(positive_input_ids)
+            test_positive_attention_masks.append(positive_attention_masks)
+            test_negative_input_ids.append(negative_input_ids)
+            test_negative_attention_masks.append(negative_attention_masks)
+        test_anchor_input_ids = torch.cat(test_anchor_input_ids, dim=0)
+        test_anchor_attention_masks = torch.cat(test_anchor_attention_masks, dim=0)
+        test_positive_input_ids = torch.cat(test_positive_input_ids, dim=0)
+        test_positive_attention_masks = torch.cat(test_positive_attention_masks, dim=0)
+        test_negative_input_ids = torch.cat(test_negative_input_ids, dim=0)
+        test_negative_attention_masks = torch.cat(test_negative_attention_masks, dim=0)
+        return test_anchor_input_ids, test_anchor_attention_masks, test_positive_input_ids, test_positive_attention_masks, test_negative_input_ids, test_negative_attention_masks
 
     def pipeline(self, dataset_path, snippet_folder_path, num_negatives_per_positive=1, max_training_epochs=5, batch_size=32):
         triplets = self.create_triplet_dataset(dataset_path, snippet_folder_path)
         train_triplets, test_triplets = train_test_split(triplets, test_size=0.2, random_state=42)
         train_triplets = [{'anchor': t[0], 'positive': t[1], 'negative': t[2]} for t in train_triplets]
         test_triplets = [{'anchor': t[0], 'positive': t[1], 'negative': t[2]} for t in test_triplets]
+        test_data = self.prepare_test_data(test_triplets)
         train_dataset = TripletDataset(train_triplets, self.max_sequence_length, self.tokenizer)
-        test_dataset = TripletDataset(test_triplets, self.max_sequence_length, self.tokenizer)
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
         model = self
         trainer = Trainer(max_epochs=max_training_epochs, callbacks=[ModelCheckpoint(save_top_k=1, monitor='val_loss'), LearningRateMonitor()])
-        trainer.fit(model, train_loader, test_loader)
+        trainer.fit(model, train_loader)
+        self.evaluate_model(test_data)
 
 if __name__ == "__main__":
     dataset_path = 'datasets/SWE-bench_oracle.npy'
