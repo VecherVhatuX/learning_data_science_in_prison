@@ -2,20 +2,16 @@ import os
 import random
 import json
 import numpy as np
-import tensorflow as tf
-from tensorflow.keras import layers, models, preprocessing, optimizers, losses, metrics
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input, Embedding, Dense, Reshape, Flatten, Dropout
-from tensorflow.keras.layers import BatchNormalization, concatenate
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import ModelCheckpoint, ReduceLROnPlateau
-from tensorflow.keras.applications import DistilBert
-from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras.preprocessing.text import Tokenizer
+from pytorch_lightning import LightningModule, Trainer
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
+import torch
+from torch import nn
+from torch.utils.data import Dataset, DataLoader
+from transformers import DistilBertTokenizer, DistilBertModel
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 
-class TripletDataset:
+class TripletDataset(Dataset):
     def __init__(self, triplets, max_sequence_length, tokenizer):
         self.triplets = triplets
         self.max_sequence_length = max_sequence_length
@@ -26,24 +22,28 @@ class TripletDataset:
 
     def __getitem__(self, idx):
         triplet = self.triplets[idx]
-        anchor = self.tokenizer.encode(triplet['anchor'], max_length=self.max_sequence_length, padding='max_length', truncation=True)
-        positive = self.tokenizer.encode(triplet['positive'], max_length=self.max_sequence_length, padding='max_length', truncation=True)
-        negative = self.tokenizer.encode(triplet['negative'], max_length=self.max_sequence_length, padding='max_length', truncation=True)
-        return np.array(anchor), np.array(positive), np.array(negative)
+        anchor = self.tokenizer.encode(triplet['anchor'], max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt')
+        positive = self.tokenizer.encode(triplet['positive'], max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt')
+        negative = self.tokenizer.encode(triplet['negative'], max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt')
+        return {'anchor': anchor, 'positive': positive, 'negative': negative}
 
     def shuffle_samples(self):
         random.shuffle(self.triplets)
 
 
-class TripletModel:
+class TripletModel(LightningModule):
     def __init__(self, embedding_size=128, fully_connected_size=64, dropout_rate=0.2, max_sequence_length=512, learning_rate_value=1e-5):
+        super().__init__()
         self.embedding_size = embedding_size
         self.fully_connected_size = fully_connected_size
         self.dropout_rate = dropout_rate
         self.max_sequence_length = max_sequence_length
         self.learning_rate_value = learning_rate_value
-        self.tokenizer = preprocessing.text.Tokenizer()
-        self.tokenizer.fit_on_texts(["placeholder"])
+        self.tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
+        self.distilbert = DistilBertModel.from_pretrained('distilbert-base-uncased')
+        self.dropout = nn.Dropout(self.dropout_rate)
+        self.fc1 = nn.Linear(self.distilbert.config.hidden_size, self.fully_connected_size)
+        self.fc2 = nn.Linear(self.fully_connected_size, self.embedding_size)
 
     def load_json_data(self, file_path):
         try:
@@ -86,49 +86,58 @@ class TripletModel:
         ]
 
     def create_model(self):
-        input_ids = layers.Input(shape=(self.max_sequence_length,), dtype='int32', name='input_ids')
-        attention_masks = layers.Input(shape=(self.max_sequence_length,), dtype='int32', name='attention_masks')
-        distilbert = DistilBert('distilbert-base-uncased')(input_ids, attention_masks=attention_masks)
-        dropout = layers.Dropout(self.dropout_rate)(distilbert)
-        fc1 = layers.Dense(self.fully_connected_size, activation='relu')(dropout)
-        fc2 = layers.Dense(self.embedding_size)(fc1)
-        model = Model(inputs=[input_ids, attention_masks], outputs=fc2)
-        return model
+        return self.distilbert
 
-    def train_model(self, model, train_data, test_data, max_training_epochs):
-        anchor_input_ids, anchor_attention_masks, positive_input_ids, positive_attention_masks, negative_input_ids, negative_attention_masks = train_data
+    def forward(self, input_ids, attention_masks):
+        outputs = self.distilbert(input_ids, attention_mask=attention_masks)
+        pooled_output = outputs.pooler_output
+        dropout_output = self.dropout(pooled_output)
+        fc1_output = torch.relu(self.fc1(dropout_output))
+        fc2_output = self.fc2(fc1_output)
+        return fc2_output
+
+    def training_step(self, batch, batch_idx):
+        anchor_input_ids = batch['anchor']['input_ids'].squeeze(1)
+        anchor_attention_masks = batch['anchor']['attention_mask'].squeeze(1)
+        positive_input_ids = batch['positive']['input_ids'].squeeze(1)
+        positive_attention_masks = batch['positive']['attention_mask'].squeeze(1)
+        negative_input_ids = batch['negative']['input_ids'].squeeze(1)
+        negative_attention_masks = batch['negative']['attention_mask'].squeeze(1)
+        anchor_embeddings = self.forward(anchor_input_ids, anchor_attention_masks)
+        positive_embeddings = self.forward(positive_input_ids, positive_attention_masks)
+        negative_embeddings = self.forward(negative_input_ids, negative_attention_masks)
+        loss = torch.mean((anchor_embeddings - positive_embeddings) ** 2) + torch.mean((anchor_embeddings - negative_embeddings) ** 2)
+        self.log('train_loss', loss)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        anchor_input_ids = batch['anchor']['input_ids'].squeeze(1)
+        anchor_attention_masks = batch['anchor']['attention_mask'].squeeze(1)
+        positive_input_ids = batch['positive']['input_ids'].squeeze(1)
+        positive_attention_masks = batch['positive']['attention_mask'].squeeze(1)
+        negative_input_ids = batch['negative']['input_ids'].squeeze(1)
+        negative_attention_masks = batch['negative']['attention_mask'].squeeze(1)
+        anchor_embeddings = self.forward(anchor_input_ids, anchor_attention_masks)
+        positive_embeddings = self.forward(positive_input_ids, positive_attention_masks)
+        negative_embeddings = self.forward(negative_input_ids, negative_attention_masks)
+        loss = torch.mean((anchor_embeddings - positive_embeddings) ** 2) + torch.mean((anchor_embeddings - negative_embeddings) ** 2)
+        self.log('val_loss', loss)
+        return loss
+
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters(), lr=self.learning_rate_value)
+
+    def evaluate_model(self, test_data):
         test_anchor_input_ids, test_anchor_attention_masks, test_positive_input_ids, test_positive_attention_masks, test_negative_input_ids, test_negative_attention_masks = test_data
-        model.compile(loss='mean_squared_error', optimizer=Adam(self.learning_rate_value))
-        model.fit([anchor_input_ids, anchor_attention_masks, positive_input_ids, positive_attention_masks, negative_input_ids, negative_attention_masks],
-                  np.random.rand(len(anchor_input_ids), self.embedding_size),
-                  validation_data=([test_anchor_input_ids, test_anchor_attention_masks, test_positive_input_ids, test_positive_attention_masks, test_negative_input_ids, test_negative_attention_masks],
-                                    np.random.rand(len(test_anchor_input_ids), self.embedding_size)),
-                  epochs=max_training_epochs, batch_size=32)
-
-    def evaluate_model(self, model, test_data):
-        test_anchor_input_ids, test_anchor_attention_masks, test_positive_input_ids, test_positive_attention_masks, test_negative_input_ids, test_negative_attention_masks = test_data
-        predictions = model.predict([test_anchor_input_ids, test_anchor_attention_masks, test_positive_input_ids, test_positive_attention_masks, test_negative_input_ids, test_negative_attention_masks])
-        print('Test Loss:', np.mean((predictions - np.random.rand(len(test_anchor_input_ids), self.embedding_size))**2))
-
-    def create_embeddings(self, model, data):
-        input_ids, attention_masks = data
-        embeddings = model.predict([input_ids, attention_masks])
-        return embeddings
-
-    def calculate_similarity(self, embedding1, embedding2):
-        return np.dot(embedding1, embedding2) / (np.linalg.norm(embedding1) * np.linalg.norm(embedding2))
-
-    def evaluate_triplet_model(self, model, test_data):
-        test_anchor_input_ids, test_anchor_attention_masks, test_positive_input_ids, test_positive_attention_masks, test_negative_input_ids, test_negative_attention_masks = test_data
-        anchor_embeddings = self.create_embeddings(model, (test_anchor_input_ids, test_anchor_attention_masks))
-        positive_embeddings = self.create_embeddings(model, (test_positive_input_ids, test_positive_attention_masks))
-        negative_embeddings = self.create_embeddings(model, (test_negative_input_ids, test_negative_attention_masks))
+        anchor_embeddings = self.forward(test_anchor_input_ids, test_anchor_attention_masks)
+        positive_embeddings = self.forward(test_positive_input_ids, test_positive_attention_masks)
+        negative_embeddings = self.forward(test_negative_input_ids, test_negative_attention_masks)
         similarities = []
         for i in range(len(anchor_embeddings)):
-            similarity_positive = self.calculate_similarity(anchor_embeddings[i], positive_embeddings[i])
-            similarity_negative = self.calculate_similarity(anchor_embeddings[i], negative_embeddings[i])
+            similarity_positive = torch.nn.CosineSimilarity()(anchor_embeddings[i], positive_embeddings[i])
+            similarity_negative = torch.nn.CosineSimilarity()(anchor_embeddings[i], negative_embeddings[i])
             similarities.append(similarity_positive > similarity_negative)
-        accuracy = np.mean(similarities)
+        accuracy = torch.mean(torch.tensor(similarities, dtype=torch.float))
         print('Test Accuracy:', accuracy)
 
     def pipeline(self, dataset_path, snippet_folder_path, num_negatives_per_positive=1, max_training_epochs=5, batch_size=32):
@@ -138,22 +147,15 @@ class TripletModel:
         test_triplets = [{'anchor': t[0], 'positive': t[1], 'negative': t[2]} for t in test_triplets]
         train_dataset = TripletDataset(train_triplets, self.max_sequence_length, self.tokenizer)
         test_dataset = TripletDataset(test_triplets, self.max_sequence_length, self.tokenizer)
-        train_anchor_input_ids, train_positive_input_ids, train_negative_input_ids = zip(*[(t[0], t[1], t[2]) for t in train_dataset])
-        test_anchor_input_ids, test_positive_input_ids, test_negative_input_ids = zip(*[(t[0], t[1], t[2]) for t in test_dataset])
-        train_anchor_attention_masks = np.ones((len(train_anchor_input_ids), self.max_sequence_length))
-        train_positive_attention_masks = np.ones((len(train_positive_input_ids), self.max_sequence_length))
-        train_negative_attention_masks = np.ones((len(train_negative_input_ids), self.max_sequence_length))
-        test_anchor_attention_masks = np.ones((len(test_anchor_input_ids), self.max_sequence_length))
-        test_positive_attention_masks = np.ones((len(test_positive_input_ids), self.max_sequence_length))
-        test_negative_attention_masks = np.ones((len(test_negative_input_ids), self.max_sequence_length))
-        train_data = (np.array(train_anchor_input_ids), train_anchor_attention_masks, np.array(train_positive_input_ids), train_positive_attention_masks, np.array(train_negative_input_ids), train_negative_attention_masks)
-        test_data = (np.array(test_anchor_input_ids), test_anchor_attention_masks, np.array(test_positive_input_ids), test_positive_attention_masks, np.array(test_negative_input_ids), test_negative_attention_masks)
-        model = self.create_model()
-        self.train_model(model, train_data, test_data, max_training_epochs)
-        self.evaluate_triplet_model(model, test_data)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+        model = self
+        trainer = Trainer(max_epochs=max_training_epochs, callbacks=[ModelCheckpoint(save_top_k=1, monitor='val_loss'), LearningRateMonitor()])
+        trainer.fit(model, train_loader, test_loader)
 
 
 if __name__ == "__main__":
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
-    TripletModel().pipeline(dataset_path, snippet_folder_path)
+    model = TripletModel()
+    model.pipeline(dataset_path, snippet_folder_path)
