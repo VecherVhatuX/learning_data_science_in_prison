@@ -50,13 +50,28 @@ class TripletDataset(Dataset):
             'negative_input_ids': torch.tensor(self.samples[negative_idx], dtype=torch.long)
         }
 
+class EpochShuffleDataset(Dataset):
+    def __init__(self, dataset):
+        self.dataset = dataset
+        self.indices = np.arange(len(dataset))
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        np.random.shuffle(self.indices)
+        return self.dataset[self.indices[idx]]
+
+    def on_epoch_end(self):
+        np.random.shuffle(self.indices)
+
 def train_triplet_network(network, dataset, epochs, learning_rate, batch_size):
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     network.to(device)
     optimizer = optim.Adam(network.parameters(), lr=learning_rate)
     for epoch in range(epochs):
         total_loss = 0.0
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+        dataloader = DataLoader(EpochShuffleDataset(dataset), batch_size=batch_size, shuffle=False)
         for i, data in enumerate(dataloader):
             anchor_input_ids = data['anchor_input_ids'].to(device)
             positive_input_ids = data['positive_input_ids'].to(device)
