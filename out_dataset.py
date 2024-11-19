@@ -110,6 +110,27 @@ class TripletModel:
         predictions = model.predict([test_anchor_input_ids, test_anchor_attention_masks, test_positive_input_ids, test_positive_attention_masks, test_negative_input_ids, test_negative_attention_masks])
         print('Test Loss:', np.mean((predictions - np.random.rand(len(test_anchor_input_ids), self.embedding_size))**2))
 
+    def create_embeddings(self, model, data):
+        input_ids, attention_masks = data
+        embeddings = model.predict([input_ids, attention_masks])
+        return embeddings
+
+    def calculate_similarity(self, embedding1, embedding2):
+        return np.dot(embedding1, embedding2) / (np.linalg.norm(embedding1) * np.linalg.norm(embedding2))
+
+    def evaluate_triplet_model(self, model, test_data):
+        test_anchor_input_ids, test_anchor_attention_masks, test_positive_input_ids, test_positive_attention_masks, test_negative_input_ids, test_negative_attention_masks = test_data
+        anchor_embeddings = self.create_embeddings(model, (test_anchor_input_ids, test_anchor_attention_masks))
+        positive_embeddings = self.create_embeddings(model, (test_positive_input_ids, test_positive_attention_masks))
+        negative_embeddings = self.create_embeddings(model, (test_negative_input_ids, test_negative_attention_masks))
+        similarities = []
+        for i in range(len(anchor_embeddings)):
+            similarity_positive = self.calculate_similarity(anchor_embeddings[i], positive_embeddings[i])
+            similarity_negative = self.calculate_similarity(anchor_embeddings[i], negative_embeddings[i])
+            similarities.append(similarity_positive > similarity_negative)
+        accuracy = np.mean(similarities)
+        print('Test Accuracy:', accuracy)
+
     def pipeline(self, dataset_path, snippet_folder_path, num_negatives_per_positive=1, max_training_epochs=5, batch_size=32):
         triplets = self.create_triplet_dataset(dataset_path, snippet_folder_path)
         train_triplets, test_triplets = train_test_split(triplets, test_size=0.2, random_state=42)
@@ -129,7 +150,7 @@ class TripletModel:
         test_data = (np.array(test_anchor_input_ids), test_anchor_attention_masks, np.array(test_positive_input_ids), test_positive_attention_masks, np.array(test_negative_input_ids), test_negative_attention_masks)
         model = self.create_model()
         self.train_model(model, train_data, test_data, max_training_epochs)
-        self.evaluate_model(model, test_data)
+        self.evaluate_triplet_model(model, test_data)
 
 
 if __name__ == "__main__":
