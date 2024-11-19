@@ -3,14 +3,49 @@ from tensorflow.keras import layers, Model, optimizers
 from tensorflow.keras.utils import to_categorical
 import numpy as np
 
-def create_triplet_network(num_embeddings, embedding_dim, margin):
-    inputs = layers.Input(shape=(None,), name='input_ids')
-    embedding = layers.Embedding(num_embeddings, embedding_dim)(inputs)
-    pooling = layers.GlobalAveragePooling1D()(embedding)
-    dense = layers.Dense(embedding_dim)(pooling)
-    normalize = layers.BatchNormalization()(dense)
-    outputs = normalize / tf.norm(normalize, axis=-1, keepdims=True)
-    return Model(inputs, outputs)
+class TripletNetwork(Model):
+    def __init__(self, num_embeddings, embedding_dim, margin):
+        super(TripletNetwork, self).__init__()
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
+        self.margin = margin
+        self.embedding = layers.Embedding(num_embeddings, embedding_dim)
+        self.pooling = layers.GlobalAveragePooling1D()
+        self.dense = layers.Dense(embedding_dim)
+        self.normalize = layers.BatchNormalization()
+
+    def call(self, inputs, training=None, mask=None):
+        embedding = self.embedding(inputs)
+        pooling = self.pooling(embedding)
+        dense = self.dense(pooling)
+        normalize = self.normalize(dense, training=training)
+        outputs = normalize / tf.norm(normalize, axis=-1, keepdims=True)
+        return outputs
+
+class TripletDataset:
+    def __init__(self, samples, labels, batch_size, num_negatives):
+        self.samples = samples
+        self.labels = labels
+        self.batch_size = batch_size
+        self.num_negatives = num_negatives
+
+    def __len__(self):
+        return -(-len(self.samples) // self.batch_size)
+
+    def __getitem__(self, idx):
+        start_idx = idx * self.batch_size
+        end_idx = min((idx + 1) * self.batch_size, len(self.samples))
+        anchor_idx = np.arange(start_idx, end_idx)
+        anchor_labels = self.labels[anchor_idx]
+
+        positive_idx = np.array([np.random.choice(np.where(self.labels == label)[0], size=1)[0] for label in anchor_labels])
+        negative_idx = np.array([np.random.choice(np.where(self.labels != label)[0], size=self.num_negatives, replace=False) for label in anchor_labels])
+
+        return {
+            'anchor_input_ids': self.samples[anchor_idx],
+            'positive_input_ids': self.samples[positive_idx],
+            'negative_input_ids': self.samples[negative_idx]
+        }
 
 def triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, margin):
     anchor_positive_distance = tf.norm(anchor_embeddings - positive_embeddings, axis=-1)
@@ -18,72 +53,53 @@ def triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, ma
     min_anchor_negative_distance = tf.reduce_min(anchor_negative_distance, axis=-1)
     return tf.reduce_mean(tf.maximum(anchor_positive_distance - min_anchor_negative_distance + margin, 0))
 
-def create_triplet_dataset(samples, labels, batch_size, num_negatives):
-    def __len__():
-        return -(-len(samples) // batch_size)
+class Trainer:
+    def __init__(self, network, margin, lr):
+        self.network = network
+        self.margin = margin
+        self.optimizer = optimizers.Adam(learning_rate=lr)
 
-    def __getitem__(idx):
-        start_idx = idx * batch_size
-        end_idx = min((idx + 1) * batch_size, len(samples))
-        anchor_idx = np.arange(start_idx, end_idx)
-        anchor_labels = labels[anchor_idx]
+    def train(self, dataset, epochs):
+        for epoch in range(epochs):
+            total_loss = 0.0
+            for i, data in enumerate(dataset):
+                anchor_inputs = data['anchor_input_ids']
+                positive_inputs = data['positive_input_ids']
+                negative_inputs = data['negative_input_ids']
 
-        positive_idx = np.array([np.random.choice(np.where(labels == label)[0], size=1)[0] for label in anchor_labels])
-        negative_idx = np.array([np.random.choice(np.where(labels != label)[0], size=num_negatives, replace=False) for label in anchor_labels])
+                with tf.GradientTape() as tape:
+                    anchor_embeddings = self.network(anchor_inputs, training=True)
+                    positive_embeddings = self.network(positive_inputs, training=True)
+                    negative_embeddings = self.network(negative_inputs, training=True)
+                    loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, self.margin)
+                gradients = tape.gradient(loss, self.network.trainable_variables)
+                self.optimizer.apply_gradients(zip(gradients, self.network.trainable_variables))
+                total_loss += loss
+            print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
-        return {
-            'anchor_input_ids': samples[anchor_idx],
-            'positive_input_ids': samples[positive_idx],
-            'negative_input_ids': samples[negative_idx]
-        }
-
-    return type('TripletDataset', (), {
-        '__len__': __len__,
-        '__getitem__': __getitem__
-    })()
-
-def train(network, dataset, margin, lr, epochs):
-    optimizer = optimizers.Adam(learning_rate=lr)
-    for epoch in range(epochs):
+    def evaluate(self, dataset):
         total_loss = 0.0
         for i, data in enumerate(dataset):
             anchor_inputs = data['anchor_input_ids']
             positive_inputs = data['positive_input_ids']
             negative_inputs = data['negative_input_ids']
 
-            with tf.GradientTape() as tape:
-                anchor_embeddings = network(anchor_inputs, training=True)
-                positive_embeddings = network(positive_inputs, training=True)
-                negative_embeddings = network(negative_inputs, training=True)
-                loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, margin)
-            gradients = tape.gradient(loss, network.trainable_variables)
-            optimizer.apply_gradients(zip(gradients, network.trainable_variables))
+            anchor_embeddings = self.network(anchor_inputs, training=False)
+            positive_embeddings = self.network(positive_inputs, training=False)
+            negative_embeddings = self.network(negative_inputs, training=False)
+
+            loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, self.margin)
             total_loss += loss
-        print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
+        print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
-def evaluate(network, dataset, margin):
-    total_loss = 0.0
-    for i, data in enumerate(dataset):
-        anchor_inputs = data['anchor_input_ids']
-        positive_inputs = data['positive_input_ids']
-        negative_inputs = data['negative_input_ids']
+    def predict(self, input_ids):
+        return self.network(input_ids, training=False)
 
-        anchor_embeddings = network(anchor_inputs, training=False)
-        positive_embeddings = network(positive_inputs, training=False)
-        negative_embeddings = network(negative_inputs, training=False)
+    def save_model(self, path):
+        self.network.save(path)
 
-        loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, margin)
-        total_loss += loss
-    print(f'Validation Loss: {total_loss / (i+1):.3f}')
-
-def predict(network, input_ids):
-    return network(input_ids, training=False)
-
-def save_model(network, path):
-    network.save(path)
-
-def load_model(path):
-    return tf.keras.models.load_model(path)
+    def load_model(self, path):
+        return tf.keras.models.load_model(path)
 
 def main():
     np.random.seed(42)
@@ -97,14 +113,15 @@ def main():
     margin = 1.0
     lr = 1e-4
 
-    network = create_triplet_network(num_embeddings, embedding_dim, margin)
-    dataset = create_triplet_dataset(samples, labels, batch_size, num_negatives)
-    train(network, dataset, margin, lr, epochs)
+    network = TripletNetwork(num_embeddings, embedding_dim, margin)
+    dataset = TripletDataset(samples, labels, batch_size, num_negatives)
+    trainer = Trainer(network, margin, lr)
+    trainer.train(dataset, epochs)
     input_ids = np.array([1, 2, 3, 4, 5])[None, :]
-    output = predict(network, input_ids)
+    output = trainer.predict(input_ids)
     print(output)
-    save_model(network, "triplet_model.h5")
-    loaded_network = load_model("triplet_model.h5")
+    trainer.save_model("triplet_model.h5")
+    loaded_network = trainer.load_model("triplet_model.h5")
     print("Model saved and loaded successfully.")
 
 if __name__ == "__main__":
