@@ -30,11 +30,14 @@ class TripletDataset(Dataset):
         self.samples = samples
         self.labels = labels
         self.num_negatives = num_negatives
+        self.sample_indices = np.arange(len(self.samples))
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
+        np.random.shuffle(self.sample_indices)
+        idx = self.sample_indices[idx]
         anchor_idx = idx
         anchor_label = self.labels[idx]
 
@@ -51,9 +54,9 @@ def train_triplet_network(network, dataset, epochs, learning_rate, batch_size):
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     network.to(device)
     optimizer = optim.Adam(network.parameters(), lr=learning_rate)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
     for epoch in range(epochs):
         total_loss = 0.0
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
         for i, data in enumerate(dataloader):
             anchor_input_ids = data['anchor_input_ids'].to(device)
             positive_input_ids = data['positive_input_ids'].to(device)
@@ -73,8 +76,8 @@ def evaluate_triplet_network(network, dataset, batch_size):
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     network.to(device)
     network.eval()
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     total_loss = 0.0
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     with torch.no_grad():
         for i, data in enumerate(dataloader):
             anchor_input_ids = data['anchor_input_ids'].to(device)
@@ -92,8 +95,8 @@ def predict_with_triplet_network(network, input_ids, batch_size):
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     network.to(device)
     network.eval()
-    dataloader = DataLoader(input_ids, batch_size=batch_size, shuffle=False)
     predictions = []
+    dataloader = DataLoader(input_ids, batch_size=batch_size, shuffle=False)
     with torch.no_grad():
         for data in dataloader:
             data = data.to(device)
