@@ -56,9 +56,10 @@ def prepare_data(chat_format: str, data: Dict) -> Dict:
     }
 
 def load_data(chat_format: str) -> Tuple[Dict, Dict]:
-    train_data = load_json_data("train.json")
-    test_data = load_json_data("test.json")
-    return prepare_data(chat_format, train_data), prepare_data(chat_format, test_data)
+    return (
+        prepare_data(chat_format, load_json_data("train.json")),
+        prepare_data(chat_format, load_json_data("test.json"))
+    )
 
 def create_dataset(data: Dict, batch_size: int, negative_samples: int, triplet_mode: bool) -> callable:
     indices = np.arange(len(data["input_ids"]))
@@ -81,21 +82,24 @@ def create_dataset(data: Dict, batch_size: int, negative_samples: int, triplet_m
                 )
     return dataset
 
+def model(params: Dict, x: jnp.ndarray) -> jnp.ndarray:
+    return jnp.matmul(jnp.matmul(jax.nn.relu(jnp.matmul(x, params['layer1'])), params['layer2']), params['layer3'])
+
 def calculate_loss(params: Dict, batch: Tuple[jnp.ndarray, ...]) -> jnp.ndarray:
-    model = lambda x: jnp.matmul(jnp.matmul(jax.nn.relu(jnp.matmul(x, params['layer1'])), params['layer2']), params['layer3'])
     if len(batch) == 3:
-        return jnp.mean(jnp.maximum((model(batch[0]) - batch[1])**2 - (model(batch[0]) - batch[2])**2, 0))
+        return jnp.mean(jnp.maximum((model(params, batch[0]) - batch[1])**2 - (model(params, batch[0]) - batch[2])**2, 0))
     else:
-        return jnp.mean((model(batch[0]) - batch[1])**2)
+        return jnp.mean((model(params, batch[0]) - batch[1])**2)
+
+def update_params(params: Dict, grads: Dict, learning_rate: float) -> Dict:
+    return {k: v - learning_rate * g for k, v, g in zip(params.keys(), params.values(), grads.values())}
 
 def train_step(params: Dict, batch: Tuple[jnp.ndarray, ...]) -> Tuple[Dict, jnp.ndarray]:
     loss, grads = jax.value_and_grad(lambda p: calculate_loss(p, batch))(params)
-    return {k: v - 0.001 * g for k, v, g in zip(params.keys(), params.values(), grads)}, loss
+    return update_params(params, grads, 0.001), loss
 
 def train_epoch(params: Dict, dataset: callable) -> Dict:
-    for batch in dataset():
-        params, _ = train_step(params, batch)
-    return params
+    return reduce(lambda params, batch: train_step(params, batch)[0], dataset(), params)
 
 def train(config: Config):
     train_data, _ = load_data(config.chat_format)
