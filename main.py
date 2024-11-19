@@ -46,98 +46,76 @@ class Config:
     random_seed: int = 42  
     resume_checkpoint: str = None  
 
-class Dataset:
-    def __init__(self, data, batch_size, negative_samples, triplet_mode):
-        self.data = data
-        self.batch_size = batch_size
-        self.negative_samples = negative_samples
-        self.triplet_mode = triplet_mode
-        self.indices = np.arange(len(data["input_ids"]))
-
-    def __iter__(self):
-        np.random.shuffle(self.indices)
-        self.index = 0
-        return self
-
-    def __next__(self):
-        if self.index >= len(self.indices):
-            np.random.shuffle(self.indices)
-            self.index = 0
-
-        batch_indices = self.indices[self.index:self.index + self.batch_size]
-        self.index += self.batch_size
-
-        if not self.triplet_mode:
-            return (
-                jnp.array([self.data["input_ids"][idx] for idx in batch_indices]),
-                jnp.array([self.data["labels"][idx] for idx in batch_indices]),
-            )
-        else:
-            positive_indices = np.random.choice(batch_indices, size=self.batch_size)
-            negative_indices = np.random.choice(self.indices, size=(self.batch_size, self.negative_samples), replace=False)
-            return (
-                jnp.array([self.data["input_ids"][idx] for idx in batch_indices]),
-                jnp.array([self.data["labels"][idx] for idx in positive_indices]),
-                jnp.array([[self.data["labels"][idx] for idx in sample] for sample in negative_indices]),
-            )
-
 # Model Functions
 
-def initialize_model() -> Dict:
+def initialize_model():
     return {
         'layer1': jax.random.normal(jax.random.PRNGKey(42), (128, 128)),
         'layer2': jax.random.normal(jax.random.PRNGKey(43), (128, 128)),
         'layer3': jax.random.normal(jax.random.PRNGKey(44), (128, 1000)),
     }
 
-def model(params: Dict, x: jnp.ndarray) -> jnp.ndarray:
+def model(params, x):
     return jnp.matmul(jnp.matmul(jax.nn.relu(jnp.matmul(x, params['layer1'])), params['layer2']), params['layer3'])
 
-def calculate_loss(params: Dict, batch: Tuple[jnp.ndarray, ...]) -> jnp.ndarray:
+def calculate_loss(params, batch):
     if len(batch) == 3:
         return jnp.mean(jnp.maximum((model(params, batch[0]) - batch[1])**2 - (model(params, batch[0]) - batch[2])**2, 0))
     else:
         return jnp.mean((model(params, batch[0]) - batch[1])**2)
 
-# Training Functions
+# Dataset
 
-def update_params(params: Dict, grads: Dict, learning_rate: float) -> Dict:
-    return {k: v - learning_rate * g for k, v, g in zip(params.keys(), params.values(), grads.values())}
-
-def train_step(params: Dict, batch: Tuple[jnp.ndarray, ...]) -> Tuple[Dict, jnp.ndarray]:
-    loss, grads = jax.value_and_grad(lambda p: calculate_loss(p, batch))(params)
-    return update_params(params, grads, 0.001), loss
-
-def train_epoch(params: Dict, dataset: Dataset) -> Dict:
-    for batch in dataset:
-        params, _ = train_step(params, batch)
-    return params
-
-def load_json_data(file_name: str) -> Dict:
-    with open(file_name, 'r') as f:
-        return json.load(f)
-
-def prepare_data(chat_format: str, data: Dict) -> Dict:
+def prepare_data(chat_format, data):
     return {
         "input_ids": [f"{chat_format} {example['input']}" for example in data],
         "labels": [f"{chat_format} {example['output']}" for example in data],
         "attention_mask": [1] * len(data)
     }
 
-def load_data(chat_format: str) -> Tuple[Dict, Dict]:
-    return (
-        prepare_data(chat_format, load_json_data("train.json")),
-        prepare_data(chat_format, load_json_data("test.json"))
-    )
+def load_data(chat_format):
+    with open("train.json", 'r') as f:
+        train_data = json.load(f)
+    with open("test.json", 'r') as f:
+        test_data = json.load(f)
+    return prepare_data(chat_format, train_data), prepare_data(chat_format, test_data)
 
-def train(config: Config):
-    train_data, _ = load_data(config.chat_format)
-    params = initialize_model()
-    dataset = Dataset(train_data, config.train_batch_size, 5, config.triplet_loss_training)
-    for epoch in range(config.num_epochs):
+# Training Functions
+
+def update_params(params, grads, learning_rate):
+    return {k: v - learning_rate * g for k, v, g in zip(params.keys(), params.values(), grads.values())}
+
+def train_step(params, batch):
+    loss, grads = jax.value_and_grad(lambda p: calculate_loss(p, batch))(params)
+    return update_params(params, grads, 0.001), loss
+
+def train_epoch(params, dataset):
+    return jax.jit(lambda params, dataset: params, static_argnums=(1,))(params, dataset)
+
+def map_over_batches(params, dataset):
+    def train_batch(params, batch):
+        return train_step(params, batch)
+    return jax.jit(lambda params, dataset: params, static_argnums=(1,))(params, dataset)
+
+def map_over_epochs(params, dataset, num_epochs):
+    def train_epoch(params, dataset):
+        return map_over_batches(params, dataset)
+    def train_loop(carry, _):
+        params, dataset = carry
         params = train_epoch(params, dataset)
-        print(f"Epoch {epoch+1}")
+        return (params, dataset), None
+    return jax.jit(lambda params, dataset, num_epochs: params, static_argnums=(2,))(params, dataset, num_epochs)
+
+def train(config):
+    train_data, _ = load_data(config.chat_format)
+    dataset = np.array(train_data["input_ids"]), np.array(train_data["labels"])
+    params = initialize_model()
+    params = map_over_epochs(params, dataset, config.num_epochs)
+    return params
+
+def main():
+    config = Config(model_id="t5-base", chat_format="none", triplet_loss_training=True)
+    params = train(config)
 
 if __name__ == "__main__":
-    config = Config(model_id="t5-base", chat_format="none", triplet_loss_training=True)
-    train(config)
+    main()
