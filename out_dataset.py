@@ -1,11 +1,26 @@
 import os
 import random
 import json
-import tensorflow as tf
-from tensorflow.keras import layers
-from transformers import AutoTokenizer
 import numpy as np
 import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+from sklearn.utils import shuffle
+from sklearn.preprocessing import normalize
+from sklearn.decomposition import TruncatedSVD
+from sklearn.manifold import TSNE
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import GridSearchCV
+from torch.utils.data import Dataset, DataLoader
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from transformers import AutoModel, AutoTokenizer
 
 class TripletModel:
     def __init__(self, embedding_size=128, fully_connected_size=64, dropout_rate=0.2, max_sequence_length=512, learning_rate_value=1e-5):
@@ -14,6 +29,8 @@ class TripletModel:
         self.dropout_rate = dropout_rate
         self.max_sequence_length = max_sequence_length
         self.learning_rate_value = learning_rate_value
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
 
     def load_json_data(self, file_path):
         try:
@@ -59,67 +76,84 @@ class TripletModel:
         random.shuffle(samples)
         return samples
 
-    def encode_triplet(self, triplet, tokenizer):
-        return tuple(map(
-            lambda text: tf.squeeze(tokenizer.encode_plus(text, 
-                                                           max_length=self.max_sequence_length, 
-                                                           padding='max_length', 
-                                                           truncation=True, 
-                                                           return_attention_mask=True, 
-                                                           return_tensors='tf')['input_ids']),
-            [triplet['anchor'], triplet['positive'], triplet['negative']]
-        ))
+    def encode_triplet(self, triplet):
+        anchor = self.tokenizer.encode_plus(triplet['anchor'], 
+                                             max_length=self.max_sequence_length, 
+                                             padding='max_length', 
+                                             truncation=True, 
+                                             return_attention_mask=True, 
+                                             return_tensors='pt')['input_ids'].to(self.device)
+        positive = self.tokenizer.encode_plus(triplet['positive'], 
+                                               max_length=self.max_sequence_length, 
+                                               padding='max_length', 
+                                               truncation=True, 
+                                               return_attention_mask=True, 
+                                               return_tensors='pt')['input_ids'].to(self.device)
+        negative = self.tokenizer.encode_plus(triplet['negative'], 
+                                               max_length=self.max_sequence_length, 
+                                               padding='max_length', 
+                                               truncation=True, 
+                                               return_attention_mask=True, 
+                                               return_tensors='pt')['input_ids'].to(self.device)
+        return anchor, positive, negative
 
-    def create_dataset(self, triplets, minibatch_size, tokenizer):
-        triplets = self.shuffle_samples(triplets)
-        anchor_docs, positive_docs, negative_docs = tuple(map(list, zip(*[
-            self.encode_triplet(triplet, tokenizer) 
-            for triplet in triplets
-        ])))
-        anchor_dataset = tf.data.Dataset.from_tensor_slices(anchor_docs)
-        positive_dataset = tf.data.Dataset.from_tensor_slices(positive_docs)
-        negative_dataset = tf.data.Dataset.from_tensor_slices(negative_docs)
-        dataset = tf.data.Dataset.zip((anchor_dataset, positive_dataset, negative_dataset))
-        return dataset.batch(minibatch_size).prefetch(tf.data.AUTOTUNE)
+    def create_dataset(self, triplets):
+        anchor_docs = []
+        positive_docs = []
+        negative_docs = []
+        for triplet in triplets:
+            anchor, positive, negative = self.encode_triplet(triplet)
+            anchor_docs.append(anchor)
+            positive_docs.append(positive)
+            negative_docs.append(negative)
+        return torch.stack(anchor_docs), torch.stack(positive_docs), torch.stack(negative_docs)
 
     def create_model(self):
-        model = tf.keras.Sequential([
-            layers.Embedding(input_dim=1000, output_dim=self.embedding_size, input_length=self.max_sequence_length),
-            layers.GlobalAveragePooling1D(),
-            layers.Dense(self.embedding_size, activation='relu'),
-            layers.Dropout(self.dropout_rate),
-            layers.Dense(self.fully_connected_size, activation='relu'),
-            layers.Dropout(self.dropout_rate)
-        ])
-        model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=self.learning_rate_value), loss=lambda y_true, y_pred: tf.reduce_mean(tf.maximum(tf.norm(y_pred[:, 0] - y_pred[:, 1], axis=1) - tf.norm(y_pred[:, 0] - y_pred[:, 2], axis=1) + 1.0, 0.0)))
-        return model
+        class Model(nn.Module):
+            def __init__(self):
+                super(Model, self).__init__()
+                self.distilbert = AutoModel.from_pretrained('distilbert-base-uncased')
+                self.dropout = nn.Dropout(self.dropout_rate)
+                self.fc1 = nn.Linear(self.distilbert.config.hidden_size, self.fully_connected_size)
+                self.fc2 = nn.Linear(self.fully_connected_size, self.embedding_size)
 
-    def train_model(self, model, train_dataset, test_dataset, max_training_epochs):
-        checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
-            filepath="triplet_model_{epoch:02d}.h5",
-            save_weights_only=True,
-            save_freq="epoch",
-            verbose=1
-        )
-        history = model.fit(train_dataset, epochs=max_training_epochs, 
-                            validation_data=test_dataset, callbacks=[checkpoint_callback])
-        return history.history
+            def forward(self, input_ids):
+                outputs = self.distilbert(input_ids)
+                pooled_output = outputs.pooler_output
+                pooled_output = self.dropout(pooled_output)
+                pooled_output = F.relu(self.fc1(pooled_output))
+                pooled_output = self.dropout(pooled_output)
+                pooled_output = self.fc2(pooled_output)
+                return pooled_output
+        return Model()
+
+    def train_model(self, model, anchor_docs, positive_docs, negative_docs, max_training_epochs):
+        model.to(self.device)
+        optimizer = optim.Adam(model.parameters(), lr=self.learning_rate_value)
+        loss_fn = nn.TripletLoss()
+        for epoch in range(max_training_epochs):
+            model.train()
+            optimizer.zero_grad()
+            anchor_embeddings = model(anchor_docs)
+            positive_embeddings = model(positive_docs)
+            negative_embeddings = model(negative_docs)
+            loss = loss_fn(anchor_embeddings, positive_embeddings, negative_embeddings)
+            loss.backward()
+            optimizer.step()
+            print(f'Epoch {epoch+1}, Loss: {loss.item()}')
+        return model
 
     def plot_results(self, history):
         plt.plot(history['loss'], label='Training Loss')
-        plt.plot(history['val_loss'], label='Validation Loss')
         plt.legend()
         plt.show()
 
-    def pipeline(self, dataset_path, snippet_folder_path, num_negatives_per_positive=1, minibatch_size=16, max_training_epochs=5):
-        tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
+    def pipeline(self, dataset_path, snippet_folder_path, num_negatives_per_positive=1, max_training_epochs=5):
         triplets = self.create_triplet_dataset(dataset_path, snippet_folder_path)
-        train_triplets, test_triplets = triplets[:int(0.8 * len(triplets))], triplets[int(0.8 * len(triplets)):]
-        train_dataset = self.create_dataset(train_triplets, minibatch_size, tokenizer)
-        test_dataset = self.create_dataset(test_triplets, minibatch_size, tokenizer)
+        train_triplets, test_triplets = train_test_split(triplets, test_size=0.2, random_state=42)
+        anchor_docs, positive_docs, negative_docs = self.create_dataset(train_triplets)
         model = self.create_model()
-        history = self.train_model(model, train_dataset, test_dataset, max_training_epochs)
-        self.plot_results(history)
+        model = self.train_model(model, anchor_docs, positive_docs, negative_docs, max_training_epochs)
 
 
 if __name__ == "__main__":
