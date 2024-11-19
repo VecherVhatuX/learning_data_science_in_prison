@@ -4,66 +4,54 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 
-class TripletNetwork(nn.Module):
-    def __init__(self, num_embeddings, embedding_dim, margin):
-        super(TripletNetwork, self).__init__()
-        self.embedding = nn.Embedding(num_embeddings, embedding_dim)
-        self.pooling = nn.AdaptiveAvgPool1d((1,))
-        self.dense = nn.Linear(embedding_dim, embedding_dim)
-        self.normalize = nn.BatchNorm1d(embedding_dim)
-        self.margin = margin
+def create_triplet_network(num_embeddings, embedding_dim, margin):
+    return nn.Sequential(
+        nn.Embedding(num_embeddings, embedding_dim),
+        lambda x: x.permute(0, 2, 1),
+        nn.AdaptiveAvgPool1d((1,)),
+        lambda x: x.squeeze(2),
+        nn.Linear(embedding_dim, embedding_dim),
+        nn.BatchNorm1d(embedding_dim),
+        lambda x: x / torch.norm(x, dim=1, keepdim=True),
+    )
 
-    def forward(self, inputs):
-        embedding = self.embedding(inputs)
-        pooling = self.pooling(embedding.permute(0, 2, 1)).squeeze(2)
-        dense = self.dense(pooling)
-        normalize = self.normalize(dense)
-        outputs = normalize / torch.norm(normalize, dim=1, keepdim=True)
-        return outputs
+def create_triplet_loss(margin):
+    def triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
+        return torch.mean(torch.clamp(
+            torch.norm(anchor_embeddings - positive_embeddings, dim=1) 
+            - torch.norm(anchor_embeddings.unsqueeze(1) - negative_embeddings, dim=2).min(dim=1)[0] + margin, min=0
+        ))
+    return triplet_loss
 
-    def triplet_loss(self, anchor_embeddings, positive_embeddings, negative_embeddings):
-        return torch.mean(torch.clamp(torch.norm(anchor_embeddings - positive_embeddings, dim=1) 
-                                      - torch.norm(anchor_embeddings.unsqueeze(1) - negative_embeddings, dim=2).min(dim=1)[0] + self.margin, min=0))
-
-class TripletDataset(Dataset):
-    def __init__(self, samples, labels, num_negatives):
-        self.samples = samples
-        self.labels = labels
-        self.num_negatives = num_negatives
-        self.sample_indices = np.arange(len(self.samples))
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        np.random.shuffle(self.sample_indices)
-        idx = self.sample_indices[idx]
+def create_triplet_dataset(samples, labels, num_negatives):
+    def __getitem__(idx):
+        np.random.shuffle(np.arange(len(samples)))
+        idx = np.arange(len(samples))[idx]
         anchor_idx = idx
-        anchor_label = self.labels[idx]
+        anchor_label = labels[idx]
 
-        positive_idx = np.random.choice(np.where(self.labels == anchor_label)[0], size=1)[0]
-        negative_idx = np.random.choice(np.where(self.labels != anchor_label)[0], size=self.num_negatives, replace=False)
+        positive_idx = np.random.choice(np.where(labels == anchor_label)[0], size=1)[0]
+        negative_idx = np.random.choice(np.where(labels != anchor_label)[0], size=num_negatives, replace=False)
 
         return {
-            'anchor_input_ids': torch.tensor(self.samples[anchor_idx], dtype=torch.long),
-            'positive_input_ids': torch.tensor(self.samples[positive_idx], dtype=torch.long),
-            'negative_input_ids': torch.tensor(self.samples[negative_idx], dtype=torch.long)
+            'anchor_input_ids': torch.tensor(samples[anchor_idx], dtype=torch.long),
+            'positive_input_ids': torch.tensor(samples[positive_idx], dtype=torch.long),
+            'negative_input_ids': torch.tensor(samples[negative_idx], dtype=torch.long)
         }
 
-class EpochShuffleDataset(Dataset):
-    def __init__(self, dataset):
-        self.dataset = dataset
-        self.indices = np.arange(len(dataset))
+    return __getitem__
 
-    def __len__(self):
-        return len(self.dataset)
+def create_epoch_shuffle_dataset(dataset):
+    indices = np.arange(len(dataset))
 
-    def __getitem__(self, idx):
-        np.random.shuffle(self.indices)
-        return self.dataset[self.indices[idx]]
+    def __getitem__(idx):
+        np.random.shuffle(indices)
+        return dataset(indices[idx])
 
-    def on_epoch_end(self):
-        np.random.shuffle(self.indices)
+    def on_epoch_end():
+        np.random.shuffle(indices)
+
+    return __getitem__, on_epoch_end
 
 def create_samples_and_labels():
     np.random.seed(42)
@@ -75,9 +63,12 @@ def train_triplet_network(network, dataset, epochs, learning_rate, batch_size):
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     network.to(device)
     optimizer = optim.Adam(network.parameters(), lr=learning_rate)
+    triplet_loss = create_triplet_loss(1.0)
+
     for epoch in range(epochs):
         total_loss = 0.0
-        dataloader = DataLoader(EpochShuffleDataset(dataset), batch_size=batch_size, shuffle=False)
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+
         for i, data in enumerate(dataloader):
             anchor_input_ids = data['anchor_input_ids'].to(device)
             positive_input_ids = data['positive_input_ids'].to(device)
@@ -87,10 +78,11 @@ def train_triplet_network(network, dataset, epochs, learning_rate, batch_size):
             anchor_embeddings = network(anchor_input_ids)
             positive_embeddings = network(positive_input_ids)
             negative_embeddings = network(negative_input_ids)
-            loss = network.triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
+            loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
+
         print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
 def evaluate_triplet_network(network, dataset, batch_size):
@@ -99,6 +91,8 @@ def evaluate_triplet_network(network, dataset, batch_size):
     network.eval()
     total_loss = 0.0
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    triplet_loss = create_triplet_loss(1.0)
+
     with torch.no_grad():
         for i, data in enumerate(dataloader):
             anchor_input_ids = data['anchor_input_ids'].to(device)
@@ -108,8 +102,9 @@ def evaluate_triplet_network(network, dataset, batch_size):
             anchor_embeddings = network(anchor_input_ids)
             positive_embeddings = network(positive_input_ids)
             negative_embeddings = network(negative_input_ids)
-            loss = network.triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
+            loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
             total_loss += loss.item()
+
     print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
 def predict_with_triplet_network(network, input_ids, batch_size):
@@ -118,6 +113,7 @@ def predict_with_triplet_network(network, input_ids, batch_size):
     network.eval()
     predictions = []
     dataloader = DataLoader(input_ids, batch_size=batch_size, shuffle=False)
+
     with torch.no_grad():
         for data in dataloader:
             data = data.to(device)
@@ -160,14 +156,14 @@ def main():
     margin = 1.0
     learning_rate = 1e-4
 
-    network = TripletNetwork(num_embeddings, embedding_dim, margin)
-    dataset = TripletDataset(samples, labels, num_negatives)
+    network = create_triplet_network(num_embeddings, embedding_dim, margin)
+    dataset = create_triplet_dataset(samples, labels, num_negatives)
     train_triplet_network(network, dataset, epochs, learning_rate, batch_size)
     input_ids = torch.tensor([1, 2, 3, 4, 5], dtype=torch.long).unsqueeze(0)
     output = predict_with_triplet_network(network, input_ids, batch_size=1)
     print(output)
     save_triplet_model(network, "triplet_model.pth")
-    loaded_network = TripletNetwork(num_embeddings, embedding_dim, margin)
+    loaded_network = create_triplet_network(num_embeddings, embedding_dim, margin)
     load_triplet_model(loaded_network, "triplet_model.pth")
     print("Model saved and loaded successfully.")
 
