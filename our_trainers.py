@@ -55,10 +55,12 @@ class TripletDataset(Dataset):
         }
 
 # Define the create_triplet_data_loader function
-create_triplet_data_loader = lambda samples, labels, batch_size, num_negatives: TripletDataset(samples, labels, batch_size, num_negatives)
+def create_triplet_data_loader(samples, labels, batch_size, num_negatives):
+    return TripletDataset(samples, labels, batch_size, num_negatives)
 
 # Define the create_triplet_architecture function
-create_triplet_architecture = lambda num_embeddings, embedding_dim, margin: TripletNetwork(num_embeddings, embedding_dim, margin)
+def create_triplet_architecture(num_embeddings, embedding_dim, margin):
+    return TripletNetwork(num_embeddings, embedding_dim, margin)
 
 # Define the train_triplet_network function
 def train_triplet_network(network, dataset, epochs, margin, learning_rate):
@@ -124,6 +126,29 @@ def main():
     save_triplet_model(network, "triplet_model.pth")
     load_triplet_model(network, "triplet_model.pth")
     print("Model saved and loaded successfully.")
+
+    # Evaluate the model
+    evaluate_triplet_network(network, dataset, margin)
+
+    # Use the model for prediction
+    predicted_embeddings = predict_with_triplet_network(network, torch.tensor([1, 2, 3, 4, 5])[None, :])
+    print(predicted_embeddings)
+
+    # Define a function to calculate the distance between two embeddings
+    def calculate_distance(embedding1, embedding2):
+        return torch.norm(embedding1 - embedding2, dim=1)
+
+    # Calculate the distance between two predicted embeddings
+    distance = calculate_distance(predicted_embeddings, predicted_embeddings)
+    print(distance)
+
+    # Define a function to calculate the similarity between two embeddings
+    def calculate_similarity(embedding1, embedding2):
+        return torch.dot(embedding1, embedding2) / (torch.norm(embedding1) * torch.norm(embedding2))
+
+    # Calculate the similarity between two predicted embeddings
+    similarity = calculate_similarity(predicted_embeddings, predicted_embeddings)
+    print(similarity)
 
 if __name__ == "__main__":
     main()
