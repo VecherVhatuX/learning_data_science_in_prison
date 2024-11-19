@@ -5,7 +5,18 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 from sklearn.preprocessing import LabelEncoder
 
-def create_network(num_embeddings, embedding_dim, margin):
+def create_triplet_architecture(num_embeddings, embedding_dim, margin):
+    """
+    Creates a neural network model that can be used for triplet loss training.
+    
+    Args:
+        num_embeddings (int): The number of possible embeddings.
+        embedding_dim (int): The dimension of each embedding.
+        margin (float): The margin value used in the triplet loss function.
+        
+    Returns:
+        A PyTorch neural network model.
+    """
     class TripletNetwork(nn.Module):
         def __init__(self, num_embeddings, embedding_dim, margin):
             super(TripletNetwork, self).__init__()
@@ -23,7 +34,19 @@ def create_network(num_embeddings, embedding_dim, margin):
             return outputs
     return TripletNetwork(num_embeddings, embedding_dim, margin)
 
-def create_dataset(samples, labels, batch_size, num_negatives):
+def create_triplet_data_loader(samples, labels, batch_size, num_negatives):
+    """
+    Creates a dataset class that generates triplet data for training.
+    
+    Args:
+        samples (numpy array): The input samples.
+        labels (numpy array): The labels corresponding to the samples.
+        batch_size (int): The batch size for the data loader.
+        num_negatives (int): The number of negative samples to generate for each anchor.
+        
+    Returns:
+        A PyTorch dataset class.
+    """
     class TripletDataset(Dataset):
         def __init__(self, samples, labels, batch_size, num_negatives):
             self.samples = samples
@@ -50,32 +73,74 @@ def create_dataset(samples, labels, batch_size, num_negatives):
             }
     return TripletDataset(samples, labels, batch_size, num_negatives)
 
-def triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, margin):
+def triplet_loss_function(anchor_embeddings, positive_embeddings, negative_embeddings, margin):
+    """
+    Calculates the triplet loss for the given embeddings.
+    
+    Args:
+        anchor_embeddings (PyTorch tensor): The anchor embeddings.
+        positive_embeddings (PyTorch tensor): The positive embeddings.
+        negative_embeddings (PyTorch tensor): The negative embeddings.
+        margin (float): The margin value used in the triplet loss function.
+        
+    Returns:
+        The triplet loss value.
+    """
     anchor_positive_distance = (anchor_embeddings - positive_embeddings).norm(dim=1)
     anchor_negative_distance = (anchor_embeddings[:, None] - negative_embeddings).norm(dim=2)
     min_anchor_negative_distance = anchor_negative_distance.min(dim=1)[0]
     return (anchor_positive_distance - min_anchor_negative_distance + margin).clamp(min=0).mean()
 
-def train_step(network, data, margin, optimizer):
+def perform_train_step(network, data, margin, optimizer):
+    """
+    Performs a single training step for the given network and data.
+    
+    Args:
+        network (PyTorch model): The neural network model.
+        data (dict): The data for the current training step.
+        margin (float): The margin value used in the triplet loss function.
+        optimizer (PyTorch optimizer): The optimizer used for training.
+        
+    Returns:
+        The loss value for the current training step.
+    """
     optimizer.zero_grad()
     anchor_embeddings = network(data['anchor_input_ids'])
     positive_embeddings = network(data['positive_input_ids'])
     negative_embeddings = network(data['negative_input_ids'])
-    loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, margin)
+    loss = triplet_loss_function(anchor_embeddings, positive_embeddings, negative_embeddings, margin)
     loss.backward()
     optimizer.step()
     return loss.item()
 
-def train(network, dataset, epochs, margin, lr):
+def train_triplet_network(network, dataset, epochs, margin, learning_rate):
+    """
+    Trains the given neural network using the triplet loss function.
+    
+    Args:
+        network (PyTorch model): The neural network model.
+        dataset (PyTorch dataset): The dataset used for training.
+        epochs (int): The number of training epochs.
+        margin (float): The margin value used in the triplet loss function.
+        learning_rate (float): The learning rate used for training.
+    """
     data_loader = DataLoader(dataset, batch_size=None, shuffle=True)
-    optimizer = optim.Adam(network.parameters(), lr=lr)
+    optimizer = optim.Adam(network.parameters(), lr=learning_rate)
     for epoch in range(epochs):
         total_loss = 0.0
         for i, data in enumerate(data_loader):
-            total_loss += train_step(network, data, margin, optimizer)
+            total_loss += perform_train_step(network, data, margin, optimizer)
         print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
-def evaluate(network, dataset, margin):
+def evaluate_triplet_network(network, dataset, margin):
+    """
+    Evaluates the given neural network using the triplet loss function.
+    
+    Args:
+        network (PyTorch model): The neural network model.
+        dataset (PyTorch dataset): The dataset used for evaluation.
+        margin (float): The margin value used in the triplet loss function.
+    """
     data_loader = DataLoader(dataset, batch_size=None, shuffle=False)
     total_loss = 0.0
     with torch.no_grad():
@@ -83,17 +148,41 @@ def evaluate(network, dataset, margin):
             anchor_embeddings = network(data['anchor_input_ids'])
             positive_embeddings = network(data['positive_input_ids'])
             negative_embeddings = network(data['negative_input_ids'])
-            loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, margin)
+            loss = triplet_loss_function(anchor_embeddings, positive_embeddings, negative_embeddings, margin)
             total_loss += loss.item()
     print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
-def predict(network, input_ids):
+def predict_with_triplet_network(network, input_ids):
+    """
+    Makes predictions using the given neural network.
+    
+    Args:
+        network (PyTorch model): The neural network model.
+        input_ids (PyTorch tensor): The input IDs.
+        
+    Returns:
+        The predicted embeddings.
+    """
     return network(input_ids)
 
-def save_model(network, path):
+def save_triplet_model(network, path):
+    """
+    Saves the given neural network to the specified path.
+    
+    Args:
+        network (PyTorch model): The neural network model.
+        path (str): The path where the model will be saved.
+    """
     torch.save(network.state_dict(), path)
 
-def load_model(network, path):
+def load_triplet_model(network, path):
+    """
+    Loads the neural network from the specified path.
+    
+    Args:
+        network (PyTorch model): The neural network model.
+        path (str): The path where the model is saved.
+    """
     network.load_state_dict(torch.load(path))
 
 def main():
@@ -106,16 +195,16 @@ def main():
     num_embeddings = 101
     embedding_dim = 10
     margin = 1.0
-    lr = 1e-4
+    learning_rate = 1e-4
 
-    network = create_network(num_embeddings, embedding_dim, margin)
-    dataset = create_dataset(samples, labels, batch_size, num_negatives)
-    train(network, dataset, epochs, margin, lr)
+    network = create_triplet_architecture(num_embeddings, embedding_dim, margin)
+    dataset = create_triplet_data_loader(samples, labels, batch_size, num_negatives)
+    train_triplet_network(network, dataset, epochs, margin, learning_rate)
     input_ids = torch.tensor([1, 2, 3, 4, 5])[None, :]
-    output = predict(network, input_ids)
+    output = predict_with_triplet_network(network, input_ids)
     print(output)
-    save_model(network, "triplet_model.pth")
-    load_model(network, "triplet_model.pth")
+    save_triplet_model(network, "triplet_model.pth")
+    load_triplet_model(network, "triplet_model.pth")
     print("Model saved and loaded successfully.")
 
 if __name__ == "__main__":
