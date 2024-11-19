@@ -7,8 +7,6 @@ from transformers import AutoTokenizer
 import numpy as np
 import matplotlib.pyplot as plt
 
-# Functional style functions
-
 def load_json_data(file_path):
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -105,7 +103,7 @@ def plot_results(history):
     plt.legend()
     plt.show()
 
-def run(dataset_path, snippet_folder_path):
+def pipeline(dataset_path, snippet_folder_path):
     tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
     triplets = create_triplet_dataset(dataset_path, snippet_folder_path)
     train_triplets, test_triplets = triplets[:int(0.8 * len(triplets))], triplets[int(0.8 * len(triplets)):]
@@ -118,4 +116,4 @@ def run(dataset_path, snippet_folder_path):
 if __name__ == "__main__":
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
-    run(dataset_path, snippet_folder_path)
+    pipeline(dataset_path, snippet_folder_path)
