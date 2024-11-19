@@ -53,9 +53,9 @@ class Dataset:
         self.negative_samples = negative_samples
         self.triplet_mode = triplet_mode
         self.indices = np.arange(len(data["input_ids"]))
-        np.random.shuffle(self.indices)
 
     def __iter__(self):
+        np.random.shuffle(self.indices)
         self.index = 0
         return self
 
