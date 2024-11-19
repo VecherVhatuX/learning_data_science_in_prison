@@ -77,7 +77,7 @@ def train_triplet_network(network, dataset, epochs, learning_rate, batch_size):
 
     for epoch in range(epochs):
         total_loss = 0.0
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
         for i, data in enumerate(dataloader):
             anchor_input_ids = data['anchor_input_ids'].to(device)
@@ -157,6 +157,39 @@ def get_similar_embeddings(embeddings, target_embedding, k=5):
     _, indices = torch.topk(similarities, k, largest=True)
     return indices
 
+def calculate_knn_accuracy(embeddings, labels, k=5):
+    correct = 0
+    for i in range(len(embeddings)):
+        distances = calculate_distance(embeddings, embeddings[i])
+        _, indices = torch.topk(distances, k, largest=False)
+        nearest_labels = labels[indices]
+        if labels[i] in nearest_labels:
+            correct += 1
+    return correct / len(embeddings)
+
+def calculate_knn_precision(embeddings, labels, k=5):
+    precision = 0
+    for i in range(len(embeddings)):
+        distances = calculate_distance(embeddings, embeddings[i])
+        _, indices = torch.topk(distances, k, largest=False)
+        nearest_labels = labels[indices]
+        precision += len(np.where(nearest_labels == labels[i])[0]) / k
+    return precision / len(embeddings)
+
+def calculate_knn_recall(embeddings, labels, k=5):
+    recall = 0
+    for i in range(len(embeddings)):
+        distances = calculate_distance(embeddings, embeddings[i])
+        _, indices = torch.topk(distances, k, largest=False)
+        nearest_labels = labels[indices]
+        recall += len(np.where(nearest_labels == labels[i])[0]) / len(np.where(labels == labels[i])[0])
+    return recall / len(embeddings)
+
+def calculate_knn_f1(embeddings, labels, k=5):
+    precision = calculate_knn_precision(embeddings, labels, k)
+    recall = calculate_knn_recall(embeddings, labels, k)
+    return 2 * (precision * recall) / (precision + recall)
+
 def main():
     np.random.seed(42)
     samples = np.random.randint(0, 100, (100, 10))
@@ -201,44 +234,11 @@ def main():
     similar_embeddings = get_similar_embeddings(torch.tensor(all_embeddings), torch.tensor(predicted_embeddings[0]), k=5)
     print(similar_embeddings)
 
-    def calculate_knn_accuracy(embeddings, labels, k=5):
-        correct = 0
-        for i in range(len(embeddings)):
-            distances = calculate_distance(embeddings, embeddings[i])
-            _, indices = torch.topk(distances, k, largest=False)
-            nearest_labels = labels[indices]
-            if labels[i] in nearest_labels:
-                correct += 1
-        return correct / len(embeddings)
-
     print("KNN Accuracy:", calculate_knn_accuracy(torch.tensor(all_embeddings), torch.tensor(labels), k=5))
-
-    def calculate_knn_precision(embeddings, labels, k=5):
-        precision = 0
-        for i in range(len(embeddings)):
-            distances = calculate_distance(embeddings, embeddings[i])
-            _, indices = torch.topk(distances, k, largest=False)
-            nearest_labels = labels[indices]
-            precision += len(np.where(nearest_labels == labels[i])[0]) / k
-        return precision / len(embeddings)
 
     print("KNN Precision:", calculate_knn_precision(torch.tensor(all_embeddings), torch.tensor(labels), k=5))
 
-    def calculate_knn_recall(embeddings, labels, k=5):
-        recall = 0
-        for i in range(len(embeddings)):
-            distances = calculate_distance(embeddings, embeddings[i])
-            _, indices = torch.topk(distances, k, largest=False)
-            nearest_labels = labels[indices]
-            recall += len(np.where(nearest_labels == labels[i])[0]) / len(np.where(labels == labels[i])[0])
-        return recall / len(embeddings)
-
     print("KNN Recall:", calculate_knn_recall(torch.tensor(all_embeddings), torch.tensor(labels), k=5))
-
-    def calculate_knn_f1(embeddings, labels, k=5):
-        precision = calculate_knn_precision(embeddings, labels, k)
-        recall = calculate_knn_recall(embeddings, labels, k)
-        return 2 * (precision * recall) / (precision + recall)
 
     print("KNN F1-score:", calculate_knn_f1(torch.tensor(all_embeddings), torch.tensor(labels), k=5))
 
