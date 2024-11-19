@@ -59,22 +59,25 @@ class Trainer:
         self.margin = margin
         self.optimizer = optimizers.Adam(learning_rate=lr)
 
+    def _train_step(self, data):
+        anchor_inputs = data['anchor_input_ids']
+        positive_inputs = data['positive_input_ids']
+        negative_inputs = data['negative_input_ids']
+
+        with tf.GradientTape() as tape:
+            anchor_embeddings = self.network(anchor_inputs, training=True)
+            positive_embeddings = self.network(positive_inputs, training=True)
+            negative_embeddings = self.network(negative_inputs, training=True)
+            loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, self.margin)
+        gradients = tape.gradient(loss, self.network.trainable_variables)
+        self.optimizer.apply_gradients(zip(gradients, self.network.trainable_variables))
+        return loss
+
     def train(self, dataset, epochs):
         for epoch in range(epochs):
             total_loss = 0.0
             for i, data in enumerate(dataset):
-                anchor_inputs = data['anchor_input_ids']
-                positive_inputs = data['positive_input_ids']
-                negative_inputs = data['negative_input_ids']
-
-                with tf.GradientTape() as tape:
-                    anchor_embeddings = self.network(anchor_inputs, training=True)
-                    positive_embeddings = self.network(positive_inputs, training=True)
-                    negative_embeddings = self.network(negative_inputs, training=True)
-                    loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, self.margin)
-                gradients = tape.gradient(loss, self.network.trainable_variables)
-                self.optimizer.apply_gradients(zip(gradients, self.network.trainable_variables))
-                total_loss += loss
+                total_loss += self._train_step(data)
             print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
     def evaluate(self, dataset):
