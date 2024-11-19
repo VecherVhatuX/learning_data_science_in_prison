@@ -90,6 +90,13 @@ def create_dataset(data: Dict, batch_size: int, negative_samples: int, triplet_m
 
 # Model Functions
 
+def initialize_model() -> Dict:
+    return {
+        'layer1': jax.random.normal(jax.random.PRNGKey(42), (128, 128)),
+        'layer2': jax.random.normal(jax.random.PRNGKey(43), (128, 128)),
+        'layer3': jax.random.normal(jax.random.PRNGKey(44), (128, 1000)),
+    }
+
 def model(params: Dict, x: jnp.ndarray) -> jnp.ndarray:
     return jnp.matmul(jnp.matmul(jax.nn.relu(jnp.matmul(x, params['layer1'])), params['layer2']), params['layer3'])
 
@@ -109,17 +116,13 @@ def train_step(params: Dict, batch: Tuple[jnp.ndarray, ...]) -> Tuple[Dict, jnp.
     return update_params(params, grads, 0.001), loss
 
 def train_epoch(params: Dict, dataset: callable) -> Dict:
-    return reduce(lambda params, batch: train_step(params, batch)[0], dataset(), params)
+    return jax.tree_util.tree_reduce(lambda x, y: x, (train_step(params, batch)[0] for batch in dataset()), params)
 
 # Main Training Function
 
 def train(config: Config):
     train_data, _ = load_data(config.chat_format)
-    params = {
-        'layer1': jax.random.normal(jax.random.PRNGKey(42), (128, 128)),
-        'layer2': jax.random.normal(jax.random.PRNGKey(43), (128, 128)),
-        'layer3': jax.random.normal(jax.random.PRNGKey(44), (128, 1000)),
-    }
+    params = initialize_model()
     dataset = create_dataset(train_data, config.train_batch_size, 5, config.triplet_loss_training)
     for epoch in range(config.num_epochs):
         params = train_epoch(params, dataset)
