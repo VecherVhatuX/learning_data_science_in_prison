@@ -1,28 +1,29 @@
-import tensorflow as tf
-from tensorflow.keras import layers, Model, optimizers
-from tensorflow.keras.utils import to_categorical
-import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+from sklearn.preprocessing import LabelEncoder
 
-class TripletNetwork(Model):
+class TripletNetwork(nn.Module):
     def __init__(self, num_embeddings, embedding_dim, margin):
         super(TripletNetwork, self).__init__()
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
         self.margin = margin
-        self.embedding = layers.Embedding(num_embeddings, embedding_dim)
-        self.pooling = layers.GlobalAveragePooling1D()
-        self.dense = layers.Dense(embedding_dim)
-        self.normalize = layers.BatchNormalization()
+        self.embedding = nn.Embedding(num_embeddings, embedding_dim)
+        self.pooling = nn.AdaptiveAvgPool1d(1)
+        self.dense = nn.Linear(embedding_dim, embedding_dim)
+        self.normalize = nn.BatchNorm1d(embedding_dim)
 
-    def call(self, inputs, training=None, mask=None):
-        embedding = self.embedding(inputs)
-        pooling = self.pooling(embedding)
+    def forward(self, inputs):
+        embedding = self.embedding(inputs).permute(0, 2, 1)
+        pooling = self.pooling(embedding).squeeze(2)
         dense = self.dense(pooling)
-        normalize = self.normalize(dense, training=training)
-        outputs = normalize / tf.norm(normalize, axis=-1, keepdims=True)
+        normalize = self.normalize(dense)
+        outputs = normalize / normalize.norm(dim=1, keepdim=True)
         return outputs
 
-class TripletDataset:
+class TripletDataset(Dataset):
     def __init__(self, samples, labels, batch_size, num_negatives):
         self.samples = samples
         self.labels = labels
@@ -48,61 +49,64 @@ class TripletDataset:
         }
 
 def triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, margin):
-    anchor_positive_distance = tf.norm(anchor_embeddings - positive_embeddings, axis=-1)
-    anchor_negative_distance = tf.norm(anchor_embeddings[:, tf.newaxis] - negative_embeddings, axis=-1)
-    min_anchor_negative_distance = tf.reduce_min(anchor_negative_distance, axis=-1)
-    return tf.reduce_mean(tf.maximum(anchor_positive_distance - min_anchor_negative_distance + margin, 0))
+    anchor_positive_distance = (anchor_embeddings - positive_embeddings).norm(dim=1)
+    anchor_negative_distance = (anchor_embeddings[:, None] - negative_embeddings).norm(dim=2)
+    min_anchor_negative_distance = anchor_negative_distance.min(dim=1)[0]
+    return (anchor_positive_distance - min_anchor_negative_distance + margin).clamp(min=0).mean()
 
 class Trainer:
     def __init__(self, network, margin, lr):
         self.network = network
         self.margin = margin
-        self.optimizer = optimizers.Adam(learning_rate=lr)
+        self.optimizer = optim.Adam(network.parameters(), lr=lr)
 
     def _train_step(self, data):
         anchor_inputs = data['anchor_input_ids']
         positive_inputs = data['positive_input_ids']
         negative_inputs = data['negative_input_ids']
 
-        with tf.GradientTape() as tape:
-            anchor_embeddings = self.network(anchor_inputs, training=True)
-            positive_embeddings = self.network(positive_inputs, training=True)
-            negative_embeddings = self.network(negative_inputs, training=True)
-            loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, self.margin)
-        gradients = tape.gradient(loss, self.network.trainable_variables)
-        self.optimizer.apply_gradients(zip(gradients, self.network.trainable_variables))
-        return loss
+        anchor_embeddings = self.network(anchor_inputs)
+        positive_embeddings = self.network(positive_inputs)
+        negative_embeddings = self.network(negative_inputs)
+        loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, self.margin)
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+        return loss.item()
 
     def train(self, dataset, epochs):
+        data_loader = DataLoader(dataset, batch_size=None, shuffle=True)
         for epoch in range(epochs):
             total_loss = 0.0
-            for i, data in enumerate(dataset):
+            for i, data in enumerate(data_loader):
                 total_loss += self._train_step(data)
             print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
     def evaluate(self, dataset):
+        data_loader = DataLoader(dataset, batch_size=None, shuffle=False)
         total_loss = 0.0
-        for i, data in enumerate(dataset):
-            anchor_inputs = data['anchor_input_ids']
-            positive_inputs = data['positive_input_ids']
-            negative_inputs = data['negative_input_ids']
+        with torch.no_grad():
+            for i, data in enumerate(data_loader):
+                anchor_inputs = data['anchor_input_ids']
+                positive_inputs = data['positive_input_ids']
+                negative_inputs = data['negative_input_ids']
 
-            anchor_embeddings = self.network(anchor_inputs, training=False)
-            positive_embeddings = self.network(positive_inputs, training=False)
-            negative_embeddings = self.network(negative_inputs, training=False)
+                anchor_embeddings = self.network(anchor_inputs)
+                positive_embeddings = self.network(positive_inputs)
+                negative_embeddings = self.network(negative_inputs)
 
-            loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, self.margin)
-            total_loss += loss
+                loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, self.margin)
+                total_loss += loss.item()
         print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
     def predict(self, input_ids):
-        return self.network(input_ids, training=False)
+        return self.network(input_ids)
 
     def save_model(self, path):
-        self.network.save(path)
+        torch.save(self.network.state_dict(), path)
 
     def load_model(self, path):
-        return tf.keras.models.load_model(path)
+        self.network.load_state_dict(torch.load(path))
 
 def main():
     np.random.seed(42)
@@ -120,11 +124,11 @@ def main():
     dataset = TripletDataset(samples, labels, batch_size, num_negatives)
     trainer = Trainer(network, margin, lr)
     trainer.train(dataset, epochs)
-    input_ids = np.array([1, 2, 3, 4, 5])[None, :]
+    input_ids = torch.tensor([1, 2, 3, 4, 5])[None, :]
     output = trainer.predict(input_ids)
     print(output)
-    trainer.save_model("triplet_model.h5")
-    loaded_network = trainer.load_model("triplet_model.h5")
+    trainer.save_model("triplet_model.pth")
+    trainer.load_model("triplet_model.pth")
     print("Model saved and loaded successfully.")
 
 if __name__ == "__main__":
