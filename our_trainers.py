@@ -25,6 +25,9 @@ class TripletNetwork(nn.Module):
         return torch.mean(torch.clamp(torch.norm(anchor_embeddings - positive_embeddings, dim=1) 
                                       - torch.norm(anchor_embeddings.unsqueeze(1) - negative_embeddings, dim=2).min(dim=1)[0] + self.margin, min=0))
 
+def create_triplet_network(num_embeddings, embedding_dim, margin):
+    return TripletNetwork(num_embeddings, embedding_dim, margin)
+
 class TripletDataset(Dataset):
     def __init__(self, samples, labels, num_negatives):
         self.samples = samples
@@ -50,6 +53,9 @@ class TripletDataset(Dataset):
             'negative_input_ids': torch.tensor(self.samples[negative_idx], dtype=torch.long)
         }
 
+def create_triplet_dataset(samples, labels, num_negatives):
+    return TripletDataset(samples, labels, num_negatives)
+
 class EpochShuffleDataset(Dataset):
     def __init__(self, dataset):
         self.dataset = dataset
@@ -65,13 +71,16 @@ class EpochShuffleDataset(Dataset):
     def on_epoch_end(self):
         np.random.shuffle(self.indices)
 
+def create_epoch_shuffle_dataset(dataset):
+    return EpochShuffleDataset(dataset)
+
 def train_triplet_network(network, dataset, epochs, learning_rate, batch_size):
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     network.to(device)
     optimizer = optim.Adam(network.parameters(), lr=learning_rate)
     for epoch in range(epochs):
         total_loss = 0.0
-        dataloader = DataLoader(EpochShuffleDataset(dataset), batch_size=batch_size, shuffle=False)
+        dataloader = DataLoader(create_epoch_shuffle_dataset(dataset), batch_size=batch_size, shuffle=False)
         for i, data in enumerate(dataloader):
             anchor_input_ids = data['anchor_input_ids'].to(device)
             positive_input_ids = data['positive_input_ids'].to(device)
@@ -144,10 +153,14 @@ def get_similar_embeddings(embeddings, target_embedding, k=5):
     _, indices = torch.topk(similarities, k, largest=True)
     return indices
 
-def main():
+def create_samples_and_labels():
     np.random.seed(42)
     samples = np.random.randint(0, 100, (100, 10))
     labels = np.random.randint(0, 2, (100,))
+    return samples, labels
+
+def main():
+    samples, labels = create_samples_and_labels()
     batch_size = 32
     num_negatives = 5
     epochs = 10
@@ -156,14 +169,14 @@ def main():
     margin = 1.0
     learning_rate = 1e-4
 
-    network = TripletNetwork(num_embeddings, embedding_dim, margin)
-    dataset = TripletDataset(samples, labels, num_negatives)
+    network = create_triplet_network(num_embeddings, embedding_dim, margin)
+    dataset = create_triplet_dataset(samples, labels, num_negatives)
     train_triplet_network(network, dataset, epochs, learning_rate, batch_size)
     input_ids = torch.tensor([1, 2, 3, 4, 5], dtype=torch.long).unsqueeze(0)
     output = predict_with_triplet_network(network, input_ids, batch_size=1)
     print(output)
     save_triplet_model(network, "triplet_model.pth")
-    loaded_network = TripletNetwork(num_embeddings, embedding_dim, margin)
+    loaded_network = create_triplet_network(num_embeddings, embedding_dim, margin)
     load_triplet_model(loaded_network, "triplet_model.pth")
     print("Model saved and loaded successfully.")
 
