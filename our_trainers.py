@@ -1,6 +1,3 @@
-Here's the rewritten code using TensorFlow and Keras:
-
-```python
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
@@ -14,6 +11,7 @@ class TripletNetwork(keras.Model):
         self.pooling = layers.GlobalAveragePooling1D()
         self.dense = layers.Dense(embedding_dim)
         self.normalize = layers.BatchNormalization()
+        self.margin = margin
 
     def call(self, inputs):
         embedding = self.embedding(inputs)
@@ -23,10 +21,10 @@ class TripletNetwork(keras.Model):
         outputs = normalize / tf.norm(normalize, axis=1, keepdims=True)
         return outputs
 
-def triplet_loss_function(anchor_embeddings, positive_embeddings, negative_embeddings, margin):
-    return tf.reduce_mean(tf.maximum(
-        tf.norm(anchor_embeddings - positive_embeddings, axis=1) 
-        - tf.reduce_min(tf.norm(anchor_embeddings[:, None] - negative_embeddings, axis=2), axis=1) + margin, 0))
+    def triplet_loss(self, anchor_embeddings, positive_embeddings, negative_embeddings):
+        return tf.reduce_mean(tf.maximum(
+            tf.norm(anchor_embeddings - positive_embeddings, axis=1) 
+            - tf.reduce_min(tf.norm(anchor_embeddings[:, None] - negative_embeddings, axis=2), axis=1) + self.margin, 0))
 
 class TripletDataset(tf.keras.utils.Sequence):
     def __init__(self, samples, labels, batch_size, num_negatives):
@@ -53,10 +51,7 @@ class TripletDataset(tf.keras.utils.Sequence):
             'negative_input_ids': self.samples[negative_idx]
         }
 
-def create_triplet_architecture(num_embeddings, embedding_dim, margin):
-    return TripletNetwork(num_embeddings, embedding_dim, margin)
-
-def train_triplet_network(network, dataset, epochs, margin, learning_rate):
+def train_triplet_network(network, dataset, epochs, learning_rate):
     optimizer = keras.optimizers.Adam(learning_rate)
     for epoch in range(epochs):
         total_loss = 0.0
@@ -65,19 +60,19 @@ def train_triplet_network(network, dataset, epochs, margin, learning_rate):
                 anchor_embeddings = network(data['anchor_input_ids'])
                 positive_embeddings = network(data['positive_input_ids'])
                 negative_embeddings = network(data['negative_input_ids'])
-                loss = triplet_loss_function(anchor_embeddings, positive_embeddings, negative_embeddings, margin)
+                loss = network.triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
             gradients = tape.gradient(loss, network.trainable_variables)
             optimizer.apply_gradients(zip(gradients, network.trainable_variables))
             total_loss += loss
         print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
-def evaluate_triplet_network(network, dataset, margin):
+def evaluate_triplet_network(network, dataset):
     total_loss = 0.0
     for i, data in enumerate(dataset):
         anchor_embeddings = network(data['anchor_input_ids'])
         positive_embeddings = network(data['positive_input_ids'])
         negative_embeddings = network(data['negative_input_ids'])
-        loss = triplet_loss_function(anchor_embeddings, positive_embeddings, negative_embeddings, margin)
+        loss = network.triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
         total_loss += loss
     print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
@@ -89,6 +84,12 @@ def save_triplet_model(network, path):
 
 def load_triplet_model(path):
     return keras.models.load_model(path)
+
+def calculate_distance(embedding1, embedding2):
+    return tf.norm(embedding1 - embedding2, axis=1)
+
+def calculate_similarity(embedding1, embedding2):
+    return tf.reduce_sum(embedding1 * embedding2, axis=1) / (tf.norm(embedding1, axis=1) * tf.norm(embedding2, axis=1))
 
 def main():
     np.random.seed(42)
@@ -102,9 +103,9 @@ def main():
     margin = 1.0
     learning_rate = 1e-4
 
-    network = create_triplet_architecture(num_embeddings, embedding_dim, margin)
+    network = TripletNetwork(num_embeddings, embedding_dim, margin)
     dataset = TripletDataset(samples, labels, batch_size, num_negatives)
-    train_triplet_network(network, dataset, epochs, margin, learning_rate)
+    train_triplet_network(network, dataset, epochs, learning_rate)
     input_ids = np.array([1, 2, 3, 4, 5])[None, :]
     output = predict_with_triplet_network(network, input_ids)
     print(output)
@@ -112,23 +113,16 @@ def main():
     loaded_network = load_triplet_model("triplet_model.h5")
     print("Model saved and loaded successfully.")
 
-    evaluate_triplet_network(network, dataset, margin)
+    evaluate_triplet_network(network, dataset)
 
     predicted_embeddings = predict_with_triplet_network(network, np.array([1, 2, 3, 4, 5])[None, :])
     print(predicted_embeddings)
 
-    def calculate_distance(embedding1, embedding2):
-        return tf.norm(embedding1 - embedding2, axis=1)
-
     distance = calculate_distance(predicted_embeddings, predicted_embeddings)
     print(distance)
-
-    def calculate_similarity(embedding1, embedding2):
-        return tf.reduce_sum(embedding1 * embedding2, axis=1) / (tf.norm(embedding1, axis=1) * tf.norm(embedding2, axis=1))
 
     similarity = calculate_similarity(predicted_embeddings, predicted_embeddings)
     print(similarity)
 
 if __name__ == "__main__":
     main()
-```
