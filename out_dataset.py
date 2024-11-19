@@ -13,15 +13,41 @@ from sklearn.metrics import accuracy_score
 from torch.nn import CosineSimilarity
 
 class TripletDataset(Dataset):
+    """
+    Dataset class for creating triplets of anchor, positive and negative samples.
+    """
     def __init__(self, triplets, max_sequence_length, tokenizer):
+        """
+        Initialize the dataset with triplets, max sequence length and tokenizer.
+
+        Args:
+            triplets (list): List of dictionaries containing anchor, positive and negative samples.
+            max_sequence_length (int): Maximum sequence length for the input samples.
+            tokenizer (object): Tokenizer object for encoding the input samples.
+        """
         self.triplets = triplets
         self.max_sequence_length = max_sequence_length
         self.tokenizer = tokenizer
 
     def __len__(self):
+        """
+        Returns the number of triplets in the dataset.
+
+        Returns:
+            int: Number of triplets.
+        """
         return len(self.triplets)
 
     def __getitem__(self, idx):
+        """
+        Returns the encoded input sample and attention mask for the given index.
+
+        Args:
+            idx (int): Index of the triplet.
+
+        Returns:
+            dict: Dictionary containing encoded input sample and attention mask for anchor, positive and negative samples.
+        """
         triplet = self.triplets[idx]
         anchor = self.tokenizer.encode_plus(
             triplet['anchor'],
@@ -54,7 +80,20 @@ class TripletDataset(Dataset):
         }
 
 class TripletModel(LightningModule):
+    """
+    Model class for training a triplet model using PyTorch Lightning.
+    """
     def __init__(self, embedding_size=128, fully_connected_size=64, dropout_rate=0.2, max_sequence_length=512, learning_rate_value=1e-5):
+        """
+        Initialize the model with hyperparameters.
+
+        Args:
+            embedding_size (int, optional): Size of the embedding layer. Defaults to 128.
+            fully_connected_size (int, optional): Size of the fully connected layer. Defaults to 64.
+            dropout_rate (float, optional): Dropout rate for the model. Defaults to 0.2.
+            max_sequence_length (int, optional): Maximum sequence length for the input samples. Defaults to 512.
+            learning_rate_value (float, optional): Learning rate value for the optimizer. Defaults to 1e-5.
+        """
         super().__init__()
         self.embedding_size = embedding_size
         self.fully_connected_size = fully_connected_size
@@ -69,6 +108,15 @@ class TripletModel(LightningModule):
         self.cosine_similarity = CosineSimilarity()
 
     def load_json_data(self, file_path):
+        """
+        Loads data from a JSON file.
+
+        Args:
+            file_path (str): Path to the JSON file.
+
+        Returns:
+            list: List of data loaded from the JSON file.
+        """
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
@@ -77,13 +125,40 @@ class TripletModel(LightningModule):
             return []
 
     def load_dataset(self, file_path):
+        """
+        Loads a dataset from a file.
+
+        Args:
+            file_path (str): Path to the dataset file.
+
+        Returns:
+            np.ndarray: Dataset loaded from the file.
+        """
         return np.load(file_path, allow_pickle=True)
 
     def load_snippets(self, folder_path):
+        """
+        Loads snippets from a folder.
+
+        Args:
+            folder_path (str): Path to the folder containing snippets.
+
+        Returns:
+            list: List of snippets loaded from the folder.
+        """
         return [(os.path.join(folder_path, f), os.path.join(folder_path, f, 'snippet.json')) 
                 for f in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, f))]
 
     def separate_code_snippets(self, snippets):
+        """
+        Separates code snippets into positive and negative snippets.
+
+        Args:
+            snippets (list): List of snippets.
+
+        Returns:
+            tuple: Tuple containing lists of positive and negative snippets.
+        """
         return tuple(map(list, zip(*[
             ((snippet_data['snippet'], True) if snippet_data.get('is_bug', False) else (snippet_data['snippet'], False)) 
             for folder_path, snippet_file_path in snippets 
@@ -92,11 +167,33 @@ class TripletModel(LightningModule):
         ])))
 
     def create_triplets(self, problem_statement, positive_snippets, negative_snippets, num_negatives_per_positive):
+        """
+        Creates triplets from problem statements, positive snippets and negative snippets.
+
+        Args:
+            problem_statement (str): Problem statement.
+            positive_snippets (list): List of positive snippets.
+            negative_snippets (list): List of negative snippets.
+            num_negatives_per_positive (int): Number of negative snippets per positive snippet.
+
+        Returns:
+            list: List of triplets.
+        """
         return [{'anchor': problem_statement, 'positive': positive_doc, 'negative': random.choice(negative_snippets)} 
                 for positive_doc in positive_snippets 
                 for _ in range(min(num_negatives_per_positive, len(negative_snippets)))]
 
     def create_triplet_dataset(self, dataset_path, snippet_folder_path):
+        """
+        Creates a triplet dataset from a dataset and a folder of snippets.
+
+        Args:
+            dataset_path (str): Path to the dataset.
+            snippet_folder_path (str): Path to the folder of snippets.
+
+        Returns:
+            list: List of triplets.
+        """
         dataset = self.load_dataset(dataset_path)
         instance_id_map = {item['instance_id']: item['problem_statement'] for item in dataset}
         snippets = self.load_snippets(snippet_folder_path)
@@ -109,9 +206,25 @@ class TripletModel(LightningModule):
         ]
 
     def create_model(self):
+        """
+        Creates a DistilBERT model.
+
+        Returns:
+            object: DistilBERT model.
+        """
         return self.distilbert
 
     def forward(self, input_ids, attention_masks):
+        """
+        Forward pass through the model.
+
+        Args:
+            input_ids (torch.Tensor): Input IDs.
+            attention_masks (torch.Tensor): Attention masks.
+
+        Returns:
+            torch.Tensor: Output of the model.
+        """
         outputs = self.distilbert(input_ids, attention_mask=attention_masks)
         pooled_output = outputs.pooler_output
         dropout_output = self.dropout(pooled_output)
@@ -120,16 +233,45 @@ class TripletModel(LightningModule):
         return fc2_output
 
     def training_step(self, batch, batch_idx):
+        """
+        Training step for the model.
+
+        Args:
+            batch (dict): Batch of data.
+            batch_idx (int): Index of the batch.
+
+        Returns:
+            torch.Tensor: Loss of the model.
+        """
         loss = self.calculate_loss(batch)
         self.log('train_loss', loss)
         return loss
 
     def validation_step(self, batch, batch_idx):
+        """
+        Validation step for the model.
+
+        Args:
+            batch (dict): Batch of data.
+            batch_idx (int): Index of the batch.
+
+        Returns:
+            torch.Tensor: Loss of the model.
+        """
         loss = self.calculate_loss(batch)
         self.log('val_loss', loss)
         return loss
 
     def calculate_loss(self, batch):
+        """
+        Calculates the loss of the model.
+
+        Args:
+            batch (dict): Batch of data.
+
+        Returns:
+            torch.Tensor: Loss of the model.
+        """
         anchor_input_ids = batch['anchor']['input_ids'].squeeze(1)
         anchor_attention_masks = batch['anchor']['attention_mask'].squeeze(1)
         positive_input_ids = batch['positive']['input_ids'].squeeze(1)
@@ -144,9 +286,21 @@ class TripletModel(LightningModule):
         return positive_distance + torch.clamp(negative_distance - positive_distance, min=0)
 
     def configure_optimizers(self):
+        """
+        Configures the optimizer for the model.
+
+        Returns:
+            torch.optim.Optimizer: Optimizer for the model.
+        """
         return torch.optim.Adam(self.parameters(), lr=self.learning_rate_value)
 
     def evaluate_model(self, test_data):
+        """
+        Evaluates the model on test data.
+
+        Args:
+            test_data (tuple): Test data.
+        """
         test_anchor_input_ids, test_anchor_attention_masks, test_positive_input_ids, test_positive_attention_masks, test_negative_input_ids, test_negative_attention_masks = test_data
         anchor_embeddings = self.forward(test_anchor_input_ids, test_anchor_attention_masks)
         positive_embeddings = self.forward(test_positive_input_ids, test_positive_attention_masks)
@@ -160,6 +314,15 @@ class TripletModel(LightningModule):
         print('Test Accuracy:', accuracy)
 
     def prepare_test_data(self, test_triplets):
+        """
+        Prepares test data for evaluation.
+
+        Args:
+            test_triplets (list): List of test triplets.
+
+        Returns:
+            tuple: Test data.
+        """
         test_anchor_input_ids = []
         test_anchor_attention_masks = []
         test_positive_input_ids = []
@@ -206,6 +369,16 @@ class TripletModel(LightningModule):
         return test_anchor_input_ids, test_anchor_attention_masks, test_positive_input_ids, test_positive_attention_masks, test_negative_input_ids, test_negative_attention_masks
 
     def pipeline(self, dataset_path, snippet_folder_path, num_negatives_per_positive=1, max_training_epochs=5, batch_size=32):
+        """
+        Pipeline for training and evaluating the model.
+
+        Args:
+            dataset_path (str): Path to the dataset.
+            snippet_folder_path (str): Path to the folder of snippets.
+            num_negatives_per_positive (int, optional): Number of negative snippets per positive snippet. Defaults to 1.
+            max_training_epochs (int, optional): Maximum number of training epochs. Defaults to 5.
+            batch_size (int, optional): Batch size. Defaults to 32.
+        """
         triplets = self.create_triplet_dataset(dataset_path, snippet_folder_path)
         train_triplets, test_triplets = train_test_split(triplets, test_size=0.2, random_state=42)
         train_triplets = [{'anchor': t[0], 'positive': t[1], 'negative': t[2]} for t in train_triplets]
