@@ -23,6 +23,42 @@ import torch.optim as optim
 from transformers import AutoModel, AutoTokenizer
 from typing import Tuple, List
 
+class TripletDataset(Dataset):
+    def __init__(self, triplets: List, max_sequence_length: int, device: str):
+        self.triplets = triplets
+        self.max_sequence_length = max_sequence_length
+        self.device = device
+        self.tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
+
+    def __len__(self):
+        return len(self.triplets)
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        triplet = self.triplets[idx]
+        anchor = self.tokenizer.encode_plus(triplet['anchor'], 
+                                             max_length=self.max_sequence_length, 
+                                             padding='max_length', 
+                                             truncation=True, 
+                                             return_attention_mask=True, 
+                                             return_tensors='pt')['input_ids'].to(self.device)
+        positive = self.tokenizer.encode_plus(triplet['positive'], 
+                                               max_length=self.max_sequence_length, 
+                                               padding='max_length', 
+                                               truncation=True, 
+                                               return_attention_mask=True, 
+                                               return_tensors='pt')['input_ids'].to(self.device)
+        negative = self.tokenizer.encode_plus(triplet['negative'], 
+                                               max_length=self.max_sequence_length, 
+                                               padding='max_length', 
+                                               truncation=True, 
+                                               return_attention_mask=True, 
+                                               return_tensors='pt')['input_ids'].to(self.device)
+        return anchor, positive, negative
+
+    def shuffle_samples(self) -> None:
+        random.shuffle(self.triplets)
+
+
 class TripletModel:
     def __init__(self, embedding_size: int = 128, fully_connected_size: int = 64, dropout_rate: float = 0.2, max_sequence_length: int = 512, learning_rate_value: float = 1e-5):
         self.embedding_size = embedding_size
@@ -31,7 +67,6 @@ class TripletModel:
         self.max_sequence_length = max_sequence_length
         self.learning_rate_value = learning_rate_value
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
 
     def load_json_data(self, file_path: str) -> List:
         try:
@@ -73,42 +108,6 @@ class TripletModel:
             for bug_snippet, non_bug_snippet in [(bug, non_bug) for bug in bug_snippets for non_bug in non_bug_snippets]
         ]
 
-    def shuffle_samples(self, samples: List) -> List:
-        random.shuffle(samples)
-        return samples
-
-    def encode_triplet(self, triplet: dict) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        anchor = self.tokenizer.encode_plus(triplet['anchor'], 
-                                             max_length=self.max_sequence_length, 
-                                             padding='max_length', 
-                                             truncation=True, 
-                                             return_attention_mask=True, 
-                                             return_tensors='pt')['input_ids'].to(self.device)
-        positive = self.tokenizer.encode_plus(triplet['positive'], 
-                                               max_length=self.max_sequence_length, 
-                                               padding='max_length', 
-                                               truncation=True, 
-                                               return_attention_mask=True, 
-                                               return_tensors='pt')['input_ids'].to(self.device)
-        negative = self.tokenizer.encode_plus(triplet['negative'], 
-                                               max_length=self.max_sequence_length, 
-                                               padding='max_length', 
-                                               truncation=True, 
-                                               return_attention_mask=True, 
-                                               return_tensors='pt')['input_ids'].to(self.device)
-        return anchor, positive, negative
-
-    def create_dataset(self, triplets: List) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        anchor_docs = []
-        positive_docs = []
-        negative_docs = []
-        for triplet in triplets:
-            anchor, positive, negative = self.encode_triplet(triplet)
-            anchor_docs.append(anchor)
-            positive_docs.append(positive)
-            negative_docs.append(negative)
-        return torch.stack(anchor_docs), torch.stack(positive_docs), torch.stack(negative_docs)
-
     def create_model(self) -> nn.Module:
         class Model(nn.Module):
             def __init__(self):
@@ -128,60 +127,59 @@ class TripletModel:
                 return pooled_output
         return Model()
 
-    def train_model(self, model: nn.Module, anchor_docs: torch.Tensor, positive_docs: torch.Tensor, negative_docs: torch.Tensor, max_training_epochs: int) -> nn.Module:
+    def train_model(self, model: nn.Module, dataloader: DataLoader, max_training_epochs: int) -> nn.Module:
         model.to(self.device)
         optimizer = optim.Adam(model.parameters(), lr=self.learning_rate_value)
         loss_fn = nn.TripletMarginLoss()
         for epoch in range(max_training_epochs):
             model.train()
-            optimizer.zero_grad()
-            anchor_embeddings = model(anchor_docs)
-            positive_embeddings = model(positive_docs)
-            negative_embeddings = model(negative_docs)
-            loss = loss_fn(anchor_embeddings, positive_embeddings, negative_embeddings)
-            loss.backward()
-            optimizer.step()
-            print(f'Epoch {epoch+1}, Loss: {loss.item()}')
+            total_loss = 0
+            for batch in dataloader:
+                optimizer.zero_grad()
+                anchor_embeddings = model(batch[0])
+                positive_embeddings = model(batch[1])
+                negative_embeddings = model(batch[2])
+                loss = loss_fn(anchor_embeddings, positive_embeddings, negative_embeddings)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+            print(f'Epoch {epoch+1}, Loss: {total_loss / len(dataloader)}')
         return model
 
-    def plot_results(self, history: dict) -> None:
-        plt.plot(history['loss'], label='Training Loss')
-        plt.legend()
-        plt.show()
-
-    def pipeline(self, dataset_path: str, snippet_folder_path: str, num_negatives_per_positive: int = 1, max_training_epochs: int = 5) -> None:
-        triplets = self.create_triplet_dataset(dataset_path, snippet_folder_path)
-        train_triplets, test_triplets = train_test_split(triplets, test_size=0.2, random_state=42)
-        train_triplets = self.shuffle_samples(train_triplets)
-        test_triplets = self.shuffle_samples(test_triplets)
-        train_triplets = [{'anchor': t[0], 'positive': t[1], 'negative': t[2]} for t in train_triplets]
-        test_triplets = [{'anchor': t[0], 'positive': t[1], 'negative': t[2]} for t in test_triplets]
-        anchor_docs, positive_docs, negative_docs = self.create_dataset(train_triplets)
-        model = self.create_model()
-        model = self.train_model(model, anchor_docs, positive_docs, negative_docs, max_training_epochs)
-        
-        # Test model
-        test_anchor_docs, test_positive_docs, test_negative_docs = self.create_dataset(test_triplets)
+    def evaluate_model(self, model: nn.Module, dataloader: DataLoader) -> None:
         model.eval()
+        correct = 0
+        total_loss = 0
         with torch.no_grad():
-            test_anchor_embeddings = model(test_anchor_docs)
-            test_positive_embeddings = model(test_positive_docs)
-            test_negative_embeddings = model(test_negative_docs)
-            test_loss = nn.TripletMarginLoss()(test_anchor_embeddings, test_positive_embeddings, test_negative_embeddings)
-            print(f'Test Loss: {test_loss.item()}')
-            
-            # Evaluate model
-            correct = 0
-            with torch.no_grad():
-                for i in range(len(test_anchor_embeddings)):
-                    anchor = test_anchor_embeddings[i]
-                    positive = test_positive_embeddings[i]
-                    negative = test_negative_embeddings[i]
+            for batch in dataloader:
+                anchor_embeddings = model(batch[0])
+                positive_embeddings = model(batch[1])
+                negative_embeddings = model(batch[2])
+                loss = nn.TripletMarginLoss()(anchor_embeddings, positive_embeddings, negative_embeddings)
+                total_loss += loss.item()
+                for i in range(len(anchor_embeddings)):
+                    anchor = anchor_embeddings[i]
+                    positive = positive_embeddings[i]
+                    negative = negative_embeddings[i]
                     pos_dist = torch.pairwise_distance(anchor, positive)
                     neg_dist = torch.pairwise_distance(anchor, negative)
                     if pos_dist < neg_dist:
                         correct += 1
-            print(f'Test Accuracy: {correct / len(test_anchor_embeddings)}')
+        print(f'Test Loss: {total_loss / len(dataloader)}')
+        print(f'Test Accuracy: {correct / len(dataloader.dataset)}')
+
+    def pipeline(self, dataset_path: str, snippet_folder_path: str, num_negatives_per_positive: int = 1, max_training_epochs: int = 5, batch_size: int = 32) -> None:
+        triplets = self.create_triplet_dataset(dataset_path, snippet_folder_path)
+        train_triplets, test_triplets = train_test_split(triplets, test_size=0.2, random_state=42)
+        train_triplets = [{'anchor': t[0], 'positive': t[1], 'negative': t[2]} for t in train_triplets]
+        test_triplets = [{'anchor': t[0], 'positive': t[1], 'negative': t[2]} for t in test_triplets]
+        train_dataset = TripletDataset(train_triplets, self.max_sequence_length, self.device)
+        test_dataset = TripletDataset(test_triplets, self.max_sequence_length, self.device)
+        train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+        model = self.create_model()
+        model = self.train_model(model, train_dataloader, max_training_epochs)
+        self.evaluate_model(model, test_dataloader)
 
 
 if __name__ == "__main__":
