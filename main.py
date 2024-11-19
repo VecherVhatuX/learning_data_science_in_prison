@@ -8,8 +8,6 @@ from flax import linen as nn
 import numpy as np
 import optax
 
-# Data Classes
-
 @dataclass
 class Config:
     model_id: str = "t5-base"  
@@ -46,9 +44,7 @@ class Config:
     random_seed: int = 42  
     resume_checkpoint: str = None  
 
-# Model Functions
-
-class Model(nn.Module):
+class CustomModel(nn.Module):
     @nn.compact
     def __call__(self, x):
         x = nn.relu(nn.Dense(128, kernel_init=jax.nn.initializers.normal())(x))
@@ -56,63 +52,58 @@ class Model(nn.Module):
         x = nn.Dense(1000, kernel_init=jax.nn.initializers.normal())(x)
         return x
 
-def initialize_model():
-    model = Model()
-    rng = jax.random.PRNGKey(42)
-    input_shape = (1, 128)
-    params = model.init(rng, jnp.ones(input_shape))
-    return params
+class Trainer:
+    def __init__(self, config):
+        self.config = config
+        self.model = CustomModel()
+        self.rng = jax.random.PRNGKey(self.config.random_seed)
+        self.input_shape = (1, 128)
+        self.params = self.model.init(self.rng, jnp.ones(self.input_shape))
+        self.optimizer_state = optax.adamw(0.001, b1=0.9, b2=0.999, eps=1e-8)
 
-def calculate_loss(params, batch):
-    model = Model()
-    if len(batch) == 3:
-        return jnp.mean(jnp.maximum((model.apply(params, batch[0]) - batch[1])**2 - (model.apply(params, batch[0]) - batch[2])**2, 0))
-    else:
-        return jnp.mean((model.apply(params, batch[0]) - batch[1])**2)
+    def prepare_data(self, chat_format, data):
+        return {
+            "input_ids": [f"{chat_format} {example['input']}" for example in data],
+            "labels": [f"{chat_format} {example['output']}" for example in data],
+            "attention_mask": [1] * len(data)
+        }
 
-# Dataset
+    def load_data(self, chat_format):
+        with open("train.json", 'r') as f:
+            train_data = json.load(f)
+        with open("test.json", 'r') as f:
+            test_data = json.load(f)
+        return self.prepare_data(chat_format, train_data), self.prepare_data(chat_format, test_data)
 
-def prepare_data(chat_format, data):
-    return {
-        "input_ids": [f"{chat_format} {example['input']}" for example in data],
-        "labels": [f"{chat_format} {example['output']}" for example in data],
-        "attention_mask": [1] * len(data)
-    }
+    @jax.jit
+    def train_step(self, params, batch):
+        def loss_fn(params):
+            if len(batch) == 3:
+                return jnp.mean(jnp.maximum((self.model.apply(params, batch[0]) - batch[1])**2 - (self.model.apply(params, batch[0]) - batch[2])**2, 0))
+            else:
+                return jnp.mean((self.model.apply(params, batch[0]) - batch[1])**2)
+        loss, grads = jax.value_and_grad(loss_fn)(params)
+        updates, self.optimizer_state = self.optimizer_state.update(grads, self.optimizer_state)
+        self.params = optax.apply_updates(params, updates)
+        return self.params, loss
 
-def load_data(chat_format):
-    with open("train.json", 'r') as f:
-        train_data = json.load(f)
-    with open("test.json", 'r') as f:
-        test_data = json.load(f)
-    return prepare_data(chat_format, train_data), prepare_data(chat_format, test_data)
+    def train_epoch(self, dataset):
+        batches = np.array_split(dataset, len(dataset) // self.config.train_batch_size)
+        for batch in batches:
+            self.params, _ = self.train_step(self.params, batch)
+        return self.params
 
-# Training Functions
-
-@jax.jit
-def train_step(params, batch, optimizer_state):
-    loss, grads = jax.value_and_grad(lambda p: calculate_loss(p, batch))(params)
-    updates, new_optimizer_state = optimizer_state.update(grads, optimizer_state)
-    new_params = optax.apply_updates(params, updates)
-    return new_params, new_optimizer_state, loss
-
-def train_epoch(params, dataset, optimizer_state):
-    batches = np.array_split(dataset, len(dataset) // 16)
-    for batch in batches:
-        params, optimizer_state, _ = train_step(params, batch, optimizer_state)
-    return params, optimizer_state
-
-def train(config):
-    train_data, _ = load_data(config.chat_format)
-    dataset = np.array(train_data["input_ids"]), np.array(train_data["labels"])
-    params = initialize_model()
-    optimizer_state = optax.adamw(0.001, b1=0.9, b2=0.999, eps=1e-8)
-    for _ in range(config.num_epochs):
-        params, optimizer_state = train_epoch(params, dataset, optimizer_state)
-    return params
+    def train(self):
+        train_data, _ = self.load_data(self.config.chat_format)
+        dataset = np.array(train_data["input_ids"]), np.array(train_data["labels"])
+        for _ in range(self.config.num_epochs):
+            self.params = self.train_epoch(dataset)
+        return self.params
 
 def main():
     config = Config(model_id="t5-base", chat_format="none", triplet_loss_training=True)
-    params = train(config)
+    trainer = Trainer(config)
+    params = trainer.train()
 
 if __name__ == "__main__":
     main()
