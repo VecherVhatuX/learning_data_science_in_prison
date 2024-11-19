@@ -23,10 +23,34 @@ class TripletDataset(Dataset):
 
     def __getitem__(self, idx):
         triplet = self.triplets[idx]
+        anchor = self.tokenizer.encode_plus(
+            triplet['anchor'],
+            max_length=self.max_sequence_length,
+            padding='max_length',
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors='pt'
+        )
+        positive = self.tokenizer.encode_plus(
+            triplet['positive'],
+            max_length=self.max_sequence_length,
+            padding='max_length',
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors='pt'
+        )
+        negative = self.tokenizer.encode_plus(
+            triplet['negative'],
+            max_length=self.max_sequence_length,
+            padding='max_length',
+            truncation=True,
+            return_attention_mask=True,
+            return_tensors='pt'
+        )
         return {
-            'anchor': self.tokenizer.encode(triplet['anchor'], max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt'),
-            'positive': self.tokenizer.encode(triplet['positive'], max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt'),
-            'negative': self.tokenizer.encode(triplet['negative'], max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt')
+            'anchor': {'input_ids': anchor['input_ids'], 'attention_mask': anchor['attention_mask']},
+            'positive': {'input_ids': positive['input_ids'], 'attention_mask': positive['attention_mask']},
+            'negative': {'input_ids': negative['input_ids'], 'attention_mask': negative['attention_mask']}
         }
 
 class TripletModel(LightningModule):
@@ -143,18 +167,36 @@ class TripletModel(LightningModule):
         test_negative_input_ids = []
         test_negative_attention_masks = []
         for triplet in test_triplets:
-            anchor_input_ids = self.tokenizer.encode(triplet['anchor'], max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt')
-            anchor_attention_masks = self.tokenizer.encode(triplet['anchor'], max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt', return_attention_mask=True)
-            positive_input_ids = self.tokenizer.encode(triplet['positive'], max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt')
-            positive_attention_masks = self.tokenizer.encode(triplet['positive'], max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt', return_attention_mask=True)
-            negative_input_ids = self.tokenizer.encode(triplet['negative'], max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt')
-            negative_attention_masks = self.tokenizer.encode(triplet['negative'], max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt', return_attention_mask=True)
-            test_anchor_input_ids.append(anchor_input_ids)
-            test_anchor_attention_masks.append(anchor_attention_masks['attention_mask'])
-            test_positive_input_ids.append(positive_input_ids)
-            test_positive_attention_masks.append(positive_attention_masks['attention_mask'])
-            test_negative_input_ids.append(negative_input_ids)
-            test_negative_attention_masks.append(negative_attention_masks['attention_mask'])
+            anchor = self.tokenizer.encode_plus(
+                triplet['anchor'],
+                max_length=self.max_sequence_length,
+                padding='max_length',
+                truncation=True,
+                return_attention_mask=True,
+                return_tensors='pt'
+            )
+            positive = self.tokenizer.encode_plus(
+                triplet['positive'],
+                max_length=self.max_sequence_length,
+                padding='max_length',
+                truncation=True,
+                return_attention_mask=True,
+                return_tensors='pt'
+            )
+            negative = self.tokenizer.encode_plus(
+                triplet['negative'],
+                max_length=self.max_sequence_length,
+                padding='max_length',
+                truncation=True,
+                return_attention_mask=True,
+                return_tensors='pt'
+            )
+            test_anchor_input_ids.append(anchor['input_ids'])
+            test_anchor_attention_masks.append(anchor['attention_mask'])
+            test_positive_input_ids.append(positive['input_ids'])
+            test_positive_attention_masks.append(positive['attention_mask'])
+            test_negative_input_ids.append(negative['input_ids'])
+            test_negative_attention_masks.append(negative['attention_mask'])
         test_anchor_input_ids = torch.cat(test_anchor_input_ids, dim=0)
         test_anchor_attention_masks = torch.cat(test_anchor_attention_masks, dim=0)
         test_positive_input_ids = torch.cat(test_positive_input_ids, dim=0)
