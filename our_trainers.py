@@ -5,6 +5,14 @@ from tensorflow.keras import layers
 from sklearn.preprocessing import LabelEncoder
 
 class TripletNetwork(keras.Model):
+    """
+    Implementation of a triplet network for learning embeddings.
+    
+    Attributes:
+    - num_embeddings (int): The number of possible embeddings.
+    - embedding_dim (int): The dimensionality of the embedding space.
+    - margin (float): The margin used in the triplet loss function.
+    """
     def __init__(self, num_embeddings, embedding_dim, margin):
         super(TripletNetwork, self).__init__()
         self.embedding = layers.Embedding(num_embeddings, embedding_dim)
@@ -14,6 +22,15 @@ class TripletNetwork(keras.Model):
         self.margin = margin
 
     def call(self, inputs):
+        """
+        Forward pass of the network.
+        
+        Args:
+        - inputs: The input tensor.
+        
+        Returns:
+        - The normalized output embeddings.
+        """
         embedding = self.embedding(inputs)
         pooling = self.pooling(embedding)
         dense = self.dense(pooling)
@@ -22,11 +39,31 @@ class TripletNetwork(keras.Model):
         return outputs
 
     def triplet_loss(self, anchor_embeddings, positive_embeddings, negative_embeddings):
+        """
+        Computes the triplet loss.
+        
+        Args:
+        - anchor_embeddings: The embeddings of the anchor samples.
+        - positive_embeddings: The embeddings of the positive samples.
+        - negative_embeddings: The embeddings of the negative samples.
+        
+        Returns:
+        - The computed triplet loss.
+        """
         return tf.reduce_mean(tf.maximum(
             tf.norm(anchor_embeddings - positive_embeddings, axis=1) 
             - tf.reduce_min(tf.norm(anchor_embeddings[:, None] - negative_embeddings, axis=2), axis=1) + self.margin, 0))
 
 class TripletDataset(tf.keras.utils.Sequence):
+    """
+    A custom dataset class for generating triplet batches.
+    
+    Attributes:
+    - samples (np.ndarray): The input samples.
+    - labels (np.ndarray): The labels corresponding to the samples.
+    - batch_size (int): The batch size.
+    - num_negatives (int): The number of negative samples per anchor.
+    """
     def __init__(self, samples, labels, batch_size, num_negatives):
         self.samples = samples
         self.labels = labels
@@ -34,9 +71,21 @@ class TripletDataset(tf.keras.utils.Sequence):
         self.num_negatives = num_negatives
 
     def __len__(self):
+        """
+        Returns the number of batches.
+        """
         return -(-len(self.samples) // self.batch_size)
 
     def __getitem__(self, idx):
+        """
+        Generates a batch of triplets.
+        
+        Args:
+        - idx: The batch index.
+        
+        Returns:
+        - A dictionary containing the anchor, positive, and negative inputs.
+        """
         start_idx = idx * self.batch_size
         end_idx = min((idx + 1) * self.batch_size, len(self.samples))
         anchor_idx = np.arange(start_idx, end_idx)
@@ -52,6 +101,15 @@ class TripletDataset(tf.keras.utils.Sequence):
         }
 
 def train_triplet_network(network, dataset, epochs, learning_rate):
+    """
+    Trains the triplet network.
+    
+    Args:
+    - network: The triplet network instance.
+    - dataset: The dataset instance.
+    - epochs (int): The number of training epochs.
+    - learning_rate (float): The learning rate.
+    """
     optimizer = keras.optimizers.Adam(learning_rate)
     for epoch in range(epochs):
         total_loss = 0.0
@@ -67,6 +125,13 @@ def train_triplet_network(network, dataset, epochs, learning_rate):
         print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
 def evaluate_triplet_network(network, dataset):
+    """
+    Evaluates the triplet network.
+    
+    Args:
+    - network: The triplet network instance.
+    - dataset: The dataset instance.
+    """
     total_loss = 0.0
     for i, data in enumerate(dataset):
         anchor_embeddings = network(data['anchor_input_ids'])
@@ -77,18 +142,64 @@ def evaluate_triplet_network(network, dataset):
     print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
 def predict_with_triplet_network(network, input_ids):
+    """
+    Makes predictions with the triplet network.
+    
+    Args:
+    - network: The triplet network instance.
+    - input_ids: The input IDs.
+    
+    Returns:
+    - The predicted embeddings.
+    """
     return network(input_ids)
 
 def save_triplet_model(network, path):
+    """
+    Saves the triplet network.
+    
+    Args:
+    - network: The triplet network instance.
+    - path: The save path.
+    """
     network.save(path)
 
 def load_triplet_model(path):
+    """
+    Loads a saved triplet network.
+    
+    Args:
+    - path: The load path.
+    
+    Returns:
+    - The loaded triplet network instance.
+    """
     return keras.models.load_model(path)
 
 def calculate_distance(embedding1, embedding2):
+    """
+    Calculates the distance between two embeddings.
+    
+    Args:
+    - embedding1: The first embedding.
+    - embedding2: The second embedding.
+    
+    Returns:
+    - The computed distance.
+    """
     return tf.norm(embedding1 - embedding2, axis=1)
 
 def calculate_similarity(embedding1, embedding2):
+    """
+    Calculates the similarity between two embeddings.
+    
+    Args:
+    - embedding1: The first embedding.
+    - embedding2: The second embedding.
+    
+    Returns:
+    - The computed similarity.
+    """
     return tf.reduce_sum(embedding1 * embedding2, axis=1) / (tf.norm(embedding1, axis=1) * tf.norm(embedding2, axis=1))
 
 def main():
