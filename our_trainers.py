@@ -1,35 +1,34 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
-import numpy as np
-from sklearn.preprocessing import LabelEncoder
-from functools import partial
+Here's the rewritten code using TensorFlow and Keras:
 
-# Define the TripletNetwork class
-class TripletNetwork(nn.Module):
+```python
+import numpy as np
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+from sklearn.preprocessing import LabelEncoder
+
+class TripletNetwork(keras.Model):
     def __init__(self, num_embeddings, embedding_dim, margin):
         super(TripletNetwork, self).__init__()
-        self.embedding = nn.Embedding(num_embeddings, embedding_dim)
-        self.pooling = nn.AdaptiveAvgPool1d(1)
-        self.dense = nn.Linear(embedding_dim, embedding_dim)
-        self.normalize = nn.BatchNorm1d(embedding_dim)
+        self.embedding = layers.Embedding(num_embeddings, embedding_dim)
+        self.pooling = layers.GlobalAveragePooling1D()
+        self.dense = layers.Dense(embedding_dim)
+        self.normalize = layers.BatchNormalization()
 
-    def forward(self, inputs):
-        embedding = self.embedding(inputs).permute(0, 2, 1)
-        pooling = self.pooling(embedding).squeeze(2)
+    def call(self, inputs):
+        embedding = self.embedding(inputs)
+        pooling = self.pooling(embedding)
         dense = self.dense(pooling)
         normalize = self.normalize(dense)
-        outputs = normalize / normalize.norm(dim=1, keepdim=True)
+        outputs = normalize / tf.norm(normalize, axis=1, keepdims=True)
         return outputs
 
-# Define the triplet loss function
 def triplet_loss_function(anchor_embeddings, positive_embeddings, negative_embeddings, margin):
-    return (torch.norm(anchor_embeddings - positive_embeddings, dim=1) 
-            - torch.norm(anchor_embeddings[:, None] - negative_embeddings, dim=2).min(dim=1)[0] + margin).clamp(min=0).mean()
+    return tf.reduce_mean(tf.maximum(
+        tf.norm(anchor_embeddings - positive_embeddings, axis=1) 
+        - tf.reduce_min(tf.norm(anchor_embeddings[:, None] - negative_embeddings, axis=2), axis=1) + margin, 0))
 
-# Define the TripletDataset class
-class TripletDataset(Dataset):
+class TripletDataset(tf.keras.utils.Sequence):
     def __init__(self, samples, labels, batch_size, num_negatives):
         self.samples = samples
         self.labels = labels
@@ -49,62 +48,48 @@ class TripletDataset(Dataset):
         negative_idx = np.array([np.random.choice(np.where(self.labels != label)[0], size=self.num_negatives, replace=False) for label in anchor_labels])
 
         return {
-            'anchor_input_ids': torch.tensor(self.samples[anchor_idx]),
-            'positive_input_ids': torch.tensor(self.samples[positive_idx]),
-            'negative_input_ids': torch.tensor(self.samples[negative_idx])
+            'anchor_input_ids': self.samples[anchor_idx],
+            'positive_input_ids': self.samples[positive_idx],
+            'negative_input_ids': self.samples[negative_idx]
         }
 
-# Define the create_triplet_data_loader function
-def create_triplet_data_loader(samples, labels, batch_size, num_negatives):
-    return TripletDataset(samples, labels, batch_size, num_negatives)
-
-# Define the create_triplet_architecture function
 def create_triplet_architecture(num_embeddings, embedding_dim, margin):
     return TripletNetwork(num_embeddings, embedding_dim, margin)
 
-# Define the train_triplet_network function
 def train_triplet_network(network, dataset, epochs, margin, learning_rate):
-    data_loader = DataLoader(dataset, batch_size=None, shuffle=True)
-    optimizer = optim.Adam(network.parameters(), lr=learning_rate)
+    optimizer = keras.optimizers.Adam(learning_rate)
     for epoch in range(epochs):
         total_loss = 0.0
-        for i, data in enumerate(data_loader):
-            optimizer.zero_grad()
-            anchor_embeddings = network(data['anchor_input_ids'])
-            positive_embeddings = network(data['positive_input_ids'])
-            negative_embeddings = network(data['negative_input_ids'])
-            loss = triplet_loss_function(anchor_embeddings, positive_embeddings, negative_embeddings, margin)
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
+        for i, data in enumerate(dataset):
+            with tf.GradientTape() as tape:
+                anchor_embeddings = network(data['anchor_input_ids'])
+                positive_embeddings = network(data['positive_input_ids'])
+                negative_embeddings = network(data['negative_input_ids'])
+                loss = triplet_loss_function(anchor_embeddings, positive_embeddings, negative_embeddings, margin)
+            gradients = tape.gradient(loss, network.trainable_variables)
+            optimizer.apply_gradients(zip(gradients, network.trainable_variables))
+            total_loss += loss
         print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
-# Define the evaluate_triplet_network function
 def evaluate_triplet_network(network, dataset, margin):
-    data_loader = DataLoader(dataset, batch_size=None, shuffle=False)
     total_loss = 0.0
-    with torch.no_grad():
-        for i, data in enumerate(data_loader):
-            anchor_embeddings = network(data['anchor_input_ids'])
-            positive_embeddings = network(data['positive_input_ids'])
-            negative_embeddings = network(data['negative_input_ids'])
-            loss = triplet_loss_function(anchor_embeddings, positive_embeddings, negative_embeddings, margin)
-            total_loss += loss.item()
+    for i, data in enumerate(dataset):
+        anchor_embeddings = network(data['anchor_input_ids'])
+        positive_embeddings = network(data['positive_input_ids'])
+        negative_embeddings = network(data['negative_input_ids'])
+        loss = triplet_loss_function(anchor_embeddings, positive_embeddings, negative_embeddings, margin)
+        total_loss += loss
     print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
-# Define the predict_with_triplet_network function
 def predict_with_triplet_network(network, input_ids):
     return network(input_ids)
 
-# Define the save_triplet_model function
 def save_triplet_model(network, path):
-    torch.save(network.state_dict(), path)
+    network.save(path)
 
-# Define the load_triplet_model function
-def load_triplet_model(network, path):
-    network.load_state_dict(torch.load(path))
+def load_triplet_model(path):
+    return keras.models.load_model(path)
 
-# Define the main function
 def main():
     np.random.seed(42)
     samples = np.random.randint(0, 100, (100, 10))
@@ -118,37 +103,32 @@ def main():
     learning_rate = 1e-4
 
     network = create_triplet_architecture(num_embeddings, embedding_dim, margin)
-    dataset = create_triplet_data_loader(samples, labels, batch_size, num_negatives)
+    dataset = TripletDataset(samples, labels, batch_size, num_negatives)
     train_triplet_network(network, dataset, epochs, margin, learning_rate)
-    input_ids = torch.tensor([1, 2, 3, 4, 5])[None, :]
+    input_ids = np.array([1, 2, 3, 4, 5])[None, :]
     output = predict_with_triplet_network(network, input_ids)
     print(output)
-    save_triplet_model(network, "triplet_model.pth")
-    load_triplet_model(network, "triplet_model.pth")
+    save_triplet_model(network, "triplet_model.h5")
+    loaded_network = load_triplet_model("triplet_model.h5")
     print("Model saved and loaded successfully.")
 
-    # Evaluate the model
     evaluate_triplet_network(network, dataset, margin)
 
-    # Use the model for prediction
-    predicted_embeddings = predict_with_triplet_network(network, torch.tensor([1, 2, 3, 4, 5])[None, :])
+    predicted_embeddings = predict_with_triplet_network(network, np.array([1, 2, 3, 4, 5])[None, :])
     print(predicted_embeddings)
 
-    # Define a function to calculate the distance between two embeddings
     def calculate_distance(embedding1, embedding2):
-        return torch.norm(embedding1 - embedding2, dim=1)
+        return tf.norm(embedding1 - embedding2, axis=1)
 
-    # Calculate the distance between two predicted embeddings
     distance = calculate_distance(predicted_embeddings, predicted_embeddings)
     print(distance)
 
-    # Define a function to calculate the similarity between two embeddings
     def calculate_similarity(embedding1, embedding2):
-        return torch.dot(embedding1, embedding2) / (torch.norm(embedding1) * torch.norm(embedding2))
+        return tf.reduce_sum(embedding1 * embedding2, axis=1) / (tf.norm(embedding1, axis=1) * tf.norm(embedding2, axis=1))
 
-    # Calculate the similarity between two predicted embeddings
     similarity = calculate_similarity(predicted_embeddings, predicted_embeddings)
     print(similarity)
 
 if __name__ == "__main__":
     main()
+```
