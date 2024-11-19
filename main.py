@@ -2,11 +2,10 @@ import os
 import json
 from dataclasses import make_dataclass
 from typing import Dict, Tuple
-import jax
-import jax.numpy as jnp
-from flax import linen as nn
+import torch
+import torch.nn as nn
+import torch.optim as optim
 import numpy as np
-import optax
 
 Config = make_dataclass(
     "Config",
@@ -48,21 +47,26 @@ Config = make_dataclass(
 )
 
 class Model(nn.Module):
-    @nn.compact
-    def __call__(self, x):
-        x = nn.relu(nn.Dense(128, kernel_init=jax.nn.initializers.normal())(x))
-        x = nn.relu(nn.Dense(128, kernel_init=jax.nn.initializers.normal())(x))
-        x = nn.Dense(1000, kernel_init=jax.nn.initializers.normal())(x)
+    def __init__(self):
+        super(Model, self).__init__()
+        self.fc1 = nn.Linear(128, 128)
+        self.fc2 = nn.Linear(128, 128)
+        self.fc3 = nn.Linear(128, 1000)
+
+    def forward(self, x):
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = self.fc3(x)
         return x
 
 class TrainingPipeline:
     def __init__(self, config):
         self.config = config
         self.model = Model()
-        self.rng = jax.random.PRNGKey(self.config.random_seed)
-        self.input_shape = (1, 128)
-        self.params = self.model.init(self.rng, jnp.ones(self.input_shape))
-        self.optimizer_state = optax.adamw(0.001, b1=0.9, b2=0.999, eps=1e-8)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)
+        self.criterion = nn.MSELoss()
+        self.optimizer = optim.AdamW(self.model.parameters(), lr=0.001, betas=(0.9, 0.999), eps=1e-08)
 
     def prepare_dataset(self, chat_format, data):
         return {
@@ -78,35 +82,36 @@ class TrainingPipeline:
             test_data = json.load(f)
         return self.prepare_dataset(chat_format, train_data), self.prepare_dataset(chat_format, test_data)
 
-    @jax.jit
-    def training_step(self, params, batch):
-        def loss_fn(params):
-            if len(batch) == 3:
-                return jnp.mean(jnp.maximum((self.model.apply(params, batch[0]) - batch[1])**2 - (self.model.apply(params, batch[0]) - batch[2])**2, 0))
-            else:
-                return jnp.mean((self.model.apply(params, batch[0]) - batch[1])**2)
-        loss, grads = jax.value_and_grad(loss_fn)(params)
-        updates, self.optimizer_state = self.optimizer_state.update(grads, self.optimizer_state)
-        self.params = optax.apply_updates(params, updates)
-        return self.params, loss
+    def training_step(self, batch):
+        inputs, labels = batch
+        inputs, labels = torch.tensor(inputs, dtype=torch.float32).to(self.device), torch.tensor(labels, dtype=torch.float32).to(self.device)
+        self.optimizer.zero_grad()
+        outputs = self.model(inputs)
+        loss = self.criterion(outputs, labels)
+        loss.backward()
+        self.optimizer.step()
+        return loss.item()
 
     def training_epoch(self, dataset):
         batches = np.array_split(dataset, len(dataset) // self.config.train_batch_size)
+        total_loss = 0
         for batch in batches:
-            self.params, _ = self.training_step(self.params, batch)
-        return self.params
+            loss = self.training_step((np.array(batch[:, 0], dtype=object), np.array(batch[:, 1], dtype=object)))
+            total_loss += loss
+        return total_loss / len(batches)
 
     def train(self):
         train_data, _ = self.load_dataset(self.config.chat_format)
-        dataset = np.array(train_data["input_ids"]), np.array(train_data["labels"])
+        dataset = np.array(list(zip(train_data["input_ids"], train_data["labels"])))
         for _ in range(self.config.num_epochs):
-            self.params = self.training_epoch(dataset)
-        return self.params
+            loss = self.training_epoch(dataset)
+            print(f"Epoch {_+1}, Loss: {loss}")
+        return self.model
 
 def main():
     config = Config(model_id="t5-base", chat_format="none", triplet_loss_training=True)
     pipeline = TrainingPipeline(config)
-    params = pipeline.train()
+    model = pipeline.train()
 
 if __name__ == "__main__":
     main()
