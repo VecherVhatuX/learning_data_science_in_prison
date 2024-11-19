@@ -46,47 +46,40 @@ class Config:
     random_seed: int = 42  
     resume_checkpoint: str = None  
 
-# Data Loading Functions
+class Dataset:
+    def __init__(self, data, batch_size, negative_samples, triplet_mode):
+        self.data = data
+        self.batch_size = batch_size
+        self.negative_samples = negative_samples
+        self.triplet_mode = triplet_mode
+        self.indices = np.arange(len(data["input_ids"]))
+        np.random.shuffle(self.indices)
 
-def load_json_data(file_name: str) -> Dict:
-    with open(file_name, 'r') as f:
-        return json.load(f)
+    def __iter__(self):
+        self.index = 0
+        return self
 
-def prepare_data(chat_format: str, data: Dict) -> Dict:
-    return {
-        "input_ids": [f"{chat_format} {example['input']}" for example in data],
-        "labels": [f"{chat_format} {example['output']}" for example in data],
-        "attention_mask": [1] * len(data)
-    }
+    def __next__(self):
+        if self.index >= len(self.indices):
+            np.random.shuffle(self.indices)
+            self.index = 0
 
-def load_data(chat_format: str) -> Tuple[Dict, Dict]:
-    return (
-        prepare_data(chat_format, load_json_data("train.json")),
-        prepare_data(chat_format, load_json_data("test.json"))
-    )
+        batch_indices = self.indices[self.index:self.index + self.batch_size]
+        self.index += self.batch_size
 
-# Dataset Creation Functions
-
-def create_dataset(data: Dict, batch_size: int, negative_samples: int, triplet_mode: bool) -> callable:
-    indices = np.arange(len(data["input_ids"]))
-    def dataset():
-        np.random.shuffle(indices)
-        for i in range(0, len(indices), batch_size):
-            batch_indices = indices[i:i + batch_size]
-            if not triplet_mode:
-                yield (
-                    jnp.array([data["input_ids"][idx] for idx in batch_indices]),
-                    jnp.array([data["labels"][idx] for idx in batch_indices]),
-                )
-            else:
-                positive_indices = np.random.choice(batch_indices, size=batch_size)
-                negative_indices = np.random.choice(indices, size=(batch_size, negative_samples), replace=False)
-                yield (
-                    jnp.array([data["input_ids"][idx] for idx in batch_indices]),
-                    jnp.array([data["labels"][idx] for idx in positive_indices]),
-                    jnp.array([[data["labels"][idx] for idx in sample] for sample in negative_indices]),
-                )
-    return dataset
+        if not self.triplet_mode:
+            return (
+                jnp.array([self.data["input_ids"][idx] for idx in batch_indices]),
+                jnp.array([self.data["labels"][idx] for idx in batch_indices]),
+            )
+        else:
+            positive_indices = np.random.choice(batch_indices, size=self.batch_size)
+            negative_indices = np.random.choice(self.indices, size=(self.batch_size, self.negative_samples), replace=False)
+            return (
+                jnp.array([self.data["input_ids"][idx] for idx in batch_indices]),
+                jnp.array([self.data["labels"][idx] for idx in positive_indices]),
+                jnp.array([[self.data["labels"][idx] for idx in sample] for sample in negative_indices]),
+            )
 
 # Model Functions
 
@@ -115,15 +108,32 @@ def train_step(params: Dict, batch: Tuple[jnp.ndarray, ...]) -> Tuple[Dict, jnp.
     loss, grads = jax.value_and_grad(lambda p: calculate_loss(p, batch))(params)
     return update_params(params, grads, 0.001), loss
 
-def train_epoch(params: Dict, dataset: callable) -> Dict:
-    return jax.tree_util.tree_reduce(lambda x, y: x, (train_step(params, batch)[0] for batch in dataset()), params)
+def train_epoch(params: Dict, dataset: Dataset) -> Dict:
+    for batch in dataset:
+        params, _ = train_step(params, batch)
+    return params
 
-# Main Training Function
+def load_json_data(file_name: str) -> Dict:
+    with open(file_name, 'r') as f:
+        return json.load(f)
+
+def prepare_data(chat_format: str, data: Dict) -> Dict:
+    return {
+        "input_ids": [f"{chat_format} {example['input']}" for example in data],
+        "labels": [f"{chat_format} {example['output']}" for example in data],
+        "attention_mask": [1] * len(data)
+    }
+
+def load_data(chat_format: str) -> Tuple[Dict, Dict]:
+    return (
+        prepare_data(chat_format, load_json_data("train.json")),
+        prepare_data(chat_format, load_json_data("test.json"))
+    )
 
 def train(config: Config):
     train_data, _ = load_data(config.chat_format)
     params = initialize_model()
-    dataset = create_dataset(train_data, config.train_batch_size, 5, config.triplet_loss_training)
+    dataset = Dataset(train_data, config.train_batch_size, 5, config.triplet_loss_training)
     for epoch in range(config.num_epochs):
         params = train_epoch(params, dataset)
         print(f"Epoch {epoch+1}")
