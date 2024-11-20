@@ -54,6 +54,10 @@ class TripletDataset:
             'negative': {'input_ids': negative['input_ids'], 'attention_mask': negative['attention_mask']}
         }
 
+    def shuffle_triplets(self):
+        random.shuffle(self.triplets)
+        return self
+
 class TripletModel:
     def __init__(self, embedding_size=128, fully_connected_size=64, dropout_rate=0.2, max_sequence_length=512, learning_rate_value=1e-5):
         self.embedding_size = embedding_size
@@ -124,31 +128,34 @@ class TripletModel:
     def compile_model(self):
         self.model.compile(loss=lambda y_true, y_pred: 0, optimizer=Adam(self.learning_rate_value), metrics=['accuracy'])
 
-    def train_model(self, train_data, batch_size=32, epochs=5):
+    def train_model(self, dataset, batch_size=32, epochs=5):
         self.compile_model()
-        anchor_input_ids = np.array([item['anchor']['input_ids'] for item in train_data])
-        anchor_attention_masks = np.array([item['anchor']['attention_mask'] for item in train_data])
-        positive_input_ids = np.array([item['positive']['input_ids'] for item in train_data])
-        positive_attention_masks = np.array([item['positive']['attention_mask'] for item in train_data])
-        negative_input_ids = np.array([item['negative']['input_ids'] for item in train_data])
-        negative_attention_masks = np.array([item['negative']['attention_mask'] for item in train_data])
-        anchor_embeddings = self.model.predict([anchor_input_ids, anchor_attention_masks])
-        positive_embeddings = self.model.predict([positive_input_ids, positive_attention_masks])
-        negative_embeddings = self.model.predict([negative_input_ids, negative_attention_masks])
         for epoch in range(epochs):
+            dataset.shuffle_triplets()
+            train_triplets = dataset.triplets
+            anchor_input_ids = np.array([item['anchor']['input_ids'] for item in train_triplets])
+            anchor_attention_masks = np.array([item['anchor']['attention_mask'] for item in train_triplets])
+            positive_input_ids = np.array([item['positive']['input_ids'] for item in train_triplets])
+            positive_attention_masks = np.array([item['positive']['attention_mask'] for item in train_triplets])
+            negative_input_ids = np.array([item['negative']['input_ids'] for item in train_triplets])
+            negative_attention_masks = np.array([item['negative']['attention_mask'] for item in train_triplets])
+            anchor_embeddings = self.model.predict([anchor_input_ids, anchor_attention_masks])
+            positive_embeddings = self.model.predict([positive_input_ids, positive_attention_masks])
+            negative_embeddings = self.model.predict([negative_input_ids, negative_attention_masks])
             loss = self.calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
             print(f'Epoch {epoch+1}, Loss: {loss}')
             self.model.fit([anchor_input_ids, anchor_attention_masks], positive_embeddings, epochs=1, batch_size=batch_size, verbose=0)
             self.model.fit([positive_input_ids, positive_attention_masks], anchor_embeddings, epochs=1, batch_size=batch_size, verbose=0)
             self.model.fit([negative_input_ids, negative_attention_masks], anchor_embeddings, epochs=1, batch_size=batch_size, verbose=0)
 
-    def evaluate_model(self, test_data):
-        anchor_input_ids = np.array([item['anchor']['input_ids'] for item in test_data])
-        anchor_attention_masks = np.array([item['anchor']['attention_mask'] for item in test_data])
-        positive_input_ids = np.array([item['positive']['input_ids'] for item in test_data])
-        positive_attention_masks = np.array([item['positive']['attention_mask'] for item in test_data])
-        negative_input_ids = np.array([item['negative']['input_ids'] for item in test_data])
-        negative_attention_masks = np.array([item['negative']['attention_mask'] for item in test_data])
+    def evaluate_model(self, dataset):
+        train_triplets = dataset.triplets
+        anchor_input_ids = np.array([item['anchor']['input_ids'] for item in train_triplets])
+        anchor_attention_masks = np.array([item['anchor']['attention_mask'] for item in train_triplets])
+        positive_input_ids = np.array([item['positive']['input_ids'] for item in train_triplets])
+        positive_attention_masks = np.array([item['positive']['attention_mask'] for item in train_triplets])
+        negative_input_ids = np.array([item['negative']['input_ids'] for item in train_triplets])
+        negative_attention_masks = np.array([item['negative']['attention_mask'] for item in train_triplets])
         anchor_embeddings = self.model.predict([anchor_input_ids, anchor_attention_masks])
         positive_embeddings = self.model.predict([positive_input_ids, positive_attention_masks])
         negative_embeddings = self.model.predict([negative_input_ids, negative_attention_masks])
@@ -165,8 +172,10 @@ class TripletModel:
         train_triplets, test_triplets = train_test_split(triplets, test_size=0.2, random_state=42)
         train_triplets = [{'anchor': t[0], 'positive': t[1], 'negative': t[2]} for t in train_triplets]
         test_triplets = [{'anchor': t[0], 'positive': t[1], 'negative': t[2]} for t in test_triplets]
-        train_data = [TripletDataset([item], self.max_sequence_length, self.tokenizer).__getitem__(0) for item in train_triplets]
-        test_data = [TripletDataset([item], self.max_sequence_length, self.tokenizer).__getitem__(0) for item in test_triplets]
+        train_data = TripletDataset(train_triplets, self.max_sequence_length, self.tokenizer)
+        test_data = TripletDataset(test_triplets, self.max_sequence_length, self.tokenizer)
+        train_triplets = [train_data.__getitem__(i) for i in range(len(train_triplets))]
+        test_triplets = [test_data.__getitem__(i) for i in range(len(test_triplets))]
         self.train_model(train_data, batch_size=batch_size, epochs=epochs)
         self.evaluate_model(test_data)
 
