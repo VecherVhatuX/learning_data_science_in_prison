@@ -13,7 +13,7 @@ import random
 import json
 import os
 
-class DataLoader:
+class DataUtils:
     @staticmethod
     def load_json_data(file_path):
         try:
@@ -38,7 +38,7 @@ class DataProcessor:
         return tuple(map(list, zip(*[
             ((snippet_data['snippet'], True) if snippet_data.get('is_bug', False) else (snippet_data['snippet'], False)) 
             for folder_path, snippet_file_path in snippets 
-            for snippet_data in [DataLoader.load_json_data(snippet_file_path)]
+            for snippet_data in [DataUtils.load_json_data(snippet_file_path)]
             if snippet_data.get('snippet')
         ])))
 
@@ -163,11 +163,20 @@ class ModelTrainer:
         negative_distance = tf.reduce_mean(tf.square(anchor_embeddings - negative_embeddings))
         return positive_distance + tf.maximum(negative_distance - positive_distance, 0)
 
-def run_pipeline(dataset_path, snippet_folder_path, num_negatives_per_positive=1, 
-                 embedding_size=128, fully_connected_size=64, dropout_rate=0.2, 
-                 max_sequence_length=512, learning_rate_value=1e-5, epochs=5, batch_size=32):
-    instance_id_map = {item['instance_id']: item['problem_statement'] for item in DataLoader.load_dataset(dataset_path)}
-    snippets = DataLoader.load_snippets(snippet_folder_path)
+def main():
+    dataset_path = 'datasets/SWE-bench_oracle.npy'
+    snippet_folder_path = 'datasets/10_10_after_fix_pytest'
+    num_negatives_per_positive = 1
+    embedding_size = 128
+    fully_connected_size = 64
+    dropout_rate = 0.2
+    max_sequence_length = 512
+    learning_rate_value = 1e-5
+    epochs = 5
+    batch_size = 32
+
+    instance_id_map = {item['instance_id']: item['problem_statement'] for item in DataUtils.load_dataset(dataset_path)}
+    snippets = DataUtils.load_snippets(snippet_folder_path)
     triplets = []
     for folder_path, _ in snippets:
         bug_snippets, non_bug_snippets = DataProcessor.separate_code_snippets([(folder_path, os.path.join(folder_path, 'snippet.json'))])
@@ -184,6 +193,4 @@ def run_pipeline(dataset_path, snippet_folder_path, num_negatives_per_positive=1
     ModelTrainer.train_model(model, train_data, test_data, epochs, learning_rate_value)
 
 if __name__ == "__main__":
-    dataset_path = 'datasets/SWE-bench_oracle.npy'
-    snippet_folder_path = 'datasets/10_10_after_fix_pytest'
-    run_pipeline(dataset_path, snippet_folder_path)
+    main()
