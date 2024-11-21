@@ -21,6 +21,8 @@ class CodeSimilarityModel:
         self.dropout_rate = 0.2
         self.max_sequence_length = 512
         self.learning_rate_value = 1e-5
+        self.batch_size = 32
+        self.epochs = 5
 
     def load_json_data(self, file_path):
         try:
@@ -51,12 +53,11 @@ class CodeSimilarityModel:
                 for _ in range(min(num_negatives_per_positive, len(negative_snippets)))]
 
     class Dataset(tf.keras.utils.Sequence):
-        def __init__(self, triplets, max_sequence_length, tokenizer, batch_size=32, epochs=5):
+        def __init__(self, triplets, max_sequence_length, tokenizer, batch_size=32):
             self.triplets = triplets
             self.max_sequence_length = max_sequence_length
             self.tokenizer = tokenizer
             self.batch_size = batch_size
-            self.epochs = epochs
             self.on_epoch_end()
 
         def __len__(self):
@@ -74,36 +75,30 @@ class CodeSimilarityModel:
             batch_negative_input_ids = []
             batch_negative_attention_masks = []
             for triplet in batch_triplets:
-                anchor = self.tokenizer.encode_plus(
-                    triplet['anchor'],
-                    max_length=self.max_sequence_length,
-                    padding='max_length',
-                    truncation=True,
-                    return_attention_mask=True,
-                    return_tensors='np'
+                anchor = tf.keras.preprocessing.sequence.pad_sequences(
+                    self.tokenizer.texts_to_sequences([triplet['anchor']]),
+                    maxlen=self.max_sequence_length,
+                    padding='post',
+                    truncating='post'
                 )
-                positive = self.tokenizer.encode_plus(
-                    triplet['positive'],
-                    max_length=self.max_sequence_length,
-                    padding='max_length',
-                    truncation=True,
-                    return_attention_mask=True,
-                    return_tensors='np'
+                positive = tf.keras.preprocessing.sequence.pad_sequences(
+                    self.tokenizer.texts_to_sequences([triplet['positive']]),
+                    maxlen=self.max_sequence_length,
+                    padding='post',
+                    truncating='post'
                 )
-                negative = self.tokenizer.encode_plus(
-                    triplet['negative'],
-                    max_length=self.max_sequence_length,
-                    padding='max_length',
-                    truncation=True,
-                    return_attention_mask=True,
-                    return_tensors='np'
+                negative = tf.keras.preprocessing.sequence.pad_sequences(
+                    self.tokenizer.texts_to_sequences([triplet['negative']]),
+                    maxlen=self.max_sequence_length,
+                    padding='post',
+                    truncating='post'
                 )
-                batch_anchor_input_ids.append(anchor['input_ids'])
-                batch_anchor_attention_masks.append(anchor['attention_mask'])
-                batch_positive_input_ids.append(positive['input_ids'])
-                batch_positive_attention_masks.append(positive['attention_mask'])
-                batch_negative_input_ids.append(negative['input_ids'])
-                batch_negative_attention_masks.append(negative['attention_mask'])
+                batch_anchor_input_ids.append(anchor[0])
+                batch_anchor_attention_masks.append([1] * len(anchor[0]))
+                batch_positive_input_ids.append(positive[0])
+                batch_positive_attention_masks.append([1] * len(positive[0]))
+                batch_negative_input_ids.append(negative[0])
+                batch_negative_attention_masks.append([1] * len(negative[0]))
             return {
                 'anchor': {'input_ids': np.array(batch_anchor_input_ids), 'attention_mask': np.array(batch_anchor_attention_masks)},
                 'positive': {'input_ids': np.array(batch_positive_input_ids), 'attention_mask': np.array(batch_positive_attention_masks)},
@@ -121,9 +116,9 @@ class CodeSimilarityModel:
         model = Model(inputs=[input_ids, attention_masks], outputs=fc2)
         return model
 
-    def train_model(self, model, train_dataset, test_dataset, epochs=5):
+    def train_model(self, model, train_dataset, test_dataset):
         model.compile(loss=lambda y_true, y_pred: 0, optimizer=Adam(self.learning_rate_value), metrics=['accuracy'])
-        for epoch in range(epochs):
+        for epoch in range(self.epochs):
             total_loss = 0
             for batch in train_dataset:
                 anchor_input_ids = batch['anchor']['input_ids']
@@ -137,9 +132,6 @@ class CodeSimilarityModel:
                 negative_embeddings = model.predict([negative_input_ids, negative_attention_masks])
                 loss = self.calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
                 total_loss += loss
-                model.fit([anchor_input_ids, anchor_attention_masks], anchor_embeddings, epochs=1, batch_size=32, verbose=0)
-                model.fit([positive_input_ids, positive_attention_masks], positive_embeddings, epochs=1, batch_size=32, verbose=0)
-                model.fit([negative_input_ids, negative_attention_masks], negative_embeddings, epochs=1, batch_size=32, verbose=0)
             print(f'Epoch {epoch+1}, Loss: {total_loss / len(train_dataset)}')
         self.evaluate_model(model, test_dataset)
 
@@ -159,7 +151,7 @@ class CodeSimilarityModel:
                 similarity_positive = np.dot(anchor_embeddings[i], positive_embeddings[i]) / (np.linalg.norm(anchor_embeddings[i]) * np.linalg.norm(positive_embeddings[i]))
                 similarity_negative = np.dot(anchor_embeddings[i], negative_embeddings[i]) / (np.linalg.norm(anchor_embeddings[i]) * np.linalg.norm(negative_embeddings[i]))
                 total_correct += similarity_positive > similarity_negative
-        accuracy = total_correct / (len(test_dataset) * 32)
+        accuracy = total_correct / (len(test_dataset) * self.batch_size)
         print(f'Test Accuracy: {accuracy}')
 
     def calculate_loss(self, anchor_embeddings, positive_embeddings, negative_embeddings):
@@ -167,7 +159,7 @@ class CodeSimilarityModel:
         negative_distance = tf.reduce_mean(tf.square(anchor_embeddings - negative_embeddings))
         return positive_distance + tf.maximum(negative_distance - positive_distance, 0)
 
-    def run_pipeline(self, dataset_path, snippet_folder_path, num_negatives_per_positive=1, batch_size=32, epochs=5):
+    def run_pipeline(self, dataset_path, snippet_folder_path, num_negatives_per_positive=1):
         instance_id_map = {item['instance_id']: item['problem_statement'] for item in self.load_dataset(dataset_path)}
         snippets = self.load_snippets(snippet_folder_path)
         triplets = []
@@ -180,10 +172,10 @@ class CodeSimilarityModel:
         train_triplets, test_triplets = train_test_split(triplets, test_size=0.2, random_state=42)
         tokenizer = Tokenizer()
         tokenizer.fit_on_texts([triplet['anchor'] for triplet in triplets] + [triplet['positive'] for triplet in triplets] + [triplet['negative'] for triplet in triplets])
-        train_data = self.Dataset(train_triplets, 512, tokenizer, batch_size=batch_size, epochs=epochs)
-        test_data = self.Dataset(test_triplets, 512, tokenizer, batch_size=batch_size, epochs=epochs)
+        train_data = self.Dataset(train_triplets, 512, tokenizer, batch_size=self.batch_size)
+        test_data = self.Dataset(test_triplets, 512, tokenizer, batch_size=self.batch_size)
         model = self.create_model()
-        self.train_model(model, train_data, test_data, epochs=epochs)
+        self.train_model(model, train_data, test_data)
 
 if __name__ == "__main__":
     dataset_path = 'datasets/SWE-bench_oracle.npy'
