@@ -1,10 +1,9 @@
 import tensorflow as tf
 from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input, Dense, Dropout, Lambda, GlobalAveragePooling1D, Embedding
+from tensorflow.keras.layers import Input, Dense, Dropout, GlobalAveragePooling1D, Embedding
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from tensorflow.keras.utils import to_categorical
-from tensorflow.keras.metrics import CosineSimilarity
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 from tensorflow.keras.preprocessing.text import Tokenizer
@@ -16,15 +15,7 @@ import os
 class DataHandler:
     @staticmethod
     def load_data(file_path):
-        if file_path.endswith('.json'):
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"Failed to load JSON file: {file_path}, error: {str(e)}")
-                return []
-        elif file_path.endswith('.npy'):
-            return np.load(file_path, allow_pickle=True)
+        return np.load(file_path, allow_pickle=True) if file_path.endswith('.npy') else json.load(open(file_path, 'r', encoding='utf-8'))
 
     @staticmethod
     def load_snippets(folder_path):
@@ -53,22 +44,14 @@ class Dataset:
         self.max_sequence_length = max_sequence_length
         self.tokenizer = tokenizer
         self.batch_size = batch_size
-        self.on_epoch_end()
-
-    def __len__(self):
-        return len(self.triplets) // self.batch_size + 1
 
     def on_epoch_end(self):
         random.shuffle(self.triplets)
 
     def __getitem__(self, idx):
         batch_triplets = self.triplets[idx * self.batch_size:(idx + 1) * self.batch_size]
-        batch_anchor_input_ids = []
-        batch_anchor_attention_masks = []
-        batch_positive_input_ids = []
-        batch_positive_attention_masks = []
-        batch_negative_input_ids = []
-        batch_negative_attention_masks = []
+        inputs = []
+        attention_masks = []
         for triplet in batch_triplets:
             anchor = pad_sequences(
                 self.tokenizer.texts_to_sequences([triplet['anchor']]),
@@ -88,29 +71,24 @@ class Dataset:
                 padding='post',
                 truncating='post'
             )
-            batch_anchor_input_ids.append(anchor[0])
-            batch_anchor_attention_masks.append([1] * len(anchor[0]))
-            batch_positive_input_ids.append(positive[0])
-            batch_positive_attention_masks.append([1] * len(positive[0]))
-            batch_negative_input_ids.append(negative[0])
-            batch_negative_attention_masks.append([1] * len(negative[0]))
-        return {
-            'anchor': {'input_ids': np.array(batch_anchor_input_ids), 'attention_mask': np.array(batch_anchor_attention_masks)},
-            'positive': {'input_ids': np.array(batch_positive_input_ids), 'attention_mask': np.array(batch_positive_attention_masks)},
-            'negative': {'input_ids': np.array(batch_negative_input_ids), 'attention_mask': np.array(batch_negative_attention_masks)}
-        }
+            inputs.extend([anchor[0], positive[0], negative[0]])
+            attention_masks.extend([[1] * len(anchor[0]), [1] * len(positive[0]), [1] * len(negative[0])])
+        return {'input_ids': np.array(inputs), 'attention_mask': np.array(attention_masks)}
+
+    def __len__(self):
+        return len(self.triplets) // self.batch_size + 1
 
 class ModelBuilder:
     @staticmethod
     def build_model(embedding_size, fully_connected_size, dropout_rate, max_sequence_length):
-        input_ids = Input(shape=(max_sequence_length,), name='input_ids')
+        inputs = Input(shape=(max_sequence_length,), name='input_ids')
         attention_masks = Input(shape=(max_sequence_length,), name='attention_masks')
-        embedding = Embedding(input_dim=10000, output_dim=embedding_size, input_length=max_sequence_length)(input_ids)
+        embedding = Embedding(input_dim=10000, output_dim=embedding_size, input_length=max_sequence_length)(inputs)
         pooling = GlobalAveragePooling1D()(embedding)
         dropout = Dropout(dropout_rate)(pooling)
         fc1 = Dense(fully_connected_size, activation='relu')(dropout)
         fc2 = Dense(embedding_size)(fc1)
-        model = Model(inputs=[input_ids, attention_masks], outputs=fc2)
+        model = Model(inputs=[inputs, attention_masks], outputs=fc2)
         return model
 
 class ModelTrainer:
@@ -120,16 +98,14 @@ class ModelTrainer:
         for epoch in range(epochs):
             total_loss = 0
             for batch in dataset:
-                anchor_input_ids = batch['anchor']['input_ids']
-                anchor_attention_masks = batch['anchor']['attention_mask']
-                positive_input_ids = batch['positive']['input_ids']
-                positive_attention_masks = batch['positive']['attention_mask']
-                negative_input_ids = batch['negative']['input_ids']
-                negative_attention_masks = batch['negative']['attention_mask']
+                inputs = batch['input_ids']
+                attention_masks = batch['attention_mask']
+                inputs = np.split(inputs, 3, axis=0)
+                attention_masks = np.split(attention_masks, 3, axis=0)
                 with tf.GradientTape() as tape:
-                    anchor_embeddings = model([anchor_input_ids, anchor_attention_masks], training=True)
-                    positive_embeddings = model([positive_input_ids, positive_attention_masks], training=True)
-                    negative_embeddings = model([negative_input_ids, negative_attention_masks], training=True)
+                    anchor_embeddings = model([inputs[0], attention_masks[0]], training=True)
+                    positive_embeddings = model([inputs[1], attention_masks[1]], training=True)
+                    negative_embeddings = model([inputs[2], attention_masks[2]], training=True)
                     loss = ModelTrainer.calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
                 gradients = tape.gradient(loss, model.trainable_variables)
                 model.optimizer.apply_gradients(zip(gradients, model.trainable_variables))
@@ -140,15 +116,13 @@ class ModelTrainer:
     def evaluate(model, dataset):
         total_correct = 0
         for batch in dataset:
-            anchor_input_ids = batch['anchor']['input_ids']
-            anchor_attention_masks = batch['anchor']['attention_mask']
-            positive_input_ids = batch['positive']['input_ids']
-            positive_attention_masks = batch['positive']['attention_mask']
-            negative_input_ids = batch['negative']['input_ids']
-            negative_attention_masks = batch['negative']['attention_mask']
-            anchor_embeddings = model([anchor_input_ids, anchor_attention_masks])
-            positive_embeddings = model([positive_input_ids, positive_attention_masks])
-            negative_embeddings = model([negative_input_ids, negative_attention_masks])
+            inputs = batch['input_ids']
+            attention_masks = batch['attention_mask']
+            inputs = np.split(inputs, 3, axis=0)
+            attention_masks = np.split(attention_masks, 3, axis=0)
+            anchor_embeddings = model([inputs[0], attention_masks[0]])
+            positive_embeddings = model([inputs[1], attention_masks[1]])
+            negative_embeddings = model([inputs[2], attention_masks[2]])
             for i in range(len(anchor_embeddings)):
                 similarity_positive = np.dot(anchor_embeddings[i], positive_embeddings[i]) / (np.linalg.norm(anchor_embeddings[i]) * np.linalg.norm(positive_embeddings[i]))
                 similarity_negative = np.dot(anchor_embeddings[i], negative_embeddings[i]) / (np.linalg.norm(anchor_embeddings[i]) * np.linalg.norm(negative_embeddings[i]))
