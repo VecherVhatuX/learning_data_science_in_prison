@@ -32,6 +32,7 @@ class DataUtils:
         return [(os.path.join(folder_path, f), os.path.join(folder_path, f, 'snippet.json')) 
                 for f in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, f))]
 
+
 class DataProcessor:
     @staticmethod
     def separate_code_snippets(snippets):
