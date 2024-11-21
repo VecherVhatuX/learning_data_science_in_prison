@@ -60,7 +60,7 @@ class CodeSimilarityModel:
             self.on_epoch_end()
 
         def __len__(self):
-            return len(self.triplets) // self.batch_size
+            return len(self.triplets) // self.batch_size + 1
 
         def on_epoch_end(self):
             random.shuffle(self.triplets)
@@ -137,9 +137,9 @@ class CodeSimilarityModel:
                 negative_embeddings = model.predict([negative_input_ids, negative_attention_masks])
                 loss = self.calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
                 total_loss += loss
-                model.fit([anchor_input_ids, anchor_attention_masks], positive_embeddings, epochs=1, batch_size=32, verbose=0)
-                model.fit([positive_input_ids, positive_attention_masks], anchor_embeddings, epochs=1, batch_size=32, verbose=0)
-                model.fit([negative_input_ids, negative_attention_masks], anchor_embeddings, epochs=1, batch_size=32, verbose=0)
+                model.fit([anchor_input_ids, anchor_attention_masks], anchor_embeddings, epochs=1, batch_size=32, verbose=0)
+                model.fit([positive_input_ids, positive_attention_masks], positive_embeddings, epochs=1, batch_size=32, verbose=0)
+                model.fit([negative_input_ids, negative_attention_masks], negative_embeddings, epochs=1, batch_size=32, verbose=0)
             print(f'Epoch {epoch+1}, Loss: {total_loss / len(train_dataset)}')
         self.evaluate_model(model, test_dataset)
 
@@ -178,8 +178,10 @@ class CodeSimilarityModel:
                 triplets.extend(self.create_triplets(problem_statement, [bug_snippet], non_bug_snippets, num_negatives_per_positive))
 
         train_triplets, test_triplets = train_test_split(triplets, test_size=0.2, random_state=42)
-        train_data = self.Dataset(train_triplets, 512, Tokenizer(), batch_size=batch_size, epochs=epochs)
-        test_data = self.Dataset(test_triplets, 512, Tokenizer(), batch_size=batch_size, epochs=epochs)
+        tokenizer = Tokenizer()
+        tokenizer.fit_on_texts([triplet['anchor'] for triplet in triplets] + [triplet['positive'] for triplet in triplets] + [triplet['negative'] for triplet in triplets])
+        train_data = self.Dataset(train_triplets, 512, tokenizer, batch_size=batch_size, epochs=epochs)
+        test_data = self.Dataset(test_triplets, 512, tokenizer, batch_size=batch_size, epochs=epochs)
         model = self.create_model()
         self.train_model(model, train_data, test_data, epochs=epochs)
 
