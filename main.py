@@ -42,22 +42,22 @@ class Hyperparameters:
     random_seed_value: int = 42
     resume_checkpoint_path: str = None
 
-def preprocess_data(data, hyperparameters):
-    return [
-        {
-            "input_ids": np.array([0] + [ord(c) for c in f"{hyperparameters.conversation_format_identifier} {example['input']}"] + [1], dtype=np.float32),
-            "labels": np.array([0] + [ord(c) for c in f"{hyperparameters.conversation_format_identifier} {example['output']}"] + [1], dtype=np.float32),
-            "attention_mask": np.ones(len(preprocessed_example["input_ids"]), dtype=np.float32)
-        } for preprocessed_example, example in [(None, d) for d in data]
-    ]
+def preprocess_example(example, hyperparameters):
+    return {
+        "input_ids": np.array([0] + [ord(c) for c in f"{hyperparameters.conversation_format_identifier} {example['input']}"] + [1], dtype=np.float32),
+        "labels": np.array([0] + [ord(c) for c in f"{hyperparameters.conversation_format_identifier} {example['output']}"] + [1], dtype=np.float32),
+        "attention_mask": np.ones(len([0] + [ord(c) for c in f"{hyperparameters.conversation_format_identifier} {example['input']}"] + [1]), dtype=np.float32)
+    }
 
 def create_dataset(hyperparameters, data):
-    return preprocess_data(data, hyperparameters)
+    return [preprocess_example(example, hyperparameters) for example in data]
 
-def create_neural_network():
-    feedforward_layers = [layers.Dense(128, activation='relu') for _ in range(2)]
-    output_layer = layers.Dense(1000)
-    return lambda x: output_layer(feedforward_layers[1](feedforward_layers[0](x)))
+def build_neural_network():
+    inputs = layers.Input(shape=(None,))
+    x = layers.Dense(128, activation='relu')(inputs)
+    x = layers.Dense(128, activation='relu')(x)
+    outputs = layers.Dense(1000)(x)
+    return keras.Model(inputs=inputs, outputs=outputs)
 
 def create_trainer(hyperparameters, model):
     loss_function = keras.losses.MeanSquaredError()
@@ -75,19 +75,19 @@ def create_trainer(hyperparameters, model):
     model.compile(optimizer=optimizer, loss=loss_function)
     return cp_callback, model
 
-def train(model, dataset, hyperparameters, cp_callback):
-    batches = [dataset[i:i+hyperparameters.training_batch_size] for i in range(0, len(dataset), hyperparameters.training_batch_size)]
+def train_model(model, dataset, hyperparameters, cp_callback):
     for epoch in range(hyperparameters.number_of_epochs):
         total_loss = 0
-        for batch in batches:
+        for i in range(0, len(dataset), hyperparameters.training_batch_size):
+            batch = dataset[i:i+hyperparameters.training_batch_size]
             inputs = np.array([example['input_ids'] for example in batch])
             labels = np.array([example['labels'] for example in batch])
             loss = model.train_on_batch(inputs, labels)
             total_loss += loss
-        print(f"Epoch {epoch+1}, Loss: {total_loss / len(batches)}")
+        print(f"Epoch {epoch+1}, Loss: {total_loss / (len(dataset) // hyperparameters.training_batch_size + 1)}")
     model.save(os.path.join(hyperparameters.output_directory_path, "final_model"))
 
-def load_data(hyperparameters):
+def load_dataset(hyperparameters):
     try:
         with open("train.json", 'r') as f:
             training_data = json.load(f)
@@ -100,11 +100,11 @@ def load_data(hyperparameters):
 
 def main():
     hyperparameters = Hyperparameters(base_model_identifier="t5-base", conversation_format_identifier="none", triplet_loss_training_enabled=True)
-    model = keras.Model(inputs=layers.Input(shape=(None,)), outputs=create_neural_network()(layers.Input(shape=(None,))))
+    model = build_neural_network()
     cp_callback, model = create_trainer(hyperparameters, model)
-    training_dataset, _ = load_data(hyperparameters)
+    training_dataset, _ = load_dataset(hyperparameters)
     if training_dataset is not None:
-        train(model, training_dataset, hyperparameters, cp_callback)
+        train_model(model, training_dataset, hyperparameters, cp_callback)
 
 if __name__ == "__main__":
     main()
