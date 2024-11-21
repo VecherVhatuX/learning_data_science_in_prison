@@ -5,7 +5,17 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 
 class TripletNetwork(nn.Module):
+    """
+    A neural network designed to learn triplet loss.
+    """
     def __init__(self, num_embeddings, embedding_dim, margin):
+        """
+        Initialize the TripletNetwork.
+
+        :param num_embeddings: The number of possible embeddings.
+        :param embedding_dim: The dimensionality of the embeddings.
+        :param margin: The margin used in the triplet loss calculation.
+        """
         super(TripletNetwork, self).__init__()
         self.embedding = nn.Embedding(num_embeddings, embedding_dim)
         self.pool = nn.AdaptiveAvgPool1d((1,))
@@ -13,6 +23,12 @@ class TripletNetwork(nn.Module):
         self.batch_norm = nn.BatchNorm1d(embedding_dim)
 
     def forward(self, x):
+        """
+        Forward pass of the network.
+
+        :param x: Input tensor.
+        :return: Output tensor.
+        """
         x = self.embedding(x)
         x = x.permute(0, 2, 1)
         x = self.pool(x).squeeze(2)
@@ -22,12 +38,28 @@ class TripletNetwork(nn.Module):
         return x
 
 class TripletDataset(Dataset):
+    """
+    A dataset for the TripletNetwork.
+    """
     def __init__(self, samples, labels, num_negatives):
+        """
+        Initialize the TripletDataset.
+
+        :param samples: Sample data.
+        :param labels: Labels for the samples.
+        :param num_negatives: Number of negative samples.
+        """
         self.samples = samples
         self.labels = labels
         self.num_negatives = num_negatives
 
     def __getitem__(self, idx):
+        """
+        Get a single item from the dataset.
+
+        :param idx: Index of the item.
+        :return: Item data.
+        """
         anchor_idx = idx
         anchor_label = self.labels[idx]
 
@@ -41,34 +73,86 @@ class TripletDataset(Dataset):
         }
 
     def __len__(self):
+        """
+        Get the length of the dataset.
+
+        :return: Length of the dataset.
+        """
         return len(self.samples)
 
 class EpochShuffleDataset(Dataset):
+    """
+    A dataset that shuffles its indices at the end of each epoch.
+    """
     def __init__(self, dataset):
+        """
+        Initialize the EpochShuffleDataset.
+
+        :param dataset: The dataset to be shuffled.
+        """
         self.dataset = dataset
         self.indices = np.arange(len(dataset))
 
     def __getitem__(self, idx):
+        """
+        Get a single item from the dataset.
+
+        :param idx: Index of the item.
+        :return: Item data.
+        """
         return self.dataset[self.indices[idx]]
 
     def __len__(self):
+        """
+        Get the length of the dataset.
+
+        :return: Length of the dataset.
+        """
         return len(self.indices)
 
     def on_epoch_end(self):
+        """
+        Shuffle the indices at the end of each epoch.
+        """
         np.random.shuffle(self.indices)
 
 class TripletLoss(nn.Module):
+    """
+    A loss function for the TripletNetwork.
+    """
     def __init__(self, margin):
+        """
+        Initialize the TripletLoss.
+
+        :param margin: The margin used in the triplet loss calculation.
+        """
         super(TripletLoss, self).__init__()
         self.margin = margin
 
     def forward(self, anchor_embeddings, positive_embeddings, negative_embeddings):
+        """
+        Forward pass of the loss function.
+
+        :param anchor_embeddings: Anchor embeddings.
+        :param positive_embeddings: Positive embeddings.
+        :param negative_embeddings: Negative embeddings.
+        :return: Loss value.
+        """
         return torch.mean(torch.clamp(
             torch.norm(anchor_embeddings - positive_embeddings, dim=1)
             - torch.norm(anchor_embeddings.unsqueeze(1) - negative_embeddings, dim=2).min(dim=1)[0] + self.margin, min=0
         ))
 
 def train_triplet_network(network, dataset, epochs, learning_rate, batch_size):
+    """
+    Train the TripletNetwork.
+
+    :param network: The network to be trained.
+    :param dataset: The dataset used for training.
+    :param epochs: Number of epochs.
+    :param learning_rate: Learning rate.
+    :param batch_size: Batch size.
+    """
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     network.to(device)
     optimizer = optim.Adam(network.parameters(), lr=learning_rate)
@@ -99,6 +183,13 @@ def train_triplet_network(network, dataset, epochs, learning_rate, batch_size):
         print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
 def evaluate_triplet_network(network, dataset, batch_size):
+    """
+    Evaluate the TripletNetwork.
+
+    :param network: The network to be evaluated.
+    :param dataset: The dataset used for evaluation.
+    :param batch_size: Batch size.
+    """
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     network.to(device)
     network.eval()
@@ -125,6 +216,14 @@ def evaluate_triplet_network(network, dataset, batch_size):
     print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
 def predict_with_triplet_network(network, input_ids, batch_size):
+    """
+    Make predictions with the TripletNetwork.
+
+    :param network: The network used for prediction.
+    :param input_ids: Input IDs.
+    :param batch_size: Batch size.
+    :return: Predictions.
+    """
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     network.to(device)
     network.eval()
@@ -141,31 +240,88 @@ def predict_with_triplet_network(network, input_ids, batch_size):
     return predictions
 
 def save_triplet_model(network, path):
+    """
+    Save the TripletNetwork.
+
+    :param network: The network to be saved.
+    :param path: Path to save the network.
+    """
     torch.save(network.state_dict(), path)
 
 def load_triplet_model(network, path):
+    """
+    Load the TripletNetwork.
+
+    :param network: The network to be loaded.
+    :param path: Path to load the network.
+    """
     network.load_state_dict(torch.load(path))
 
 def calculate_distance(embedding1, embedding2):
+    """
+    Calculate the distance between two embeddings.
+
+    :param embedding1: First embedding.
+    :param embedding2: Second embedding.
+    :return: Distance between the embeddings.
+    """
     return torch.norm(embedding1 - embedding2, dim=1)
 
 def calculate_similarity(embedding1, embedding2):
+    """
+    Calculate the similarity between two embeddings.
+
+    :param embedding1: First embedding.
+    :param embedding2: Second embedding.
+    :return: Similarity between the embeddings.
+    """
     return torch.sum(embedding1 * embedding2, dim=1) / (torch.norm(embedding1, dim=1) * torch.norm(embedding2, dim=1))
 
 def calculate_cosine_distance(embedding1, embedding2):
+    """
+    Calculate the cosine distance between two embeddings.
+
+    :param embedding1: First embedding.
+    :param embedding2: Second embedding.
+    :return: Cosine distance between the embeddings.
+    """
     return 1 - calculate_similarity(embedding1, embedding2)
 
 def get_nearest_neighbors(embeddings, target_embedding, k=5):
+    """
+    Get the nearest neighbors to a target embedding.
+
+    :param embeddings: Embeddings to search.
+    :param target_embedding: Target embedding.
+    :param k: Number of neighbors to return.
+    :return: Indices of the nearest neighbors.
+    """
     distances = calculate_distance(embeddings, target_embedding)
     _, indices = torch.topk(distances, k, largest=False)
     return indices
 
 def get_similar_embeddings(embeddings, target_embedding, k=5):
+    """
+    Get the most similar embeddings to a target embedding.
+
+    :param embeddings: Embeddings to search.
+    :param target_embedding: Target embedding.
+    :param k: Number of similar embeddings to return.
+    :return: Indices of the most similar embeddings.
+    """
     similarities = calculate_similarity(embeddings, target_embedding)
     _, indices = torch.topk(similarities, k, largest=True)
     return indices
 
 def calculate_knn_accuracy(embeddings, labels, k=5):
+    """
+    Calculate the accuracy of the k-nearest neighbors algorithm.
+
+    :param embeddings: Embeddings to use.
+    :param labels: Labels for the embeddings.
+    :param k: Number of neighbors to consider.
+    :return: Accuracy of the k-nearest neighbors algorithm.
+    """
     correct = 0
     for i in range(len(embeddings)):
         distances = calculate_distance(embeddings, embeddings[i])
@@ -176,6 +332,14 @@ def calculate_knn_accuracy(embeddings, labels, k=5):
     return correct / len(embeddings)
 
 def calculate_knn_precision(embeddings, labels, k=5):
+    """
+    Calculate the precision of the k-nearest neighbors algorithm.
+
+    :param embeddings: Embeddings to use.
+    :param labels: Labels for the embeddings.
+    :param k: Number of neighbors to consider.
+    :return: Precision of the k-nearest neighbors algorithm.
+    """
     precision = 0
     for i in range(len(embeddings)):
         distances = calculate_distance(embeddings, embeddings[i])
@@ -185,6 +349,14 @@ def calculate_knn_precision(embeddings, labels, k=5):
     return precision / len(embeddings)
 
 def calculate_knn_recall(embeddings, labels, k=5):
+    """
+    Calculate the recall of the k-nearest neighbors algorithm.
+
+    :param embeddings: Embeddings to use.
+    :param labels: Labels for the embeddings.
+    :param k: Number of neighbors to consider.
+    :return: Recall of the k-nearest neighbors algorithm.
+    """
     recall = 0
     for i in range(len(embeddings)):
         distances = calculate_distance(embeddings, embeddings[i])
@@ -194,6 +366,14 @@ def calculate_knn_recall(embeddings, labels, k=5):
     return recall / len(embeddings)
 
 def calculate_knn_f1(embeddings, labels, k=5):
+    """
+    Calculate the F1-score of the k-nearest neighbors algorithm.
+
+    :param embeddings: Embeddings to use.
+    :param labels: Labels for the embeddings.
+    :param k: Number of neighbors to consider.
+    :return: F1-score of the k-nearest neighbors algorithm.
+    """
     precision = calculate_knn_precision(embeddings, labels, k)
     recall = calculate_knn_recall(embeddings, labels, k)
     return 2 * (precision * recall) / (precision + recall)
