@@ -1,26 +1,30 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
+import jax
+import jax.numpy as jnp
+from jax.experimental import jax2tf
+from flax import linen as nn
+from flax.training import train_state
 import numpy as np
+import tensorflow as tf
 
 class TripletNetwork(nn.Module):
-    def __init__(self, num_embeddings, embedding_dim, margin):
-        super(TripletNetwork, self).__init__()
-        self.embedding = nn.Embedding(num_embeddings, embedding_dim)
-        self.pool = nn.AdaptiveAvgPool1d((1,))
-        self.linear = nn.Linear(embedding_dim, embedding_dim)
-        self.batch_norm = nn.BatchNorm1d(embedding_dim)
+    @nn.compact
+    def __call__(self, x):
+        x = nn.Embed(num_embeddings=101, features=10)(x)
+        x = x.transpose((0, 2, 1))
+        x = nn.avg_pool(x, window_shape=(x.shape[-1],), strides=None, padding='VALID')
+        x = x.squeeze(2)
+        x = nn.Dense(features=10)(x)
+        x = nn.BatchNorm(use_running_average=False)(x)
+        return x / jnp.linalg.norm(x, axis=1, keepdims=True)
 
-    def forward(self, x):
-        x = self.embedding(x)
-        x = x.permute(0, 2, 1)
-        x = self.pool(x).squeeze(2)
-        x = self.linear(x)
-        x = self.batch_norm(x)
-        return x / torch.norm(x, dim=1, keepdim=True)
+class TripletLoss(nn.Module):
+    @nn.compact
+    def __call__(self, anchor_embeddings, positive_embeddings, negative_embeddings):
+        return jnp.mean(jnp.maximum(jnp.linalg.norm(anchor_embeddings - positive_embeddings, axis=1)
+                                    - jnp.linalg.norm(anchor_embeddings[:, jnp.newaxis] - negative_embeddings, axis=2).min(axis=1)
+                                    + 1.0, 0.0))
 
-class TripletDataset(Dataset):
+class TripletDataset:
     def __init__(self, samples, labels, num_negatives):
         self.samples = samples
         self.labels = labels
@@ -34,15 +38,15 @@ class TripletDataset(Dataset):
         negative_idx = np.random.choice(np.where(self.labels != anchor_label)[0], size=self.num_negatives, replace=False)
 
         return {
-            'anchor_input_ids': torch.tensor(self.samples[anchor_idx], dtype=torch.long),
-            'positive_input_ids': torch.tensor(self.samples[positive_idx], dtype=torch.long),
-            'negative_input_ids': torch.tensor(self.samples[negative_idx], dtype=torch.long)
+            'anchor_input_ids': np.array(self.samples[anchor_idx], dtype=np.int32),
+            'positive_input_ids': np.array(self.samples[positive_idx], dtype=np.int32),
+            'negative_input_ids': np.array(self.samples[negative_idx], dtype=np.int32)
         }
 
     def __len__(self):
         return len(self.samples)
 
-class EpochShuffleDataset(Dataset):
+class EpochShuffleDataset:
     def __init__(self, dataset):
         self.dataset = dataset
         self.indices = np.arange(len(dataset))
@@ -56,107 +60,99 @@ class EpochShuffleDataset(Dataset):
     def on_epoch_end(self):
         np.random.shuffle(self.indices)
 
-class TripletLoss(nn.Module):
-    def __init__(self, margin):
-        super(TripletLoss, self).__init__()
-        self.margin = margin
+def create_train_state(rng, learning_rate, network):
+    tx = optax.adam(learning_rate=learning_rate)
+    params = network.init(rng, jnp.ones((1, 10), dtype=jnp.int32))
+    return train_state.TrainState(params, tx)
 
-    def forward(self, anchor_embeddings, positive_embeddings, negative_embeddings):
-        return torch.mean(torch.clamp(
-            torch.norm(anchor_embeddings - positive_embeddings, dim=1)
-            - torch.norm(anchor_embeddings.unsqueeze(1) - negative_embeddings, dim=2).min(dim=1)[0] + self.margin, min=0
-        ))
+def train_step(state, batch, network, loss_fn):
+    def loss_fn(params, batch):
+        anchor_embeddings = network.apply(params, batch['anchor_input_ids'])
+        positive_embeddings = network.apply(params, batch['positive_input_ids'])
+        negative_embeddings = network.apply(params, batch['negative_input_ids'])
+        return loss_fn.apply(params, anchor_embeddings, positive_embeddings, negative_embeddings)
 
-def train_model(network, dataset, epochs, learning_rate, batch_size, device):
-    network.to(device)
-    optimizer = optim.Adam(network.parameters(), lr=learning_rate)
-    triplet_loss = TripletLoss(1.0)
-    triplet_loss.to(device)
+    grads = jax.grad(loss_fn, has_aux=False)(state.params, batch)
+    state = state.apply_gradients(grads=grads)
+    return state
+
+def train_model(network, dataset, epochs, learning_rate, batch_size):
+    rng = jax.random.PRNGKey(42)
+    state = create_train_state(rng, learning_rate, network)
+    loss_fn = TripletLoss()
 
     for epoch in range(epochs):
         total_loss = 0.0
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        dataloader = tf.data.Dataset.from_tensor_slices(dataset)
+        dataloader = dataloader.batch(batch_size)
+        dataloader = dataloader.prefetch(tf.data.AUTOTUNE)
 
-        for i, data in enumerate(dataloader):
-            anchor_input_ids = data['anchor_input_ids'].to(device)
-            positive_input_ids = data['positive_input_ids'].to(device)
-            negative_input_ids = data['negative_input_ids'].to(device)
-
-            optimizer.zero_grad()
-            anchor_embeddings = network(anchor_input_ids)
-            positive_embeddings = network(positive_input_ids)
-            negative_embeddings = network(negative_input_ids)
-            loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
+        for i, batch in enumerate(dataloader):
+            batch = {k: jax.device_put(v.numpy()) for k, v in batch.items()}
+            state = train_step(state, batch, network, loss_fn)
+            total_loss += loss_fn.apply(state.params, batch['anchor_input_ids'], batch['positive_input_ids'], batch['negative_input_ids'])
 
         print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
-def evaluate_model(network, dataset, batch_size, device):
-    network.to(device)
-    network.eval()
+def evaluate_model(network, dataset, batch_size):
     total_loss = 0.0
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
-    triplet_loss = TripletLoss(1.0)
-    triplet_loss.to(device)
+    dataloader = tf.data.Dataset.from_tensor_slices(dataset)
+    dataloader = dataloader.batch(batch_size)
+    dataloader = dataloader.prefetch(tf.data.AUTOTUNE)
+    loss_fn = TripletLoss()
 
-    with torch.no_grad():
-        for i, data in enumerate(dataloader):
-            anchor_input_ids = data['anchor_input_ids'].to(device)
-            positive_input_ids = data['positive_input_ids'].to(device)
-            negative_input_ids = data['negative_input_ids'].to(device)
-
-            anchor_embeddings = network(anchor_input_ids)
-            positive_embeddings = network(positive_input_ids)
-            negative_embeddings = network(negative_input_ids)
-            loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
-            total_loss += loss.item()
+    for i, batch in enumerate(dataloader):
+        batch = {k: jax.device_put(v.numpy()) for k, v in batch.items()}
+        total_loss += loss_fn.apply(network.init(jax.random.PRNGKey(42), jnp.ones((1, 10), dtype=jnp.int32)),
+                                    batch['anchor_input_ids'], batch['positive_input_ids'], batch['negative_input_ids'])
 
     print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
-def predict(network, input_ids, batch_size, device):
-    network.to(device)
-    network.eval()
+def predict(network, input_ids, batch_size):
     predictions = []
-    dataloader = DataLoader(input_ids, batch_size=batch_size, shuffle=False)
+    dataloader = tf.data.Dataset.from_tensor_slices(input_ids)
+    dataloader = dataloader.batch(batch_size)
+    dataloader = dataloader.prefetch(tf.data.AUTOTUNE)
 
-    with torch.no_grad():
-        for data in dataloader:
-            output = network(data.to(device))
-            predictions.extend(output.cpu().numpy())
-    return predictions
+    for batch in dataloader:
+        batch = jax.device_put(batch.numpy())
+        output = network.apply(network.init(jax.random.PRNGKey(42), jnp.ones((1, 10), dtype=jnp.int32)), batch)
+        predictions.extend(output)
+
+    return np.array(predictions)
 
 def save_model(network, path):
-    torch.save(network.state_dict(), path)
+    params = network.init(jax.random.PRNGKey(42), jnp.ones((1, 10), dtype=jnp.int32))
+    jax2tf.convert(params, 'triplet_model')
 
 def load_model(network, path):
-    network.load_state_dict(torch.load(path))
+    params = jax2tf.checkpoint.load(path, target='')
+    return params
 
 def calculate_distance(embedding1, embedding2):
-    return torch.norm(embedding1 - embedding2, dim=1)
+    return jnp.linalg.norm(embedding1 - embedding2, axis=1)
 
 def calculate_similarity(embedding1, embedding2):
-    return torch.sum(embedding1 * embedding2, dim=1) / (torch.norm(embedding1, dim=1) * torch.norm(embedding2, dim=1))
+    return jnp.sum(embedding1 * embedding2, axis=1) / (jnp.linalg.norm(embedding1, axis=1) * jnp.linalg.norm(embedding2, axis=1))
 
 def calculate_cosine_distance(embedding1, embedding2):
     return 1 - calculate_similarity(embedding1, embedding2)
 
 def get_nearest_neighbors(embeddings, target_embedding, k=5):
     distances = calculate_distance(embeddings, target_embedding)
-    _, indices = torch.topk(distances, k, largest=False)
+    indices = jnp.argsort(distances)[:k]
     return indices
 
 def get_similar_embeddings(embeddings, target_embedding, k=5):
     similarities = calculate_similarity(embeddings, target_embedding)
-    _, indices = torch.topk(similarities, k, largest=True)
+    indices = jnp.argsort(similarities)[-k:]
     return indices
 
 def calculate_knn_accuracy(embeddings, labels, k=5):
     correct = 0
     for i in range(len(embeddings)):
         distances = calculate_distance(embeddings, embeddings[i])
-        _, indices = torch.topk(distances, k, largest=False)
+        indices = jnp.argsort(distances)[:k]
         nearest_labels = labels[indices]
         if labels[i] in nearest_labels:
             correct += 1
@@ -166,7 +162,7 @@ def calculate_knn_precision(embeddings, labels, k=5):
     precision = 0
     for i in range(len(embeddings)):
         distances = calculate_distance(embeddings, embeddings[i])
-        _, indices = torch.topk(distances, k, largest=False)
+        indices = jnp.argsort(distances)[:k]
         nearest_labels = labels[indices]
         precision += len(np.where(nearest_labels == labels[i])[0]) / k
     return precision / len(embeddings)
@@ -175,7 +171,7 @@ def calculate_knn_recall(embeddings, labels, k=5):
     recall = 0
     for i in range(len(embeddings)):
         distances = calculate_distance(embeddings, embeddings[i])
-        _, indices = torch.topk(distances, k, largest=False)
+        indices = jnp.argsort(distances)[:k]
         nearest_labels = labels[indices]
         recall += len(np.where(nearest_labels == labels[i])[0]) / len(np.where(labels == labels[i])[0])
     return recall / len(embeddings)
@@ -185,59 +181,57 @@ def calculate_knn_f1(embeddings, labels, k=5):
     recall = calculate_knn_recall(embeddings, labels, k)
     return 2 * (precision * recall) / (precision + recall)
 
+import optax
+
 def main():
     np.random.seed(42)
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
     samples = np.random.randint(0, 100, (100, 10))
     labels = np.random.randint(0, 2, (100,))
     batch_size = 32
     num_negatives = 5
     epochs = 10
-    num_embeddings = 101
-    embedding_dim = 10
-    margin = 1.0
     learning_rate = 1e-4
 
-    network = TripletNetwork(num_embeddings, embedding_dim, margin)
+    network = TripletNetwork()
     dataset = EpochShuffleDataset(TripletDataset(samples, labels, num_negatives))
-    train_model(network, dataset, epochs, learning_rate, batch_size, device)
-    input_ids = torch.tensor([1, 2, 3, 4, 5], dtype=torch.long).unsqueeze(0)
-    output = predict(network, input_ids, batch_size=1, device=device)
+    train_model(network, dataset, epochs, learning_rate, batch_size)
+    input_ids = np.array([1, 2, 3, 4, 5], dtype=np.int32).reshape((1, 10))
+    output = predict(network, input_ids, batch_size=1)
     print(output)
-    save_model(network, "triplet_model.pth")
-    loaded_network = TripletNetwork(num_embeddings, embedding_dim, margin)
-    load_model(loaded_network, "triplet_model.pth")
-    print("Model saved and loaded successfully.")
 
-    evaluate_model(network, dataset, batch_size, device)
+    save_model(network, "triplet_model")
+    loaded_network = TripletNetwork()
+    loaded_params = load_model(loaded_network, "triplet_model")
 
-    predicted_embeddings = predict(network, torch.tensor([1, 2, 3, 4, 5], dtype=torch.long).unsqueeze(0), batch_size=1, device=device)
+    evaluate_model(network, dataset, batch_size)
+
+    predicted_embeddings = predict(network, np.array([1, 2, 3, 4, 5], dtype=np.int32).reshape((1, 10)), batch_size=1)
     print(predicted_embeddings)
 
-    distance = calculate_distance(torch.tensor(predicted_embeddings[0]), torch.tensor(predicted_embeddings[0]))
+    distance = calculate_distance(predicted_embeddings[0], predicted_embeddings[0])
     print(distance)
 
-    similarity = calculate_similarity(torch.tensor(predicted_embeddings[0]), torch.tensor(predicted_embeddings[0]))
+    similarity = calculate_similarity(predicted_embeddings[0], predicted_embeddings[0])
     print(similarity)
 
-    cosine_distance = calculate_cosine_distance(torch.tensor(predicted_embeddings[0]), torch.tensor(predicted_embeddings[0]))
+    cosine_distance = calculate_cosine_distance(predicted_embeddings[0], predicted_embeddings[0])
     print(cosine_distance)
 
-    all_embeddings = predict(network, torch.tensor(samples, dtype=torch.long), batch_size=32, device=device)
-    nearest_neighbors = get_nearest_neighbors(torch.tensor(all_embeddings), torch.tensor(predicted_embeddings[0]), k=5)
+    all_embeddings = predict(network, np.array(samples, dtype=np.int32), batch_size=32)
+    nearest_neighbors = get_nearest_neighbors(all_embeddings, predicted_embeddings[0], k=5)
     print(nearest_neighbors)
 
-    similar_embeddings = get_similar_embeddings(torch.tensor(all_embeddings), torch.tensor(predicted_embeddings[0]), k=5)
+    similar_embeddings = get_similar_embeddings(all_embeddings, predicted_embeddings[0], k=5)
     print(similar_embeddings)
 
-    print("KNN Accuracy:", calculate_knn_accuracy(torch.tensor(all_embeddings), torch.tensor(labels), k=5))
+    print("KNN Accuracy:", calculate_knn_accuracy(all_embeddings, labels, k=5))
 
-    print("KNN Precision:", calculate_knn_precision(torch.tensor(all_embeddings), torch.tensor(labels), k=5))
+    print("KNN Precision:", calculate_knn_precision(all_embeddings, labels, k=5))
 
-    print("KNN Recall:", calculate_knn_recall(torch.tensor(all_embeddings), torch.tensor(labels), k=5))
+    print("KNN Recall:", calculate_knn_recall(all_embeddings, labels, k=5))
 
-    print("KNN F1-score:", calculate_knn_f1(torch.tensor(all_embeddings), torch.tensor(labels), k=5))
+    print("KNN F1-score:", calculate_knn_f1(all_embeddings, labels, k=5))
 
 if __name__ == "__main__":
     main()
