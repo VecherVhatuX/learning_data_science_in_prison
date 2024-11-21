@@ -41,6 +41,7 @@ class Hyperparameters:
     maximum_checkpoints: int = 2
     random_seed_value: int = 42
     resume_checkpoint_path: str = None
+    negative_samples_per_positive_sample: int = 5
 
 def preprocess_example(example, hyperparameters):
     return {
@@ -49,8 +50,38 @@ def preprocess_example(example, hyperparameters):
         "attention_mask": np.ones(len([0] + [ord(c) for c in f"{hyperparameters.conversation_format_identifier} {example['input']}"] + [1]), dtype=np.float32)
     }
 
-def create_dataset(hyperparameters, data):
-    return [preprocess_example(example, hyperparameters) for example in data]
+class Dataset:
+    def __init__(self, data, hyperparameters):
+        self.data = data
+        self.hyperparameters = hyperparameters
+        self.positive_samples = []
+        self.negative_samples = []
+        self.sample_indices = np.arange(len(self.data))
+        self.epoch = 0
+        self.batch_indices = []
+
+        for i in range(len(self.data)):
+            self.positive_samples.append(i)
+            for _ in range(self.hyperparameters.negative_samples_per_positive_sample):
+                self.negative_samples.append(np.random.choice(len(self.data)))
+
+        self.sample_indices = np.concatenate((self.positive_samples, self.negative_samples))
+
+    def shuffle(self):
+        np.random.shuffle(self.sample_indices)
+        self.batch_indices = np.array_split(self.sample_indices, len(self.sample_indices) // self.hyperparameters.training_batch_size)
+
+    def get_batch(self):
+        if not self.batch_indices:
+            self.shuffle()
+        batch_indices = self.batch_indices.pop(0)
+        batch = []
+        for index in batch_indices:
+            if index < len(self.data):
+                batch.append(preprocess_example(self.data[index], self.hyperparameters))
+            else:
+                batch.append(preprocess_example(self.data[np.random.choice(len(self.data))], self.hyperparameters))
+        return batch
 
 def build_neural_network():
     inputs = layers.Input(shape=(None,))
@@ -78,13 +109,14 @@ def create_trainer(hyperparameters, model):
 def train_model(model, dataset, hyperparameters, cp_callback):
     for epoch in range(hyperparameters.number_of_epochs):
         total_loss = 0
-        for i in range(0, len(dataset), hyperparameters.training_batch_size):
-            batch = dataset[i:i+hyperparameters.training_batch_size]
+        dataset.shuffle()
+        for _ in range(len(dataset.batch_indices)):
+            batch = dataset.get_batch()
             inputs = np.array([example['input_ids'] for example in batch])
             labels = np.array([example['labels'] for example in batch])
             loss = model.train_on_batch(inputs, labels)
             total_loss += loss
-        print(f"Epoch {epoch+1}, Loss: {total_loss / (len(dataset) // hyperparameters.training_batch_size + 1)}")
+        print(f"Epoch {epoch+1}, Loss: {total_loss / (len(dataset.batch_indices))}")
     model.save(os.path.join(hyperparameters.output_directory_path, "final_model"))
 
 def load_dataset(hyperparameters):
@@ -93,7 +125,7 @@ def load_dataset(hyperparameters):
             training_data = json.load(f)
         with open("test.json", 'r') as f:
             testing_data = json.load(f)
-        return create_dataset(hyperparameters, training_data), create_dataset(hyperparameters, testing_data)
+        return training_data, testing_data
     except FileNotFoundError:
         print("One or both of the data files not found.")
         return None, None
@@ -102,9 +134,10 @@ def main():
     hyperparameters = Hyperparameters(base_model_identifier="t5-base", conversation_format_identifier="none", triplet_loss_training_enabled=True)
     model = build_neural_network()
     cp_callback, model = create_trainer(hyperparameters, model)
-    training_dataset, _ = load_dataset(hyperparameters)
-    if training_dataset is not None:
-        train_model(model, training_dataset, hyperparameters, cp_callback)
+    training_data, _ = load_dataset(hyperparameters)
+    if training_data is not None:
+        dataset = Dataset(training_data, hyperparameters)
+        train_model(model, dataset, hyperparameters, cp_callback)
 
 if __name__ == "__main__":
     main()
