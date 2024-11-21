@@ -43,42 +43,61 @@ class Hyperparameters:
     resume_checkpoint_path: str = None
     negative_samples_per_positive_sample: int = 5
 
+def load_hyperparameters(base_model_identifier, conversation_format_identifier, triplet_loss_training_enabled):
+    return Hyperparameters(base_model_identifier=base_model_identifier, conversation_format_identifier=conversation_format_identifier, triplet_loss_training_enabled=triplet_loss_training_enabled)
+
+def load_json_data(file_name):
+    try:
+        with open(file_name, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print(f"{file_name} not found.")
+        return None
+
+def load_dataset(hyperparameters):
+    training_data = load_json_data("train.json")
+    testing_data = load_json_data("test.json")
+    return training_data, testing_data
+
 def preprocess_example(example, hyperparameters):
     input_ids = [0] + [ord(c) for c in f"{hyperparameters.conversation_format_identifier} {example['input']}"] + [1]
     labels = [0] + [ord(c) for c in f"{hyperparameters.conversation_format_identifier} {example['output']}"] + [1]
     attention_mask = [1] * len(input_ids)
     return np.array(input_ids, dtype=np.float32), np.array(labels, dtype=np.float32), np.array(attention_mask, dtype=np.float32)
 
-class Dataset:
-    def __init__(self, data, hyperparameters):
-        self.data = data
-        self.hyperparameters = hyperparameters
-        self.sample_indices = np.arange(len(self.data))
-        self.epoch = 0
-        self.batch_indices = []
+def create_dataset(data, hyperparameters):
+    class Dataset:
+        def __init__(self, data, hyperparameters):
+            self.data = data
+            self.hyperparameters = hyperparameters
+            self.sample_indices = np.arange(len(self.data))
+            self.epoch = 0
+            self.batch_indices = []
 
-        positive_samples = list(range(len(self.data)))
-        negative_samples = [np.random.choice(len(self.data)) for _ in range(len(self.data) * self.hyperparameters.negative_samples_per_positive_sample)]
-        self.sample_indices = np.concatenate((positive_samples, negative_samples))
+            positive_samples = list(range(len(self.data)))
+            negative_samples = [np.random.choice(len(self.data)) for _ in range(len(self.data) * self.hyperparameters.negative_samples_per_positive_sample)]
+            self.sample_indices = np.concatenate((positive_samples, negative_samples))
 
-    def shuffle(self):
-        np.random.shuffle(self.sample_indices)
-        self.batch_indices = np.array_split(self.sample_indices, len(self.sample_indices) // self.hyperparameters.training_batch_size)
+        def shuffle(self):
+            np.random.shuffle(self.sample_indices)
+            self.batch_indices = np.array_split(self.sample_indices, len(self.sample_indices) // self.hyperparameters.training_batch_size)
 
-    def get_batch(self):
-        if not self.batch_indices:
-            self.shuffle()
-        batch_indices = self.batch_indices.pop(0)
-        batch_inputs, batch_labels, batch_attention_masks = [], [], []
-        for index in batch_indices:
-            if index < len(self.data):
-                input_ids, labels, attention_mask = preprocess_example(self.data[index], self.hyperparameters)
-            else:
-                input_ids, labels, attention_mask = preprocess_example(self.data[np.random.choice(len(self.data))], self.hyperparameters)
-            batch_inputs.append(input_ids)
-            batch_labels.append(labels)
-            batch_attention_masks.append(attention_mask)
-        return np.array(batch_inputs), np.array(batch_labels), np.array(batch_attention_masks)
+        def get_batch(self):
+            if not self.batch_indices:
+                self.shuffle()
+            batch_indices = self.batch_indices.pop(0)
+            batch_inputs, batch_labels, batch_attention_masks = [], [], []
+            for index in batch_indices:
+                if index < len(self.data):
+                    input_ids, labels, attention_mask = preprocess_example(self.data[index], self.hyperparameters)
+                else:
+                    input_ids, labels, attention_mask = preprocess_example(self.data[np.random.choice(len(self.data))], self.hyperparameters)
+                batch_inputs.append(input_ids)
+                batch_labels.append(labels)
+                batch_attention_masks.append(attention_mask)
+            return np.array(batch_inputs), np.array(batch_labels), np.array(batch_attention_masks)
+
+    return Dataset(data, hyperparameters)
 
 def build_neural_network(input_shape):
     model = keras.Sequential([
@@ -114,17 +133,6 @@ def train_model(model, dataset, hyperparameters, cp_callback):
         print(f"Epoch {epoch+1}, Loss: {total_loss / (i+1)}")
     model.save(os.path.join(hyperparameters.output_directory_path, "final_model"))
 
-def load_dataset(hyperparameters):
-    try:
-        with open("train.json", 'r') as f:
-            training_data = json.load(f)
-        with open("test.json", 'r') as f:
-            testing_data = json.load(f)
-        return training_data, testing_data
-    except FileNotFoundError:
-        print("One or both of the data files not found.")
-        return None, None
-
 def evaluate_model(model, dataset):
     total_loss = 0
     for batch_inputs, batch_labels, _ in zip(dataset.get_batch() for _ in range(len(dataset.batch_indices))):
@@ -133,14 +141,14 @@ def evaluate_model(model, dataset):
     print(f"Test Loss: {total_loss / len(dataset.batch_indices)}")
 
 def main():
-    hyperparameters = Hyperparameters(base_model_identifier="t5-base", conversation_format_identifier="none", triplet_loss_training_enabled=True)
+    hyperparameters = load_hyperparameters("t5-base", "none", True)
     model = build_neural_network((None,))
     cp_callback, model = create_trainer(hyperparameters, model)
     training_data, testing_data = load_dataset(hyperparameters)
     if training_data is not None:
-        dataset = Dataset(training_data, hyperparameters)
+        dataset = create_dataset(training_data, hyperparameters)
         train_model(model, dataset, hyperparameters, cp_callback)
-        test_dataset = Dataset(testing_data, hyperparameters)
+        test_dataset = create_dataset(testing_data, hyperparameters)
         evaluate_model(model, test_dataset)
 
 if __name__ == "__main__":
