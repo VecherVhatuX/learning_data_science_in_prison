@@ -5,6 +5,7 @@ from flax import linen as nn
 from flax.training import train_state
 import numpy as np
 import tensorflow as tf
+import optax
 
 class TripletNetwork(nn.Module):
     @nn.compact
@@ -180,8 +181,6 @@ def calculate_knn_f1(embeddings, labels, k=5):
     precision = calculate_knn_precision(embeddings, labels, k)
     recall = calculate_knn_recall(embeddings, labels, k)
     return 2 * (precision * recall) / (precision + recall)
-
-import optax
 
 def main():
     np.random.seed(42)
