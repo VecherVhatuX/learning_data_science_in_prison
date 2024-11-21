@@ -1,16 +1,116 @@
-import tensorflow as tf
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input, Dense, Dropout, GlobalAveragePooling1D, Embedding
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras.utils import to_categorical
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
-from tensorflow.keras.preprocessing.text import Tokenizer
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import random
 import json
 import os
+
+class CustomDataset(Dataset):
+    def __init__(self, triplets, max_sequence_length, tokenizer, batch_size=32):
+        self.triplets = triplets
+        self.max_sequence_length = max_sequence_length
+        self.tokenizer = tokenizer
+        self.batch_size = batch_size
+
+    def __len__(self):
+        return len(self.triplets) // self.batch_size + 1
+
+    def __getitem__(self, idx):
+        batch_triplets = self.triplets[idx * self.batch_size:(idx + 1) * self.batch_size]
+        inputs = []
+        attention_masks = []
+        for triplet in batch_triplets:
+            anchor = self.tokenizer.encode_plus(
+                triplet['anchor'],
+                max_length=self.max_sequence_length,
+                padding='max_length',
+                truncation=True,
+                return_attention_mask=True,
+                return_tensors='pt'
+            )
+            positive = self.tokenizer.encode_plus(
+                triplet['positive'],
+                max_length=self.max_sequence_length,
+                padding='max_length',
+                truncation=True,
+                return_attention_mask=True,
+                return_tensors='pt'
+            )
+            negative = self.tokenizer.encode_plus(
+                triplet['negative'],
+                max_length=self.max_sequence_length,
+                padding='max_length',
+                truncation=True,
+                return_attention_mask=True,
+                return_tensors='pt'
+            )
+            inputs.extend([anchor['input_ids'].squeeze(0), positive['input_ids'].squeeze(0), negative['input_ids'].squeeze(0)])
+            attention_masks.extend([anchor['attention_mask'].squeeze(0), positive['attention_mask'].squeeze(0), negative['attention_mask'].squeeze(0)])
+        return {'input_ids': torch.stack(inputs), 'attention_mask': torch.stack(attention_masks)}
+
+def build_model(embedding_size, fully_connected_size, dropout_rate, max_sequence_length):
+    class Model(nn.Module):
+        def __init__(self):
+            super(Model, self).__init__()
+            self.embedding = nn.Embedding(10000, embedding_size)
+            self.pooling = nn.AdaptiveAvgPool1d(1)
+            self.dropout = nn.Dropout(dropout_rate)
+            self.fc1 = nn.Linear(embedding_size, fully_connected_size)
+            self.fc2 = nn.Linear(fully_connected_size, embedding_size)
+
+        def forward(self, x):
+            x = self.embedding(x)
+            x = self.pooling(x.permute(0, 2, 1)).squeeze(2)
+            x = self.dropout(x)
+            x = torch.relu(self.fc1(x))
+            x = self.fc2(x)
+            return x
+    return Model()
+
+def train(model, device, dataset, epochs, learning_rate_value):
+    criterion = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate_value)
+    for epoch in range(epochs):
+        total_loss = 0
+        for batch in dataset:
+            inputs = batch['input_ids'].to(device)
+            attention_masks = batch['attention_mask'].to(device)
+            inputs = torch.split(inputs, inputs.size(0) // 3, dim=0)
+            attention_masks = torch.split(attention_masks, attention_masks.size(0) // 3, dim=0)
+            optimizer.zero_grad()
+            anchor_embeddings = model(inputs[0])
+            positive_embeddings = model(inputs[1])
+            negative_embeddings = model(inputs[2])
+            loss = calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+        print(f'Epoch {epoch+1}, Loss: {total_loss / len(dataset)}')
+
+def evaluate(model, device, dataset):
+    total_correct = 0
+    with torch.no_grad():
+        for batch in dataset:
+            inputs = batch['input_ids'].to(device)
+            attention_masks = batch['attention_mask'].to(device)
+            inputs = torch.split(inputs, inputs.size(0) // 3, dim=0)
+            attention_masks = torch.split(attention_masks, attention_masks.size(0) // 3, dim=0)
+            anchor_embeddings = model(inputs[0])
+            positive_embeddings = model(inputs[1])
+            negative_embeddings = model(inputs[2])
+            for i in range(len(anchor_embeddings)):
+                similarity_positive = torch.dot(anchor_embeddings[i], positive_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(positive_embeddings[i]))
+                similarity_negative = torch.dot(anchor_embeddings[i], negative_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(negative_embeddings[i]))
+                total_correct += similarity_positive > similarity_negative
+    accuracy = total_correct / (len(dataset) * 32)
+    print(f'Test Accuracy: {accuracy}')
+
+def calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
+    positive_distance = torch.mean(torch.pow(anchor_embeddings - positive_embeddings, 2))
+    negative_distance = torch.mean(torch.pow(anchor_embeddings - negative_embeddings, 2))
+    return positive_distance + torch.max(negative_distance - positive_distance, torch.tensor(0.0))
 
 def load_data(file_path):
     return np.load(file_path, allow_pickle=True) if file_path.endswith('.npy') else json.load(open(file_path, 'r', encoding='utf-8'))
@@ -32,98 +132,6 @@ def create_triplets(problem_statement, positive_snippets, negative_snippets, num
             for positive_doc in positive_snippets 
             for _ in range(min(num_negatives_per_positive, len(negative_snippets)))]
 
-class Dataset:
-    def __init__(self, triplets, max_sequence_length, tokenizer, batch_size=32):
-        self.triplets = triplets
-        self.max_sequence_length = max_sequence_length
-        self.tokenizer = tokenizer
-        self.batch_size = batch_size
-
-    def on_epoch_end(self):
-        random.shuffle(self.triplets)
-
-    def __getitem__(self, idx):
-        batch_triplets = self.triplets[idx * self.batch_size:(idx + 1) * self.batch_size]
-        inputs = []
-        attention_masks = []
-        for triplet in batch_triplets:
-            anchor = pad_sequences(
-                self.tokenizer.texts_to_sequences([triplet['anchor']]),
-                maxlen=self.max_sequence_length,
-                padding='post',
-                truncating='post'
-            )
-            positive = pad_sequences(
-                self.tokenizer.texts_to_sequences([triplet['positive']]),
-                maxlen=self.max_sequence_length,
-                padding='post',
-                truncating='post'
-            )
-            negative = pad_sequences(
-                self.tokenizer.texts_to_sequences([triplet['negative']]),
-                maxlen=self.max_sequence_length,
-                padding='post',
-                truncating='post'
-            )
-            inputs.extend([anchor[0], positive[0], negative[0]])
-            attention_masks.extend([[1] * len(anchor[0]), [1] * len(positive[0]), [1] * len(negative[0])])
-        return {'input_ids': np.array(inputs), 'attention_mask': np.array(attention_masks)}
-
-    def __len__(self):
-        return len(self.triplets) // self.batch_size + 1
-
-def build_model(embedding_size, fully_connected_size, dropout_rate, max_sequence_length):
-    inputs = Input(shape=(max_sequence_length,), name='input_ids')
-    attention_masks = Input(shape=(max_sequence_length,), name='attention_masks')
-    embedding = Embedding(input_dim=10000, output_dim=embedding_size, input_length=max_sequence_length)(inputs)
-    pooling = GlobalAveragePooling1D()(embedding)
-    dropout = Dropout(dropout_rate)(pooling)
-    fc1 = Dense(fully_connected_size, activation='relu')(dropout)
-    fc2 = Dense(embedding_size)(fc1)
-    model = Model(inputs=[inputs, attention_masks], outputs=fc2)
-    return model
-
-def train(model, dataset, epochs, learning_rate_value):
-    model.compile(loss=lambda y_true, y_pred: 0, optimizer=Adam(learning_rate_value), metrics=['accuracy'])
-    for epoch in range(epochs):
-        total_loss = 0
-        for batch in dataset:
-            inputs = batch['input_ids']
-            attention_masks = batch['attention_mask']
-            inputs = np.split(inputs, 3, axis=0)
-            attention_masks = np.split(attention_masks, 3, axis=0)
-            with tf.GradientTape() as tape:
-                anchor_embeddings = model([inputs[0], attention_masks[0]], training=True)
-                positive_embeddings = model([inputs[1], attention_masks[1]], training=True)
-                negative_embeddings = model([inputs[2], attention_masks[2]], training=True)
-                loss = calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
-            gradients = tape.gradient(loss, model.trainable_variables)
-            model.optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-            total_loss += loss
-        print(f'Epoch {epoch+1}, Loss: {total_loss / len(dataset)}')
-
-def evaluate(model, dataset):
-    total_correct = 0
-    for batch in dataset:
-        inputs = batch['input_ids']
-        attention_masks = batch['attention_mask']
-        inputs = np.split(inputs, 3, axis=0)
-        attention_masks = np.split(attention_masks, 3, axis=0)
-        anchor_embeddings = model([inputs[0], attention_masks[0]])
-        positive_embeddings = model([inputs[1], attention_masks[1]])
-        negative_embeddings = model([inputs[2], attention_masks[2]])
-        for i in range(len(anchor_embeddings)):
-            similarity_positive = np.dot(anchor_embeddings[i], positive_embeddings[i]) / (np.linalg.norm(anchor_embeddings[i]) * np.linalg.norm(positive_embeddings[i]))
-            similarity_negative = np.dot(anchor_embeddings[i], negative_embeddings[i]) / (np.linalg.norm(anchor_embeddings[i]) * np.linalg.norm(negative_embeddings[i]))
-            total_correct += similarity_positive > similarity_negative
-    accuracy = total_correct / (len(dataset) * 32)
-    print(f'Test Accuracy: {accuracy}')
-
-def calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
-    positive_distance = tf.reduce_mean(tf.square(anchor_embeddings - positive_embeddings))
-    negative_distance = tf.reduce_mean(tf.square(anchor_embeddings - negative_embeddings))
-    return positive_distance + tf.maximum(negative_distance - positive_distance, 0)
-
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
@@ -136,6 +144,8 @@ def main():
     epochs = 5
     batch_size = 32
 
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
     instance_id_map = {item['instance_id']: item['problem_statement'] for item in load_data(dataset_path)}
     snippets = load_snippets(snippet_folder_path)
     triplets = []
@@ -145,14 +155,16 @@ def main():
         for bug_snippet, non_bug_snippet in [(bug, non_bug) for bug in bug_snippets for non_bug in non_bug_snippets]:
             triplets.extend(create_triplets(problem_statement, [bug_snippet], non_bug_snippets, num_negatives_per_positive))
 
-    train_triplets, test_triplets = train_test_split(triplets, test_size=0.2, random_state=42)
-    tokenizer = Tokenizer()
-    tokenizer.fit_on_texts([triplet['anchor'] for triplet in triplets] + [triplet['positive'] for triplet in triplets] + [triplet['negative'] for triplet in triplets])
-    train_data = Dataset(train_triplets, max_sequence_length, tokenizer, batch_size=batch_size)
-    test_data = Dataset(test_triplets, max_sequence_length, tokenizer, batch_size=batch_size)
+    train_triplets, test_triplets = torch.utils.data.random_split(triplets, [int(len(triplets)*0.8), len(triplets)-int(len(triplets)*0.8)])
+    tokenizer = torch.hub.load('huggingface/pytorch-transformers', 'tokenizer', 'bert-base-uncased')
+    train_data = CustomDataset(train_triplets, max_sequence_length, tokenizer, batch_size=batch_size)
+    test_data = CustomDataset(test_triplets, max_sequence_length, tokenizer, batch_size=batch_size)
+    train_loader = DataLoader(train_data, batch_size=1, shuffle=True)
+    test_loader = DataLoader(test_data, batch_size=1, shuffle=False)
     model = build_model(embedding_size, fully_connected_size, dropout_rate, max_sequence_length)
-    train(model, train_data, epochs, learning_rate_value)
-    evaluate(model, test_data)
+    model.to(device)
+    train(model, device, train_loader, epochs, learning_rate_value)
+    evaluate(model, device, test_loader)
 
 if __name__ == "__main__":
     main()
