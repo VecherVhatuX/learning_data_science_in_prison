@@ -46,63 +46,76 @@ Config = make_dataclass(
     ],
 )
 
-def create_model():
-    return nn.Sequential(
-        nn.Linear(128, 128),
-        nn.ReLU(),
-        nn.Linear(128, 128),
-        nn.ReLU(),
-        nn.Linear(128, 1000)
-    )
+class Model(nn.Module):
+    def __init__(self):
+        super(Model, self).__init__()
+        self.fc1 = nn.Linear(128, 128)
+        self.fc2 = nn.Linear(128, 128)
+        self.fc3 = nn.Linear(128, 1000)
+        self.relu = nn.ReLU()
 
-def prepare_dataset(chat_format, data):
-    return {
-        "input_ids": [f"{chat_format} {example['input']}" for example in data],
-        "labels": [f"{chat_format} {example['output']}" for example in data],
-        "attention_mask": [1] * len(data)
-    }
+    def forward(self, x):
+        x = self.relu(self.fc1(x))
+        x = self.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
 
-def load_dataset(chat_format):
-    with open("train.json", 'r') as f:
-        train_data = json.load(f)
-    with open("test.json", 'r') as f:
-        test_data = json.load(f)
-    return prepare_dataset(chat_format, train_data), prepare_dataset(chat_format, test_data)
+class Trainer:
+    def __init__(self, config: Config, model: Model, device: torch.device):
+        self.config = config
+        self.model = model
+        self.device = device
+        self.criterion = nn.MSELoss()
+        self.optimizer = optim.AdamW(model.parameters(), lr=0.001, betas=(0.9, 0.999), eps=1e-08)
 
-def training_step(model, device, criterion, optimizer, batch):
-    inputs, labels = batch
-    inputs, labels = torch.tensor(inputs, dtype=torch.float32).to(device), torch.tensor(labels, dtype=torch.float32).to(device)
-    optimizer.zero_grad()
-    outputs = model(inputs)
-    loss = criterion(outputs, labels)
-    loss.backward()
-    optimizer.step()
-    return loss.item()
+    def training_step(self, batch):
+        inputs, labels = batch
+        inputs, labels = torch.tensor(inputs, dtype=torch.float32).to(self.device), torch.tensor(labels, dtype=torch.float32).to(self.device)
+        self.optimizer.zero_grad()
+        outputs = self.model(inputs)
+        loss = self.criterion(outputs, labels)
+        loss.backward()
+        self.optimizer.step()
+        return loss.item()
 
-def training_epoch(model, device, criterion, optimizer, dataset, batch_size):
-    batches = np.array_split(dataset, len(dataset) // batch_size)
-    total_loss = 0
-    for batch in batches:
-        loss = training_step(model, device, criterion, optimizer, (np.array(batch[:, 0], dtype=object), np.array(batch[:, 1], dtype=object)))
-        total_loss += loss
-    return total_loss / len(batches)
+    def training_epoch(self, dataset, batch_size):
+        batches = np.array_split(dataset, len(dataset) // batch_size)
+        total_loss = 0
+        for batch in batches:
+            loss = self.training_step((np.array(batch[:, 0], dtype=object), np.array(batch[:, 1], dtype=object)))
+            total_loss += loss
+        return total_loss / len(batches)
 
-def train(config):
-    model = create_model()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
-    criterion = nn.MSELoss()
-    optimizer = optim.AdamW(model.parameters(), lr=0.001, betas=(0.9, 0.999), eps=1e-08)
-    train_data, _ = load_dataset(config.chat_format)
-    dataset = np.array(list(zip(train_data["input_ids"], train_data["labels"])))
-    for _ in range(config.num_epochs):
-        loss = training_epoch(model, device, criterion, optimizer, dataset, config.train_batch_size)
-        print(f"Epoch {_+1}, Loss: {loss}")
-    return model
+class DatasetPreparer:
+    def __init__(self, chat_format):
+        self.chat_format = chat_format
+
+    def prepare(self, data):
+        return {
+            "input_ids": [f"{self.chat_format} {example['input']}" for example in data],
+            "labels": [f"{self.chat_format} {example['output']}" for example in data],
+            "attention_mask": [1] * len(data)
+        }
+
+    def load_dataset(self):
+        with open("train.json", 'r') as f:
+            train_data = json.load(f)
+        with open("test.json", 'r') as f:
+            test_data = json.load(f)
+        return self.prepare(train_data), self.prepare(test_data)
 
 def main():
     config = Config(model_id="t5-base", chat_format="none", triplet_loss_training=True)
-    model = train(config)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = Model()
+    model.to(device)
+    trainer = Trainer(config, model, device)
+    dataset_preparer = DatasetPreparer(config.chat_format)
+    train_data, _ = dataset_preparer.load_dataset()
+    dataset = np.array(list(zip(train_data["input_ids"], train_data["labels"])))
+    for _ in range(config.num_epochs):
+        loss = trainer.training_epoch(dataset, config.train_batch_size)
+        print(f"Epoch {_+1}, Loss: {loss}")
 
 if __name__ == "__main__":
     main()
