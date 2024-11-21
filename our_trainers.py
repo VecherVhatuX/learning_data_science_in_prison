@@ -71,7 +71,7 @@ def train_step(state, batch, network, loss_fn):
         anchor_embeddings = network.apply(params, batch['anchor_input_ids'])
         positive_embeddings = network.apply(params, batch['positive_input_ids'])
         negative_embeddings = network.apply(params, batch['negative_input_ids'])
-        return loss_fn.apply(params, anchor_embeddings, positive_embeddings, negative_embeddings)
+        return TripletLoss().apply({}, anchor_embeddings, positive_embeddings, negative_embeddings)
 
     grads = jax.grad(loss_fn, has_aux=False)(state.params, batch)
     state = state.apply_gradients(grads=grads)
@@ -80,7 +80,6 @@ def train_step(state, batch, network, loss_fn):
 def train_model(network, dataset, epochs, learning_rate, batch_size):
     rng = jax.random.PRNGKey(42)
     state = create_train_state(rng, learning_rate, network)
-    loss_fn = TripletLoss()
 
     for epoch in range(epochs):
         total_loss = 0.0
@@ -90,8 +89,10 @@ def train_model(network, dataset, epochs, learning_rate, batch_size):
 
         for i, batch in enumerate(dataloader):
             batch = {k: jax.device_put(v.numpy()) for k, v in batch.items()}
-            state = train_step(state, batch, network, loss_fn)
-            total_loss += loss_fn.apply(state.params, batch['anchor_input_ids'], batch['positive_input_ids'], batch['negative_input_ids'])
+            state = train_step(state, batch, network, TripletLoss)
+            total_loss += TripletLoss().apply({}, network.apply(state.params, batch['anchor_input_ids']), 
+                                              network.apply(state.params, batch['positive_input_ids']), 
+                                              network.apply(state.params, batch['negative_input_ids']))
 
         print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
@@ -104,8 +105,9 @@ def evaluate_model(network, dataset, batch_size):
 
     for i, batch in enumerate(dataloader):
         batch = {k: jax.device_put(v.numpy()) for k, v in batch.items()}
-        total_loss += loss_fn.apply(network.init(jax.random.PRNGKey(42), jnp.ones((1, 10), dtype=jnp.int32)),
-                                    batch['anchor_input_ids'], batch['positive_input_ids'], batch['negative_input_ids'])
+        total_loss += loss_fn.apply({}, network.apply(network.init(jax.random.PRNGKey(42), jnp.ones((1, 10), dtype=jnp.int32)), batch['anchor_input_ids']), 
+                                    network.apply(network.init(jax.random.PRNGKey(42), jnp.ones((1, 10), dtype=jnp.int32)), batch['positive_input_ids']), 
+                                    network.apply(network.init(jax.random.PRNGKey(42), jnp.ones((1, 10), dtype=jnp.int32)), batch['negative_input_ids']))
 
     print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
