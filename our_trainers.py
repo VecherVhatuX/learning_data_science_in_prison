@@ -7,7 +7,7 @@ import numpy as np
 import tensorflow as tf
 import optax
 
-class TripletNetwork(nn.Module):
+class TripletModel(nn.Module):
     @nn.compact
     def __call__(self, x):
         x = nn.Embed(num_embeddings=101, features=10)(x)
@@ -18,22 +18,27 @@ class TripletNetwork(nn.Module):
         x = nn.BatchNorm(use_running_average=False)(x)
         return x / jnp.linalg.norm(x, axis=1, keepdims=True)
 
-class TripletLoss(nn.Module):
+class TripletLossModule(nn.Module):
     @nn.compact
     def __call__(self, anchor_embeddings, positive_embeddings, negative_embeddings):
         return jnp.mean(jnp.maximum(jnp.linalg.norm(anchor_embeddings - positive_embeddings, axis=1)
                                     - jnp.linalg.norm(anchor_embeddings[:, jnp.newaxis] - negative_embeddings, axis=2).min(axis=1)
                                     + 1.0, 0.0))
 
-class TripletDataset:
-    def __init__(self, samples, labels, num_negatives):
+class Dataset:
+    def __init__(self, samples, labels, num_negatives, batch_size, shuffle=True):
         self.samples = samples
         self.labels = labels
         self.num_negatives = num_negatives
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.indices = np.arange(len(samples))
+        if shuffle:
+            np.random.shuffle(self.indices)
 
     def __getitem__(self, idx):
-        anchor_idx = idx
-        anchor_label = self.labels[idx]
+        anchor_idx = self.indices[idx]
+        anchor_label = self.labels[anchor_idx]
 
         positive_idx = np.random.choice(np.where(self.labels == anchor_label)[0], size=1)[0]
         negative_idx = np.random.choice(np.where(self.labels != anchor_label)[0], size=self.num_negatives, replace=False)
@@ -47,90 +52,81 @@ class TripletDataset:
     def __len__(self):
         return len(self.samples)
 
-class EpochShuffleDataset:
-    def __init__(self, dataset):
+class Trainer:
+    def __init__(self, model, dataset, epochs, learning_rate, batch_size):
+        self.model = model
         self.dataset = dataset
-        self.indices = np.arange(len(dataset))
+        self.epochs = epochs
+        self.learning_rate = learning_rate
+        self.batch_size = batch_size
+        self.loss_fn = TripletLossModule()
+        self.state = self.create_train_state()
 
-    def __getitem__(self, idx):
-        return self.dataset[self.indices[idx]]
+    def create_train_state(self):
+        tx = optax.adam(learning_rate=self.learning_rate)
+        params = self.model.init(jax.random.PRNGKey(42), jnp.ones((1, 10), dtype=jnp.int32))
+        return train_state.TrainState(params, tx)
 
-    def __len__(self):
-        return len(self.indices)
+    def train_step(self, state, batch):
+        def loss_fn(params, batch):
+            anchor_embeddings = self.model.apply(params, batch['anchor_input_ids'])
+            positive_embeddings = self.model.apply(params, batch['positive_input_ids'])
+            negative_embeddings = self.model.apply(params, batch['negative_input_ids'])
+            return self.loss_fn.apply({}, anchor_embeddings, positive_embeddings, negative_embeddings)
 
-    def on_epoch_end(self):
-        np.random.shuffle(self.indices)
+        grads = jax.grad(loss_fn, has_aux=False)(state.params, batch)
+        state = state.apply_gradients(grads=grads)
+        return state
 
-def create_train_state(rng, learning_rate, network):
-    tx = optax.adam(learning_rate=learning_rate)
-    params = network.init(rng, jnp.ones((1, 10), dtype=jnp.int32))
-    return train_state.TrainState(params, tx)
+    def train(self):
+        for epoch in range(self.epochs):
+            total_loss = 0.0
+            dataloader = tf.data.Dataset.from_tensor_slices(self.dataset)
+            dataloader = dataloader.batch(self.batch_size)
+            dataloader = dataloader.prefetch(tf.data.AUTOTUNE)
 
-def train_step(state, batch, network, loss_fn):
-    def loss_fn(params, batch):
-        anchor_embeddings = network.apply(params, batch['anchor_input_ids'])
-        positive_embeddings = network.apply(params, batch['positive_input_ids'])
-        negative_embeddings = network.apply(params, batch['negative_input_ids'])
-        return TripletLoss().apply({}, anchor_embeddings, positive_embeddings, negative_embeddings)
+            for i, batch in enumerate(dataloader):
+                batch = {k: jax.device_put(v.numpy()) for k, v in batch.items()}
+                self.state = self.train_step(self.state, batch)
+                total_loss += self.loss_fn.apply({}, self.model.apply(self.state.params, batch['anchor_input_ids']), 
+                                                 self.model.apply(self.state.params, batch['positive_input_ids']), 
+                                                 self.model.apply(self.state.params, batch['negative_input_ids']))
 
-    grads = jax.grad(loss_fn, has_aux=False)(state.params, batch)
-    state = state.apply_gradients(grads=grads)
-    return state
+            print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
-def train_model(network, dataset, epochs, learning_rate, batch_size):
-    rng = jax.random.PRNGKey(42)
-    state = create_train_state(rng, learning_rate, network)
-
-    for epoch in range(epochs):
+    def evaluate(self):
         total_loss = 0.0
-        dataloader = tf.data.Dataset.from_tensor_slices(dataset)
-        dataloader = dataloader.batch(batch_size)
+        dataloader = tf.data.Dataset.from_tensor_slices(self.dataset)
+        dataloader = dataloader.batch(self.batch_size)
         dataloader = dataloader.prefetch(tf.data.AUTOTUNE)
 
         for i, batch in enumerate(dataloader):
             batch = {k: jax.device_put(v.numpy()) for k, v in batch.items()}
-            state = train_step(state, batch, network, TripletLoss)
-            total_loss += TripletLoss().apply({}, network.apply(state.params, batch['anchor_input_ids']), 
-                                              network.apply(state.params, batch['positive_input_ids']), 
-                                              network.apply(state.params, batch['negative_input_ids']))
+            total_loss += self.loss_fn.apply({}, self.model.apply(self.state.params, batch['anchor_input_ids']), 
+                                             self.model.apply(self.state.params, batch['positive_input_ids']), 
+                                             self.model.apply(self.state.params, batch['negative_input_ids']))
 
-        print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
+        print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
-def evaluate_model(network, dataset, batch_size):
-    total_loss = 0.0
-    dataloader = tf.data.Dataset.from_tensor_slices(dataset)
-    dataloader = dataloader.batch(batch_size)
-    dataloader = dataloader.prefetch(tf.data.AUTOTUNE)
-    loss_fn = TripletLoss()
+    def predict(self, input_ids, batch_size):
+        predictions = []
+        dataloader = tf.data.Dataset.from_tensor_slices(input_ids)
+        dataloader = dataloader.batch(batch_size)
+        dataloader = dataloader.prefetch(tf.data.AUTOTUNE)
 
-    for i, batch in enumerate(dataloader):
-        batch = {k: jax.device_put(v.numpy()) for k, v in batch.items()}
-        total_loss += loss_fn.apply({}, network.apply(network.init(jax.random.PRNGKey(42), jnp.ones((1, 10), dtype=jnp.int32)), batch['anchor_input_ids']), 
-                                    network.apply(network.init(jax.random.PRNGKey(42), jnp.ones((1, 10), dtype=jnp.int32)), batch['positive_input_ids']), 
-                                    network.apply(network.init(jax.random.PRNGKey(42), jnp.ones((1, 10), dtype=jnp.int32)), batch['negative_input_ids']))
+        for batch in dataloader:
+            batch = jax.device_put(batch.numpy())
+            output = self.model.apply(self.state.params, batch)
+            predictions.extend(output)
 
-    print(f'Validation Loss: {total_loss / (i+1):.3f}')
+        return np.array(predictions)
 
-def predict(network, input_ids, batch_size):
-    predictions = []
-    dataloader = tf.data.Dataset.from_tensor_slices(input_ids)
-    dataloader = dataloader.batch(batch_size)
-    dataloader = dataloader.prefetch(tf.data.AUTOTUNE)
+    def save_model(self, path):
+        jax2tf.convert(self.state.params, 'triplet_model')
 
-    for batch in dataloader:
-        batch = jax.device_put(batch.numpy())
-        output = network.apply(network.init(jax.random.PRNGKey(42), jnp.ones((1, 10), dtype=jnp.int32)), batch)
-        predictions.extend(output)
-
-    return np.array(predictions)
-
-def save_model(network, path):
-    params = network.init(jax.random.PRNGKey(42), jnp.ones((1, 10), dtype=jnp.int32))
-    jax2tf.convert(params, 'triplet_model')
-
-def load_model(network, path):
-    params = jax2tf.checkpoint.load(path, target='')
-    return params
+    def load_model(self, path):
+        params = jax2tf.checkpoint.load(path, target='')
+        return params
 
 def calculate_distance(embedding1, embedding2):
     return jnp.linalg.norm(embedding1 - embedding2, axis=1)
@@ -194,20 +190,21 @@ def main():
     epochs = 10
     learning_rate = 1e-4
 
-    network = TripletNetwork()
-    dataset = EpochShuffleDataset(TripletDataset(samples, labels, num_negatives))
-    train_model(network, dataset, epochs, learning_rate, batch_size)
+    model = TripletModel()
+    dataset = Dataset(samples, labels, num_negatives, batch_size)
+    trainer = Trainer(model, dataset, epochs, learning_rate, batch_size)
+    trainer.train()
+
     input_ids = np.array([1, 2, 3, 4, 5], dtype=np.int32).reshape((1, 10))
-    output = predict(network, input_ids, batch_size=1)
+    output = trainer.predict(input_ids, batch_size=1)
     print(output)
 
-    save_model(network, "triplet_model")
-    loaded_network = TripletNetwork()
-    loaded_params = load_model(loaded_network, "triplet_model")
+    trainer.save_model("triplet_model")
+    loaded_params = trainer.load_model("triplet_model")
 
-    evaluate_model(network, dataset, batch_size)
+    trainer.evaluate()
 
-    predicted_embeddings = predict(network, np.array([1, 2, 3, 4, 5], dtype=np.int32).reshape((1, 10)), batch_size=1)
+    predicted_embeddings = trainer.predict(np.array([1, 2, 3, 4, 5], dtype=np.int32).reshape((1, 10)), batch_size=1)
     print(predicted_embeddings)
 
     distance = calculate_distance(predicted_embeddings[0], predicted_embeddings[0])
@@ -219,7 +216,7 @@ def main():
     cosine_distance = calculate_cosine_distance(predicted_embeddings[0], predicted_embeddings[0])
     print(cosine_distance)
 
-    all_embeddings = predict(network, np.array(samples, dtype=np.int32), batch_size=32)
+    all_embeddings = trainer.predict(np.array(samples, dtype=np.int32), batch_size=32)
     nearest_neighbors = get_nearest_neighbors(all_embeddings, predicted_embeddings[0], k=5)
     print(nearest_neighbors)
 
