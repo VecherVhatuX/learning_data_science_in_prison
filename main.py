@@ -83,6 +83,7 @@ class Trainer:
         self.loss_function = keras.losses.MeanSquaredError()
         self.optimizer = keras.optimizers.AdamW(learning_rate=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-08)
         self.checkpoint_manager = self._create_checkpoint_manager()
+        self.model.compile(optimizer=self.optimizer, loss=self.loss_function)
 
     def _create_checkpoint_manager(self):
         checkpoint_directory = os.path.join(self.hyperparameters.output_directory_path, "checkpoints")
@@ -97,28 +98,16 @@ class Trainer:
         )
         return cp_callback
 
-    def training_step(self, batch: list) -> float:
-        inputs = np.array([example['input_ids'] for example in batch])
-        labels = np.array([example['labels'] for example in batch])
-        with keras.GradientTape() as tape:
-            outputs = self.model(inputs)
-            loss = self.loss_function(labels, outputs)
-        gradients = tape.gradient(loss, self.model.trainable_variables)
-        self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
-        return loss.numpy()
-
-    def training_epoch(self, dataset: DataContainer, batch_size: int) -> float:
-        batches = [dataset[i:i+batch_size] for i in range(0, len(dataset), batch_size)]
-        total_loss = 0
-        for batch in batches:
-            loss = self.training_step(batch)
-            total_loss += loss
-        return total_loss / len(batches)
-
     def fit(self, dataset: DataContainer, batch_size: int):
+        batches = [dataset[i:i+batch_size] for i in range(0, len(dataset), batch_size)]
         for epoch in range(self.hyperparameters.number_of_epochs):
-            loss = self.training_epoch(dataset, batch_size)
-            print(f"Epoch {epoch+1}, Loss: {loss}")
+            total_loss = 0
+            for batch in batches:
+                inputs = np.array([example['input_ids'] for example in batch])
+                labels = np.array([example['labels'] for example in batch])
+                loss = self.model.train_on_batch(inputs, labels)
+                total_loss += loss
+            print(f"Epoch {epoch+1}, Loss: {total_loss / len(batches)}")
         self.model.save(os.path.join(self.hyperparameters.output_directory_path, "final_model"))
 
 def load_data(hyperparameters: Hyperparameters) -> tuple:
