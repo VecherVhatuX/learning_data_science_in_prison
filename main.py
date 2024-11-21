@@ -125,14 +125,23 @@ def load_dataset(hyperparameters):
         print("One or both of the data files not found.")
         return None, None
 
+def evaluate_model(model, dataset):
+    total_loss = 0
+    for batch_inputs, batch_labels, _ in zip(dataset.get_batch() for _ in range(len(dataset.batch_indices))):
+        loss = model.test_on_batch(batch_inputs, batch_labels)
+        total_loss += loss
+    print(f"Test Loss: {total_loss / len(dataset.batch_indices)}")
+
 def main():
     hyperparameters = Hyperparameters(base_model_identifier="t5-base", conversation_format_identifier="none", triplet_loss_training_enabled=True)
     model = build_neural_network((None,))
     cp_callback, model = create_trainer(hyperparameters, model)
-    training_data, _ = load_dataset(hyperparameters)
+    training_data, testing_data = load_dataset(hyperparameters)
     if training_data is not None:
         dataset = Dataset(training_data, hyperparameters)
         train_model(model, dataset, hyperparameters, cp_callback)
+        test_dataset = Dataset(testing_data, hyperparameters)
+        evaluate_model(model, test_dataset)
 
 if __name__ == "__main__":
     main()
