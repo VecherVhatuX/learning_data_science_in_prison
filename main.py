@@ -1,12 +1,15 @@
 import os
 import json
-import dataclasses
-import typing
-from tensorflow import keras
-from tensorflow.keras import layers
+from dataclasses import dataclass
+from typing import List
+import torch
+from torch import nn
+from torch.utils.data import Dataset, DataLoader
 import numpy as np
+import torch.optim as optim
+from torch.optim import lr_scheduler
 
-@dataclasses.dataclass
+@dataclass
 class Hyperparameters:
     base_model_identifier: str = "t5-base"
     conversation_format_identifier: str = "none"
@@ -65,91 +68,96 @@ def preprocess_example(example, hyperparameters):
     attention_mask = [1] * len(input_ids)
     return np.array(input_ids, dtype=np.float32), np.array(labels, dtype=np.float32), np.array(attention_mask, dtype=np.float32)
 
-def create_dataset(data, hyperparameters):
-    class Dataset:
-        def __init__(self, data, hyperparameters):
-            self.data = data
-            self.hyperparameters = hyperparameters
-            self.sample_indices = np.arange(len(self.data))
-            self.epoch = 0
-            self.batch_indices = []
+class Dataset(Dataset):
+    def __init__(self, data, hyperparameters):
+        self.data = data
+        self.hyperparameters = hyperparameters
+        self.sample_indices = np.arange(len(self.data))
+        self.epoch = 0
+        self.batch_indices = []
 
-            positive_samples = list(range(len(self.data)))
-            negative_samples = [np.random.choice(len(self.data)) for _ in range(len(self.data) * self.hyperparameters.negative_samples_per_positive_sample)]
-            self.sample_indices = np.concatenate((positive_samples, negative_samples))
+        positive_samples = list(range(len(self.data)))
+        negative_samples = [np.random.choice(len(self.data)) for _ in range(len(self.data) * self.hyperparameters.negative_samples_per_positive_sample)]
+        self.sample_indices = np.concatenate((positive_samples, negative_samples))
 
-        def shuffle(self):
-            np.random.shuffle(self.sample_indices)
-            self.batch_indices = np.array_split(self.sample_indices, len(self.sample_indices) // self.hyperparameters.training_batch_size)
+    def shuffle(self):
+        np.random.shuffle(self.sample_indices)
+        self.batch_indices = np.array_split(self.sample_indices, len(self.sample_indices) // self.hyperparameters.training_batch_size)
 
-        def get_batch(self):
-            if not self.batch_indices:
-                self.shuffle()
-            batch_indices = self.batch_indices.pop(0)
-            batch_inputs, batch_labels, batch_attention_masks = [], [], []
-            for index in batch_indices:
-                if index < len(self.data):
-                    input_ids, labels, attention_mask = preprocess_example(self.data[index], self.hyperparameters)
-                else:
-                    input_ids, labels, attention_mask = preprocess_example(self.data[np.random.choice(len(self.data))], self.hyperparameters)
-                batch_inputs.append(input_ids)
-                batch_labels.append(labels)
-                batch_attention_masks.append(attention_mask)
-            return np.array(batch_inputs), np.array(batch_labels), np.array(batch_attention_masks)
+    def __len__(self):
+        return len(self.batch_indices)
 
-    return Dataset(data, hyperparameters)
+    def __getitem__(self, index):
+        batch_indices = self.batch_indices[index]
+        batch_inputs, batch_labels, batch_attention_masks = [], [], []
+        for idx in batch_indices:
+            if idx < len(self.data):
+                input_ids, labels, attention_mask = preprocess_example(self.data[idx], self.hyperparameters)
+            else:
+                input_ids, labels, attention_mask = preprocess_example(self.data[np.random.choice(len(self.data))], self.hyperparameters)
+            batch_inputs.append(input_ids)
+            batch_labels.append(labels)
+            batch_attention_masks.append(attention_mask)
+        return torch.tensor(np.array(batch_inputs)), torch.tensor(np.array(batch_labels)), torch.tensor(np.array(batch_attention_masks))
 
-def build_neural_network(input_shape):
-    model = keras.Sequential([
-        layers.Dense(128, activation='relu', input_shape=input_shape),
-        layers.Dense(128, activation='relu'),
-        layers.Dense(1000)
-    ])
-    return model
+class NeuralNetwork(nn.Module):
+    def __init__(self):
+        super(NeuralNetwork, self).__init__()
+        self.fc1 = nn.Linear(128, 128)  # input shape (128,); number of hidden units
+        self.relu = nn.ReLU()
+        self.fc2 = nn.Linear(128, 128)
+        self.fc3 = nn.Linear(128, 1000)
+
+    def forward(self, x):
+        x = x.view(-1, 128)
+        x = self.relu(self.fc1(x))
+        x = self.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
 
 def create_trainer(hyperparameters, model):
-    loss_function = keras.losses.MeanSquaredError()
-    optimizer = keras.optimizers.AdamW(learning_rate=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-08)
-    checkpoint_directory = os.path.join(hyperparameters.output_directory_path, "checkpoints")
-    os.makedirs(checkpoint_directory, exist_ok=True)
-    checkpoint_path = os.path.join(checkpoint_directory, "ckpt-{epoch:02d}")
-    cp_callback = keras.callbacks.ModelCheckpoint(
-        filepath=checkpoint_path,
-        verbose=1,
-        save_weights_only=False,
-        save_freq=hyperparameters.save_steps,
-        max_to_keep=hyperparameters.maximum_checkpoints
-    )
-    model.compile(optimizer=optimizer, loss=loss_function)
-    return cp_callback, model
+    loss_function = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001, betas=(0.9, 0.999), eps=1e-08)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model.to(device)
+    return loss_function, optimizer, device
 
-def train_model(model, dataset, hyperparameters, cp_callback):
+def train_model(model, dataset, hyperparameters, loss_function, optimizer, device):
     for epoch in range(hyperparameters.number_of_epochs):
         total_loss = 0
-        dataset.shuffle()
-        for i, (batch_inputs, batch_labels, _) in enumerate(zip(dataset.get_batch() for _ in range(len(dataset.batch_indices)))):
-            loss = model.train_on_batch(batch_inputs, batch_labels)
-            total_loss += loss
+        data_loader = DataLoader(dataset, batch_size=hyperparameters.training_batch_size, shuffle=True)
+        for i, (batch_inputs, batch_labels, _) in enumerate(data_loader):
+            batch_inputs, batch_labels = batch_inputs.to(device), batch_labels.to(device)
+            optimizer.zero_grad()
+            outputs = model(batch_inputs)
+            loss = loss_function(outputs, batch_labels)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
         print(f"Epoch {epoch+1}, Loss: {total_loss / (i+1)}")
-    model.save(os.path.join(hyperparameters.output_directory_path, "final_model"))
+    torch.save(model.state_dict(), os.path.join(hyperparameters.output_directory_path, "final_model.pth"))
 
-def evaluate_model(model, dataset):
+def evaluate_model(model, dataset, loss_function, device):
     total_loss = 0
-    for batch_inputs, batch_labels, _ in zip(dataset.get_batch() for _ in range(len(dataset.batch_indices))):
-        loss = model.test_on_batch(batch_inputs, batch_labels)
-        total_loss += loss
-    print(f"Test Loss: {total_loss / len(dataset.batch_indices)}")
+    data_loader = DataLoader(dataset, batch_size=hyperparameters.evaluation_batch_size, shuffle=False)
+    with torch.no_grad():
+        for batch_inputs, batch_labels, _ in data_loader:
+            batch_inputs, batch_labels = batch_inputs.to(device), batch_labels.to(device)
+            outputs = model(batch_inputs)
+            loss = loss_function(outputs, batch_labels)
+            total_loss += loss.item()
+    print(f"Test Loss: {total_loss / len(data_loader)}")
 
 def main():
     hyperparameters = load_hyperparameters("t5-base", "none", True)
-    model = build_neural_network((None,))
-    cp_callback, model = create_trainer(hyperparameters, model)
+    model = NeuralNetwork()
+    loss_function, optimizer, device = create_trainer(hyperparameters, model)
     training_data, testing_data = load_dataset(hyperparameters)
     if training_data is not None:
-        dataset = create_dataset(training_data, hyperparameters)
-        train_model(model, dataset, hyperparameters, cp_callback)
-        test_dataset = create_dataset(testing_data, hyperparameters)
-        evaluate_model(model, test_dataset)
+        dataset = Dataset(training_data, hyperparameters)
+        train_model(model, dataset, hyperparameters, loss_function, optimizer, device)
+        test_dataset = Dataset(testing_data, hyperparameters)
+        evaluate_model(model, test_dataset, loss_function, device)
 
 if __name__ == "__main__":
     main()
