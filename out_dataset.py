@@ -13,33 +13,31 @@ import random
 import json
 import os
 
-class DataUtils:
+class DataHandler:
     @staticmethod
-    def load_json_data(file_path):
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"Failed to load JSON file: {file_path}, error: {str(e)}")
-            return []
-
-    @staticmethod
-    def load_dataset(file_path):
-        return np.load(file_path, allow_pickle=True)
+    def load_data(file_path):
+        if file_path.endswith('.json'):
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"Failed to load JSON file: {file_path}, error: {str(e)}")
+                return []
+        elif file_path.endswith('.npy'):
+            return np.load(file_path, allow_pickle=True)
 
     @staticmethod
     def load_snippets(folder_path):
         return [(os.path.join(folder_path, f), os.path.join(folder_path, f, 'snippet.json')) 
                 for f in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, f))]
 
-
-class DataProcessor:
+class DataPreprocessor:
     @staticmethod
-    def separate_code_snippets(snippets):
+    def separate_snippets(snippets):
         return tuple(map(list, zip(*[
             ((snippet_data['snippet'], True) if snippet_data.get('is_bug', False) else (snippet_data['snippet'], False)) 
             for folder_path, snippet_file_path in snippets 
-            for snippet_data in [DataUtils.load_json_data(snippet_file_path)]
+            for snippet_data in [DataHandler.load_data(snippet_file_path)]
             if snippet_data.get('snippet')
         ])))
 
@@ -49,7 +47,7 @@ class DataProcessor:
                 for positive_doc in positive_snippets 
                 for _ in range(min(num_negatives_per_positive, len(negative_snippets)))]
 
-class Dataset(tf.keras.utils.Sequence):
+class Dataset:
     def __init__(self, triplets, max_sequence_length, tokenizer, batch_size=32):
         self.triplets = triplets
         self.max_sequence_length = max_sequence_length
@@ -102,9 +100,9 @@ class Dataset(tf.keras.utils.Sequence):
             'negative': {'input_ids': np.array(batch_negative_input_ids), 'attention_mask': np.array(batch_negative_attention_masks)}
         }
 
-class ModelTrainer:
+class ModelBuilder:
     @staticmethod
-    def create_model(embedding_size, fully_connected_size, dropout_rate, max_sequence_length):
+    def build_model(embedding_size, fully_connected_size, dropout_rate, max_sequence_length):
         input_ids = Input(shape=(max_sequence_length,), name='input_ids')
         attention_masks = Input(shape=(max_sequence_length,), name='attention_masks')
         embedding = Embedding(input_dim=10000, output_dim=embedding_size, input_length=max_sequence_length)(input_ids)
@@ -115,12 +113,13 @@ class ModelTrainer:
         model = Model(inputs=[input_ids, attention_masks], outputs=fc2)
         return model
 
+class ModelTrainer:
     @staticmethod
-    def train_model(model, train_dataset, test_dataset, epochs, learning_rate_value):
+    def train(model, dataset, epochs, learning_rate_value):
         model.compile(loss=lambda y_true, y_pred: 0, optimizer=Adam(learning_rate_value), metrics=['accuracy'])
         for epoch in range(epochs):
             total_loss = 0
-            for batch in train_dataset:
+            for batch in dataset:
                 anchor_input_ids = batch['anchor']['input_ids']
                 anchor_attention_masks = batch['anchor']['attention_mask']
                 positive_input_ids = batch['positive']['input_ids']
@@ -135,13 +134,12 @@ class ModelTrainer:
                 gradients = tape.gradient(loss, model.trainable_variables)
                 model.optimizer.apply_gradients(zip(gradients, model.trainable_variables))
                 total_loss += loss
-            print(f'Epoch {epoch+1}, Loss: {total_loss / len(train_dataset)}')
-        ModelTrainer.evaluate_model(model, test_dataset)
+            print(f'Epoch {epoch+1}, Loss: {total_loss / len(dataset)}')
 
     @staticmethod
-    def evaluate_model(model, test_dataset):
+    def evaluate(model, dataset):
         total_correct = 0
-        for batch in test_dataset:
+        for batch in dataset:
             anchor_input_ids = batch['anchor']['input_ids']
             anchor_attention_masks = batch['anchor']['attention_mask']
             positive_input_ids = batch['positive']['input_ids']
@@ -155,7 +153,7 @@ class ModelTrainer:
                 similarity_positive = np.dot(anchor_embeddings[i], positive_embeddings[i]) / (np.linalg.norm(anchor_embeddings[i]) * np.linalg.norm(positive_embeddings[i]))
                 similarity_negative = np.dot(anchor_embeddings[i], negative_embeddings[i]) / (np.linalg.norm(anchor_embeddings[i]) * np.linalg.norm(negative_embeddings[i]))
                 total_correct += similarity_positive > similarity_negative
-        accuracy = total_correct / (len(test_dataset) * 32)
+        accuracy = total_correct / (len(dataset) * 32)
         print(f'Test Accuracy: {accuracy}')
 
     @staticmethod
@@ -176,22 +174,23 @@ def main():
     epochs = 5
     batch_size = 32
 
-    instance_id_map = {item['instance_id']: item['problem_statement'] for item in DataUtils.load_dataset(dataset_path)}
-    snippets = DataUtils.load_snippets(snippet_folder_path)
+    instance_id_map = {item['instance_id']: item['problem_statement'] for item in DataHandler.load_data(dataset_path)}
+    snippets = DataHandler.load_snippets(snippet_folder_path)
     triplets = []
     for folder_path, _ in snippets:
-        bug_snippets, non_bug_snippets = DataProcessor.separate_code_snippets([(folder_path, os.path.join(folder_path, 'snippet.json'))])
+        bug_snippets, non_bug_snippets = DataPreprocessor.separate_snippets([(folder_path, os.path.join(folder_path, 'snippet.json'))])
         problem_statement = instance_id_map.get(os.path.basename(folder_path))
         for bug_snippet, non_bug_snippet in [(bug, non_bug) for bug in bug_snippets for non_bug in non_bug_snippets]:
-            triplets.extend(DataProcessor.create_triplets(problem_statement, [bug_snippet], non_bug_snippets, num_negatives_per_positive))
+            triplets.extend(DataPreprocessor.create_triplets(problem_statement, [bug_snippet], non_bug_snippets, num_negatives_per_positive))
 
     train_triplets, test_triplets = train_test_split(triplets, test_size=0.2, random_state=42)
     tokenizer = Tokenizer()
     tokenizer.fit_on_texts([triplet['anchor'] for triplet in triplets] + [triplet['positive'] for triplet in triplets] + [triplet['negative'] for triplet in triplets])
     train_data = Dataset(train_triplets, max_sequence_length, tokenizer, batch_size=batch_size)
     test_data = Dataset(test_triplets, max_sequence_length, tokenizer, batch_size=batch_size)
-    model = ModelTrainer.create_model(embedding_size, fully_connected_size, dropout_rate, max_sequence_length)
-    ModelTrainer.train_model(model, train_data, test_data, epochs, learning_rate_value)
+    model = ModelBuilder.build_model(embedding_size, fully_connected_size, dropout_rate, max_sequence_length)
+    ModelTrainer.train(model, train_data, epochs, learning_rate_value)
+    ModelTrainer.evaluate(model, test_data)
 
 if __name__ == "__main__":
     main()
