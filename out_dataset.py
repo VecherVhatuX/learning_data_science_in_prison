@@ -65,19 +65,19 @@ class Dataset(tf.keras.utils.Sequence):
         batch_negative_input_ids = []
         batch_negative_attention_masks = []
         for triplet in batch_triplets:
-            anchor = tf.keras.preprocessing.sequence.pad_sequences(
+            anchor = pad_sequences(
                 self.tokenizer.texts_to_sequences([triplet['anchor']]),
                 maxlen=self.max_sequence_length,
                 padding='post',
                 truncating='post'
             )
-            positive = tf.keras.preprocessing.sequence.pad_sequences(
+            positive = pad_sequences(
                 self.tokenizer.texts_to_sequences([triplet['positive']]),
                 maxlen=self.max_sequence_length,
                 padding='post',
                 truncating='post'
             )
-            negative = tf.keras.preprocessing.sequence.pad_sequences(
+            negative = pad_sequences(
                 self.tokenizer.texts_to_sequences([triplet['negative']]),
                 maxlen=self.max_sequence_length,
                 padding='post',
