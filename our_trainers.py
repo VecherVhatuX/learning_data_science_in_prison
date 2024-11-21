@@ -4,6 +4,9 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 
+def normalize_embeddings(embeddings):
+    return embeddings / torch.norm(embeddings, dim=1, keepdim=True)
+
 class TripletNetwork(nn.Module):
     def __init__(self, num_embeddings, embedding_dim, margin):
         super(TripletNetwork, self).__init__()
@@ -18,8 +21,7 @@ class TripletNetwork(nn.Module):
         x = self.pool(x).squeeze(2)
         x = self.linear(x)
         x = self.batch_norm(x)
-        x = x / torch.norm(x, dim=1, keepdim=True)
-        return x
+        return normalize_embeddings(x)
 
 class TripletDataset(Dataset):
     def __init__(self, samples, labels, num_negatives):
@@ -68,8 +70,7 @@ class TripletLoss(nn.Module):
             - torch.norm(anchor_embeddings.unsqueeze(1) - negative_embeddings, dim=2).min(dim=1)[0] + self.margin, min=0
         ))
 
-def train_triplet_network(network, dataset, epochs, learning_rate, batch_size):
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+def train_model(network, dataset, epochs, learning_rate, batch_size, device):
     network.to(device)
     optimizer = optim.Adam(network.parameters(), lr=learning_rate)
     triplet_loss = TripletLoss(1.0)
@@ -98,8 +99,7 @@ def train_triplet_network(network, dataset, epochs, learning_rate, batch_size):
 
         print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
-def evaluate_triplet_network(network, dataset, batch_size):
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+def evaluate_model(network, dataset, batch_size, device):
     network.to(device)
     network.eval()
     total_loss = 0.0
@@ -124,8 +124,7 @@ def evaluate_triplet_network(network, dataset, batch_size):
 
     print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
-def predict_with_triplet_network(network, input_ids, batch_size):
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+def predict(network, input_ids, batch_size, device):
     network.to(device)
     network.eval()
     predictions = []
@@ -140,10 +139,10 @@ def predict_with_triplet_network(network, input_ids, batch_size):
         predictions.extend(predict_step(data))
     return predictions
 
-def save_triplet_model(network, path):
+def save_model(network, path):
     torch.save(network.state_dict(), path)
 
-def load_triplet_model(network, path):
+def load_model(network, path):
     network.load_state_dict(torch.load(path))
 
 def calculate_distance(embedding1, embedding2):
@@ -200,6 +199,8 @@ def calculate_knn_f1(embeddings, labels, k=5):
 
 def main():
     np.random.seed(42)
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+
     samples = np.random.randint(0, 100, (100, 10))
     labels = np.random.randint(0, 2, (100,))
     batch_size = 32
@@ -212,18 +213,18 @@ def main():
 
     network = TripletNetwork(num_embeddings, embedding_dim, margin)
     dataset = EpochShuffleDataset(TripletDataset(samples, labels, num_negatives))
-    train_triplet_network(network, dataset, epochs, learning_rate, batch_size)
+    train_model(network, dataset, epochs, learning_rate, batch_size, device)
     input_ids = torch.tensor([1, 2, 3, 4, 5], dtype=torch.long).unsqueeze(0)
-    output = predict_with_triplet_network(network, input_ids, batch_size=1)
+    output = predict(network, input_ids, batch_size=1, device=device)
     print(output)
-    save_triplet_model(network, "triplet_model.pth")
+    save_model(network, "triplet_model.pth")
     loaded_network = TripletNetwork(num_embeddings, embedding_dim, margin)
-    load_triplet_model(loaded_network, "triplet_model.pth")
+    load_model(loaded_network, "triplet_model.pth")
     print("Model saved and loaded successfully.")
 
-    evaluate_triplet_network(network, dataset, batch_size)
+    evaluate_model(network, dataset, batch_size, device)
 
-    predicted_embeddings = predict_with_triplet_network(network, torch.tensor([1, 2, 3, 4, 5], dtype=torch.long).unsqueeze(0), batch_size=1)
+    predicted_embeddings = predict(network, torch.tensor([1, 2, 3, 4, 5], dtype=torch.long).unsqueeze(0), batch_size=1, device=device)
     print(predicted_embeddings)
 
     distance = calculate_distance(torch.tensor(predicted_embeddings[0]), torch.tensor(predicted_embeddings[0]))
@@ -235,7 +236,7 @@ def main():
     cosine_distance = calculate_cosine_distance(torch.tensor(predicted_embeddings[0]), torch.tensor(predicted_embeddings[0]))
     print(cosine_distance)
 
-    all_embeddings = predict_with_triplet_network(network, torch.tensor(samples, dtype=torch.long), batch_size=32)
+    all_embeddings = predict(network, torch.tensor(samples, dtype=torch.long), batch_size=32, device=device)
     nearest_neighbors = get_nearest_neighbors(torch.tensor(all_embeddings), torch.tensor(predicted_embeddings[0]), k=5)
     print(nearest_neighbors)
 
