@@ -4,7 +4,6 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 
-# Model Definition
 class TripletNetwork(nn.Module):
     def __init__(self, num_embeddings, embedding_dim, margin):
         super(TripletNetwork, self).__init__()
@@ -22,8 +21,6 @@ class TripletNetwork(nn.Module):
         x = x / torch.norm(x, dim=1, keepdim=True)
         return x
 
-
-# Dataset Definition
 class TripletDataset(Dataset):
     def __init__(self, samples, labels, num_negatives):
         self.samples = samples
@@ -46,21 +43,6 @@ class TripletDataset(Dataset):
     def __len__(self):
         return len(self.samples)
 
-
-# Loss Function Definition
-class TripletLoss(nn.Module):
-    def __init__(self, margin):
-        super(TripletLoss, self).__init__()
-        self.margin = margin
-
-    def forward(self, anchor_embeddings, positive_embeddings, negative_embeddings):
-        return torch.mean(torch.clamp(
-            torch.norm(anchor_embeddings - positive_embeddings, dim=1)
-            - torch.norm(anchor_embeddings.unsqueeze(1) - negative_embeddings, dim=2).min(dim=1)[0] + self.margin, min=0
-        ))
-
-
-# Dataset Shuffling Definition
 class EpochShuffleDataset(Dataset):
     def __init__(self, dataset):
         self.dataset = dataset
@@ -75,8 +57,17 @@ class EpochShuffleDataset(Dataset):
     def on_epoch_end(self):
         np.random.shuffle(self.indices)
 
+class TripletLoss(nn.Module):
+    def __init__(self, margin):
+        super(TripletLoss, self).__init__()
+        self.margin = margin
 
-# Model Training Function
+    def forward(self, anchor_embeddings, positive_embeddings, negative_embeddings):
+        return torch.mean(torch.clamp(
+            torch.norm(anchor_embeddings - positive_embeddings, dim=1)
+            - torch.norm(anchor_embeddings.unsqueeze(1) - negative_embeddings, dim=2).min(dim=1)[0] + self.margin, min=0
+        ))
+
 def train_triplet_network(network, dataset, epochs, learning_rate, batch_size):
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     network.to(device)
@@ -107,8 +98,6 @@ def train_triplet_network(network, dataset, epochs, learning_rate, batch_size):
 
         print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
-
-# Model Evaluation Function
 def evaluate_triplet_network(network, dataset, batch_size):
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     network.to(device)
@@ -135,8 +124,6 @@ def evaluate_triplet_network(network, dataset, batch_size):
 
     print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
-
-# Model Prediction Function
 def predict_with_triplet_network(network, input_ids, batch_size):
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     network.to(device)
@@ -153,43 +140,31 @@ def predict_with_triplet_network(network, input_ids, batch_size):
         predictions.extend(predict_step(data))
     return predictions
 
-
-# Model Saving and Loading Functions
 def save_triplet_model(network, path):
     torch.save(network.state_dict(), path)
-
 
 def load_triplet_model(network, path):
     network.load_state_dict(torch.load(path))
 
-
-# Distance and Similarity Calculation Functions
 def calculate_distance(embedding1, embedding2):
     return torch.norm(embedding1 - embedding2, dim=1)
-
 
 def calculate_similarity(embedding1, embedding2):
     return torch.sum(embedding1 * embedding2, dim=1) / (torch.norm(embedding1, dim=1) * torch.norm(embedding2, dim=1))
 
-
 def calculate_cosine_distance(embedding1, embedding2):
     return 1 - calculate_similarity(embedding1, embedding2)
 
-
-# Nearest Neighbors and Similar Embeddings Functions
 def get_nearest_neighbors(embeddings, target_embedding, k=5):
     distances = calculate_distance(embeddings, target_embedding)
     _, indices = torch.topk(distances, k, largest=False)
     return indices
-
 
 def get_similar_embeddings(embeddings, target_embedding, k=5):
     similarities = calculate_similarity(embeddings, target_embedding)
     _, indices = torch.topk(similarities, k, largest=True)
     return indices
 
-
-# KNN Accuracy, Precision, Recall, and F1-score Functions
 def calculate_knn_accuracy(embeddings, labels, k=5):
     correct = 0
     for i in range(len(embeddings)):
@@ -200,7 +175,6 @@ def calculate_knn_accuracy(embeddings, labels, k=5):
             correct += 1
     return correct / len(embeddings)
 
-
 def calculate_knn_precision(embeddings, labels, k=5):
     precision = 0
     for i in range(len(embeddings)):
@@ -209,7 +183,6 @@ def calculate_knn_precision(embeddings, labels, k=5):
         nearest_labels = labels[indices]
         precision += len(np.where(nearest_labels == labels[i])[0]) / k
     return precision / len(embeddings)
-
 
 def calculate_knn_recall(embeddings, labels, k=5):
     recall = 0
@@ -220,12 +193,10 @@ def calculate_knn_recall(embeddings, labels, k=5):
         recall += len(np.where(nearest_labels == labels[i])[0]) / len(np.where(labels == labels[i])[0])
     return recall / len(embeddings)
 
-
 def calculate_knn_f1(embeddings, labels, k=5):
     precision = calculate_knn_precision(embeddings, labels, k)
     recall = calculate_knn_recall(embeddings, labels, k)
     return 2 * (precision * recall) / (precision + recall)
-
 
 def main():
     np.random.seed(42)
@@ -278,7 +249,6 @@ def main():
     print("KNN Recall:", calculate_knn_recall(torch.tensor(all_embeddings), torch.tensor(labels), k=5))
 
     print("KNN F1-score:", calculate_knn_f1(torch.tensor(all_embeddings), torch.tensor(labels), k=5))
-
 
 if __name__ == "__main__":
     main()
