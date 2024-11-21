@@ -45,51 +45,50 @@ class Config:
     random_seed: int = 42
     resume_checkpoint: str = None
 
-class CustomDataset(Dataset):
-    def __init__(self, chat_format, data):
-        self.chat_format = chat_format
-        self.data = self.prepare(data)
+class DatasetImpl:
+    def __init__(self, config: Config, data: Dict):
+        self.config = config
+        self.data = self._prepare(data)
 
-    def prepare(self, data):
+    def _prepare(self, data: Dict) -> Dict:
         return {
-            "input_ids": [f"{self.chat_format} {example['input']}" for example in data],
-            "labels": [f"{self.chat_format} {example['output']}" for example in data],
+            "input_ids": [f"{self.config.chat_format} {example['input']}" for example in data],
+            "labels": [f"{self.config.chat_format} {example['output']}" for example in data],
             "attention_mask": [1] * len(data)
         }
 
     def __len__(self):
         return len(self.data["input_ids"])
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> Dict:
         return {
             "input_ids": self.data["input_ids"][idx],
             "labels": self.data["labels"][idx],
             "attention_mask": self.data["attention_mask"][idx]
         }
 
-class Model(nn.Module):
+class ModelImpl(nn.Module):
     def __init__(self):
-        super(Model, self).__init__()
-        self.fc1 = nn.Linear(128, 128)
-        self.fc2 = nn.Linear(128, 128)
-        self.fc3 = nn.Linear(128, 1000)
+        super(ModelImpl, self).__init__()
+        self.fc_layers = nn.ModuleList([nn.Linear(128, 128) for _ in range(2)])
+        self.fc_out = nn.Linear(128, 1000)
         self.relu = nn.ReLU()
 
-    def forward(self, x):
-        x = self.relu(self.fc1(x))
-        x = self.relu(self.fc2(x))
-        x = self.fc3(x)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        for layer in self.fc_layers:
+            x = self.relu(layer(x))
+        x = self.fc_out(x)
         return x
 
-class Trainer:
-    def __init__(self, config: Config, model: Model, device: torch.device):
+class TrainerImpl:
+    def __init__(self, config: Config, model: ModelImpl, device: torch.device):
         self.config = config
         self.model = model
         self.device = device
         self.criterion = nn.MSELoss()
         self.optimizer = optim.AdamW(model.parameters(), lr=0.001, betas=(0.9, 0.999), eps=1e-08)
 
-    def training_step(self, batch):
+    def training_step(self, batch: Dict) -> float:
         inputs, labels = batch["input_ids"], batch["labels"]
         inputs, labels = torch.tensor(inputs, dtype=torch.float32).to(self.device), torch.tensor(labels, dtype=torch.float32).to(self.device)
         self.optimizer.zero_grad()
@@ -99,7 +98,7 @@ class Trainer:
         self.optimizer.step()
         return loss.item()
 
-    def training_epoch(self, dataset, batch_size):
+    def training_epoch(self, dataset: DatasetImpl, batch_size: int) -> float:
         data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
         total_loss = 0
         for batch in data_loader:
@@ -107,25 +106,25 @@ class Trainer:
             total_loss += loss
         return total_loss / len(data_loader)
 
-def load_dataset(chat_format):
+def _load_dataset(config: Config) -> Tuple[DatasetImpl, DatasetImpl]:
     with open("train.json", 'r') as f:
         train_data = json.load(f)
     with open("test.json", 'r') as f:
         test_data = json.load(f)
-    train_dataset = CustomDataset(chat_format, train_data)
-    test_dataset = CustomDataset(chat_format, test_data)
+    train_dataset = DatasetImpl(config, train_data)
+    test_dataset = DatasetImpl(config, test_data)
     return train_dataset, test_dataset
 
-def main():
+def _main():
     config = Config(model_id="t5-base", chat_format="none", triplet_loss_training=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = Model()
+    model = ModelImpl()
     model.to(device)
-    trainer = Trainer(config, model, device)
-    train_dataset, _ = load_dataset(config.chat_format)
-    for _ in range(config.num_epochs):
+    trainer = TrainerImpl(config, model, device)
+    train_dataset, _ = _load_dataset(config)
+    for epoch in range(config.num_epochs):
         loss = trainer.training_epoch(train_dataset, config.train_batch_size)
-        print(f"Epoch {_+1}, Loss: {loss}")
+        print(f"Epoch {epoch+1}, Loss: {loss}")
 
 if __name__ == "__main__":
-    main()
+    _main()
