@@ -51,9 +51,9 @@ class DatasetImpl:
         prepared_data = []
         for example in data:
             prepared_example = {
-                "input_ids": f"{self.config.chat_format} {example['input']}",
-                "labels": f"{self.config.chat_format} {example['output']}",
-                "attention_mask": 1
+                "input_ids": np.array([0] + [ord(c) for c in f"{self.config.chat_format} {example['input']}"] + [1], dtype=np.float32),
+                "labels": np.array([0] + [ord(c) for c in f"{self.config.chat_format} {example['output']}"] + [1], dtype=np.float32),
+                "attention_mask": np.ones(len(prepared_example["input_ids"]), dtype=np.float32)
             }
             prepared_data.append(prepared_example)
         return prepared_data
@@ -84,8 +84,8 @@ class TrainerImpl:
         self.optimizer = keras.optimizers.AdamW(learning_rate=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-08)
 
     def training_step(self, batch: list) -> float:
-        inputs = np.array([example['input_ids'] for example in batch], dtype=np.float32)
-        labels = np.array([example['labels'] for example in batch], dtype=np.float32)
+        inputs = np.array([example['input_ids'] for example in batch])
+        labels = np.array([example['labels'] for example in batch])
         with keras.GradientTape() as tape:
             outputs = self.model(inputs)
             loss = self.criterion(labels, outputs)
