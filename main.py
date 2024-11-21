@@ -42,94 +42,69 @@ class Hyperparameters:
     random_seed_value: int = 42
     resume_checkpoint_path: str = None
 
-class DataContainer:
-    def __init__(self, hyperparameters: Hyperparameters, data: list):
-        self.hyperparameters = hyperparameters
-        self.data = self._preprocess(data)
+def preprocess_data(data, hyperparameters):
+    return [
+        {
+            "input_ids": np.array([0] + [ord(c) for c in f"{hyperparameters.conversation_format_identifier} {example['input']}"] + [1], dtype=np.float32),
+            "labels": np.array([0] + [ord(c) for c in f"{hyperparameters.conversation_format_identifier} {example['output']}"] + [1], dtype=np.float32),
+            "attention_mask": np.ones(len(preprocessed_example["input_ids"]), dtype=np.float32)
+        } for preprocessed_example, example in [(None, d) for d in data]
+    ]
 
-    def _preprocess(self, data: list) -> list:
-        preprocessed_data = []
-        for example in data:
-            preprocessed_example = {
-                "input_ids": np.array([0] + [ord(c) for c in f"{self.hyperparameters.conversation_format_identifier} {example['input']}"] + [1], dtype=np.float32),
-                "labels": np.array([0] + [ord(c) for c in f"{self.hyperparameters.conversation_format_identifier} {example['output']}"] + [1], dtype=np.float32),
-                "attention_mask": np.ones(len(preprocessed_example["input_ids"]), dtype=np.float32)
-            }
-            preprocessed_data.append(preprocessed_example)
-        return preprocessed_data
+def create_dataset(hyperparameters, data):
+    return preprocess_data(data, hyperparameters)
 
-    def __len__(self):
-        return len(self.data)
+def create_neural_network():
+    feedforward_layers = [layers.Dense(128, activation='relu') for _ in range(2)]
+    output_layer = layers.Dense(1000)
+    return lambda x: output_layer(feedforward_layers[1](feedforward_layers[0](x)))
 
-    def __getitem__(self, idx: int) -> dict:
-        return self.data[idx]
+def create_trainer(hyperparameters, model):
+    loss_function = keras.losses.MeanSquaredError()
+    optimizer = keras.optimizers.AdamW(learning_rate=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-08)
+    checkpoint_directory = os.path.join(hyperparameters.output_directory_path, "checkpoints")
+    os.makedirs(checkpoint_directory, exist_ok=True)
+    checkpoint_path = os.path.join(checkpoint_directory, "ckpt-{epoch:02d}")
+    cp_callback = keras.callbacks.ModelCheckpoint(
+        filepath=checkpoint_path,
+        verbose=1,
+        save_weights_only=False,
+        save_freq=hyperparameters.save_steps,
+        max_to_keep=hyperparameters.maximum_checkpoints
+    )
+    model.compile(optimizer=optimizer, loss=loss_function)
+    return cp_callback, model
 
-class NeuralNetwork(keras.Model):
-    def __init__(self):
-        super(NeuralNetwork, self).__init__()
-        self.feedforward_layers = [layers.Dense(128, activation='relu') for _ in range(2)]
-        self.output_layer = layers.Dense(1000)
+def train(model, dataset, hyperparameters, cp_callback):
+    batches = [dataset[i:i+hyperparameters.training_batch_size] for i in range(0, len(dataset), hyperparameters.training_batch_size)]
+    for epoch in range(hyperparameters.number_of_epochs):
+        total_loss = 0
+        for batch in batches:
+            inputs = np.array([example['input_ids'] for example in batch])
+            labels = np.array([example['labels'] for example in batch])
+            loss = model.train_on_batch(inputs, labels)
+            total_loss += loss
+        print(f"Epoch {epoch+1}, Loss: {total_loss / len(batches)}")
+    model.save(os.path.join(hyperparameters.output_directory_path, "final_model"))
 
-    def call(self, x: np.ndarray) -> np.ndarray:
-        for layer in self.feedforward_layers:
-            x = layer(x)
-        x = self.output_layer(x)
-        return x
-
-class Trainer:
-    def __init__(self, hyperparameters: Hyperparameters, model: NeuralNetwork):
-        self.hyperparameters = hyperparameters
-        self.model = model
-        self.loss_function = keras.losses.MeanSquaredError()
-        self.optimizer = keras.optimizers.AdamW(learning_rate=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-08)
-        self.checkpoint_manager = self._create_checkpoint_manager()
-        self.model.compile(optimizer=self.optimizer, loss=self.loss_function)
-
-    def _create_checkpoint_manager(self):
-        checkpoint_directory = os.path.join(self.hyperparameters.output_directory_path, "checkpoints")
-        os.makedirs(checkpoint_directory, exist_ok=True)
-        checkpoint_path = os.path.join(checkpoint_directory, "ckpt-{epoch:02d}")
-        cp_callback = keras.callbacks.ModelCheckpoint(
-            filepath=checkpoint_path,
-            verbose=1,
-            save_weights_only=False,
-            save_freq=self.hyperparameters.save_steps,
-            max_to_keep=self.hyperparameters.maximum_checkpoints
-        )
-        return cp_callback
-
-    def fit(self, dataset: DataContainer, batch_size: int):
-        batches = [dataset[i:i+batch_size] for i in range(0, len(dataset), batch_size)]
-        for epoch in range(self.hyperparameters.number_of_epochs):
-            total_loss = 0
-            for batch in batches:
-                inputs = np.array([example['input_ids'] for example in batch])
-                labels = np.array([example['labels'] for example in batch])
-                loss = self.model.train_on_batch(inputs, labels)
-                total_loss += loss
-            print(f"Epoch {epoch+1}, Loss: {total_loss / len(batches)}")
-        self.model.save(os.path.join(self.hyperparameters.output_directory_path, "final_model"))
-
-def load_data(hyperparameters: Hyperparameters) -> tuple:
+def load_data(hyperparameters):
     try:
         with open("train.json", 'r') as f:
             training_data = json.load(f)
         with open("test.json", 'r') as f:
             testing_data = json.load(f)
-        training_dataset = DataContainer(hyperparameters, training_data)
-        testing_dataset = DataContainer(hyperparameters, testing_data)
-        return training_dataset, testing_dataset
+        return create_dataset(hyperparameters, training_data), create_dataset(hyperparameters, testing_data)
     except FileNotFoundError:
         print("One or both of the data files not found.")
         return None, None
 
 def main():
     hyperparameters = Hyperparameters(base_model_identifier="t5-base", conversation_format_identifier="none", triplet_loss_training_enabled=True)
-    model = NeuralNetwork()
-    trainer = Trainer(hyperparameters, model)
+    model = keras.Model(inputs=layers.Input(shape=(None,)), outputs=create_neural_network()(layers.Input(shape=(None,))))
+    cp_callback, model = create_trainer(hyperparameters, model)
     training_dataset, _ = load_data(hyperparameters)
     if training_dataset is not None:
-        trainer.fit(training_dataset, hyperparameters.training_batch_size)
+        train(model, training_dataset, hyperparameters, cp_callback)
 
 if __name__ == "__main__":
     main()
