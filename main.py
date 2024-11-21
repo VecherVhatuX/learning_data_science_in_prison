@@ -42,7 +42,7 @@ class Config:
     random_seed: int = 42
     resume_checkpoint: str = None
 
-class DatasetImpl:
+class Dataset:
     def __init__(self, config: Config, data: list):
         self.config = config
         self.data = self._prepare(data)
@@ -64,9 +64,9 @@ class DatasetImpl:
     def __getitem__(self, idx: int) -> dict:
         return self.data[idx]
 
-class ModelImpl(keras.Model):
+class Model(keras.Model):
     def __init__(self):
-        super(ModelImpl, self).__init__()
+        super(Model, self).__init__()
         self.fc_layers = [layers.Dense(128, activation='relu') for _ in range(2)]
         self.fc_out = layers.Dense(1000)
 
@@ -76,12 +76,25 @@ class ModelImpl(keras.Model):
         x = self.fc_out(x)
         return x
 
-class TrainerImpl:
-    def __init__(self, config: Config, model: ModelImpl):
+class Trainer:
+    def __init__(self, config: Config, model: Model):
         self.config = config
         self.model = model
         self.criterion = keras.losses.MeanSquaredError()
         self.optimizer = keras.optimizers.AdamW(learning_rate=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-08)
+        self.checkpoint_manager = self._create_checkpoint_manager()
+
+    def _create_checkpoint_manager(self):
+        checkpoint_dir = os.path.join(self.config.output_path, "checkpoints")
+        checkpoint_path = os.path.join(checkpoint_dir, "ckpt-{epoch:02d}")
+        cp_callback = keras.callbacks.ModelCheckpoint(
+            filepath=checkpoint_path,
+            verbose=1,
+            save_weights_only=False,
+            save_freq=self.config.save_steps,
+            max_to_keep=self.config.max_checkpoints
+        )
+        return cp_callback
 
     def training_step(self, batch: list) -> float:
         inputs = np.array([example['input_ids'] for example in batch])
@@ -93,7 +106,7 @@ class TrainerImpl:
         self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
         return loss.numpy()
 
-    def training_epoch(self, dataset: DatasetImpl, batch_size: int) -> float:
+    def training_epoch(self, dataset: Dataset, batch_size: int) -> float:
         batches = [dataset[i:i+batch_size] for i in range(0, len(dataset), batch_size)]
         total_loss = 0
         for batch in batches:
@@ -101,23 +114,27 @@ class TrainerImpl:
             total_loss += loss
         return total_loss / len(batches)
 
-def _load_dataset(config: Config) -> tuple:
+    def fit(self, dataset: Dataset, batch_size: int):
+        for epoch in range(self.config.num_epochs):
+            loss = self.training_epoch(dataset, batch_size)
+            print(f"Epoch {epoch+1}, Loss: {loss}")
+        self.model.save(os.path.join(self.config.output_path, "final_model"))
+
+def load_dataset(config: Config) -> tuple:
     with open("train.json", 'r') as f:
         train_data = json.load(f)
     with open("test.json", 'r') as f:
         test_data = json.load(f)
-    train_dataset = DatasetImpl(config, train_data)
-    test_dataset = DatasetImpl(config, test_data)
+    train_dataset = Dataset(config, train_data)
+    test_dataset = Dataset(config, test_data)
     return train_dataset, test_dataset
 
-def _main():
+def main():
     config = Config(model_id="t5-base", chat_format="none", triplet_loss_training=True)
-    model = ModelImpl()
-    trainer = TrainerImpl(config, model)
-    train_dataset, _ = _load_dataset(config)
-    for epoch in range(config.num_epochs):
-        loss = trainer.training_epoch(train_dataset, config.train_batch_size)
-        print(f"Epoch {epoch+1}, Loss: {loss}")
+    model = Model()
+    trainer = Trainer(config, model)
+    train_dataset, _ = load_dataset(config)
+    trainer.fit(train_dataset, config.train_batch_size)
 
 if __name__ == "__main__":
-    _main()
+    main()
