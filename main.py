@@ -45,25 +45,22 @@ class Hyperparameters:
     resume_checkpoint_path: str = None
     negative_samples_per_positive_sample: int = 5
 
-def load_hyperparameters(base_model_identifier, conversation_format_identifier, triplet_loss_training_enabled):
-    return Hyperparameters(base_model_identifier=base_model_identifier, conversation_format_identifier=conversation_format_identifier, triplet_loss_training_enabled=triplet_loss_training_enabled)
-
-def load_json_data(file_name):
-    try:
-        with open(file_name, 'r') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        print(f"{file_name} not found.")
-        return None
-
 class DataLoaderHelper:
     def __init__(self, hyperparameters):
         self.hyperparameters = hyperparameters
 
     def load_dataset(self):
-        training_data = load_json_data("train.json")
-        testing_data = load_json_data("test.json")
+        training_data = self.load_json_data("train.json")
+        testing_data = self.load_json_data("test.json")
         return training_data, testing_data
+
+    def load_json_data(self, file_name):
+        try:
+            with open(file_name, 'r') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            print(f"{file_name} not found.")
+            return None
 
     def preprocess_example(self, example):
         input_ids = [0] + [ord(c) for c in f"{self.hyperparameters.conversation_format_identifier} {example['input']}"] + [1]
@@ -152,6 +149,9 @@ class Trainer:
                 loss = self.loss_function(outputs, batch_labels)
             total_loss += loss.item()
         print(f"Test Loss: {total_loss / len(list(dataset))}")
+
+def load_hyperparameters(base_model_identifier, conversation_format_identifier, triplet_loss_training_enabled):
+    return Hyperparameters(base_model_identifier=base_model_identifier, conversation_format_identifier=conversation_format_identifier, triplet_loss_training_enabled=triplet_loss_training_enabled)
 
 def main():
     hyperparameters = load_hyperparameters("t5-base", "none", True)
