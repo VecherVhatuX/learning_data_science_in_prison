@@ -7,6 +7,7 @@ import numpy as np
 import tensorflow as tf
 import optax
 
+### Model Creation
 def create_triplet_model(num_embeddings, features):
     def model(x):
         x = nn.Embed(num_embeddings=num_embeddings, features=features)(x)
@@ -18,6 +19,7 @@ def create_triplet_model(num_embeddings, features):
         return x / jnp.linalg.norm(x, axis=1, keepdims=True)
     return model
 
+### Loss Function
 def create_triplet_loss_fn():
     def loss_fn(anchor_embeddings, positive_embeddings, negative_embeddings):
         return jnp.mean(jnp.maximum(jnp.linalg.norm(anchor_embeddings - positive_embeddings, axis=1)
@@ -25,6 +27,7 @@ def create_triplet_loss_fn():
                                     + 1.0, 0.0))
     return loss_fn
 
+### Dataset Creation
 def create_dataset(samples, labels, num_negatives, batch_size, shuffle=True):
     def dataset():
         indices = np.arange(len(samples))
@@ -46,12 +49,14 @@ def create_dataset(samples, labels, num_negatives, batch_size, shuffle=True):
             }
     return dataset
 
+### Training State Creation
 def create_train_state(model, learning_rate, batch_size):
     tx = optax.adam(learning_rate=learning_rate)
     key = jax.random.PRNGKey(42)
     params = model.init(key, jnp.ones((1, 10), dtype=jnp.int32))
     return train_state.TrainState(params, tx)
 
+### Training
 def train_step(state, batch, model, loss_fn):
     def loss_fn_step(params, batch):
         anchor_embeddings = model.apply(params, batch['anchor_input_ids'])
@@ -77,6 +82,7 @@ def train(model, dataset, loss_fn, state, epochs, batch_size):
 
         print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
+### Evaluation
 def evaluate(model, dataset, loss_fn, state, batch_size):
     total_loss = 0.0
     dataloader = tf.data.Dataset.from_generator(dataset, output_types={'anchor_input_ids': tf.int32, 'positive_input_ids': tf.int32, 'negative_input_ids': tf.int32})
@@ -89,6 +95,7 @@ def evaluate(model, dataset, loss_fn, state, batch_size):
 
     print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
+### Prediction
 def predict(model, state, input_ids, batch_size):
     predictions = []
     dataloader = tf.data.Dataset.from_tensor_slices(input_ids)
@@ -102,12 +109,14 @@ def predict(model, state, input_ids, batch_size):
 
     return np.array(predictions)
 
+### Model Saving and Loading
 def save_model(params, path):
     jax2tf.convert(params, 'triplet_model')
 
 def load_model(path):
     return jax2tf.checkpoint.load(path, target='')
 
+### Distance and Similarity Calculations
 def calculate_distance(embedding1, embedding2):
     return jnp.linalg.norm(embedding1 - embedding2, axis=1)
 
@@ -117,6 +126,7 @@ def calculate_similarity(embedding1, embedding2):
 def calculate_cosine_distance(embedding1, embedding2):
     return 1 - calculate_similarity(embedding1, embedding2)
 
+### Nearest Neighbors and Similar Embeddings
 def get_nearest_neighbors(embeddings, target_embedding, k=5):
     distances = calculate_distance(embeddings, target_embedding)
     indices = jnp.argsort(distances)[:k]
@@ -127,6 +137,7 @@ def get_similar_embeddings(embeddings, target_embedding, k=5):
     indices = jnp.argsort(similarities)[-k:]
     return indices
 
+### KNN Metrics
 def calculate_knn_accuracy(embeddings, labels, k=5):
     correct = 0
     for i in range(len(embeddings)):
@@ -160,6 +171,7 @@ def calculate_knn_f1(embeddings, labels, k=5):
     recall = calculate_knn_recall(embeddings, labels, k)
     return 2 * (precision * recall) / (precision + recall)
 
+### Main Function
 def main():
     np.random.seed(42)
 
