@@ -27,7 +27,7 @@ class Hyperparameters:
     four_bit_quantization_enabled: bool = False
     reentrant_training_enabled: bool = False
     unsloth_training_enabled: bool = False
-    triplet_loss_training_enabled: bool = False
+    triplet_loss_training_enabled: bool = True
     dataset_identifier: str = "timdettmers/openassistant-guanaco"
     append_special_token: bool = False
     add_special_tokens: bool = False
@@ -80,25 +80,27 @@ class Dataset(Dataset):
         negative_samples = [np.random.choice(len(self.data)) for _ in range(len(self.data) * self.hyperparameters.negative_samples_per_positive_sample)]
         self.sample_indices = np.concatenate((positive_samples, negative_samples))
 
+    def __iter__(self):
+        self.shuffle()
+        self.epoch += 1
+        for batch_indices in self.batch_indices:
+            batch_inputs, batch_labels, batch_attention_masks = [], [], []
+            for idx in batch_indices:
+                if idx < len(self.data):
+                    input_ids, labels, attention_mask = preprocess_example(self.data[idx], self.hyperparameters)
+                else:
+                    input_ids, labels, attention_mask = preprocess_example(self.data[np.random.choice(len(self.data))], self.hyperparameters)
+                batch_inputs.append(input_ids)
+                batch_labels.append(labels)
+                batch_attention_masks.append(attention_mask)
+            yield torch.tensor(np.array(batch_inputs)), torch.tensor(np.array(batch_labels)), torch.tensor(np.array(batch_attention_masks))
+
     def shuffle(self):
         np.random.shuffle(self.sample_indices)
         self.batch_indices = np.array_split(self.sample_indices, len(self.sample_indices) // self.hyperparameters.training_batch_size)
 
     def __len__(self):
         return len(self.batch_indices)
-
-    def __getitem__(self, index):
-        batch_indices = self.batch_indices[index]
-        batch_inputs, batch_labels, batch_attention_masks = [], [], []
-        for idx in batch_indices:
-            if idx < len(self.data):
-                input_ids, labels, attention_mask = preprocess_example(self.data[idx], self.hyperparameters)
-            else:
-                input_ids, labels, attention_mask = preprocess_example(self.data[np.random.choice(len(self.data))], self.hyperparameters)
-            batch_inputs.append(input_ids)
-            batch_labels.append(labels)
-            batch_attention_masks.append(attention_mask)
-        return torch.tensor(np.array(batch_inputs)), torch.tensor(np.array(batch_labels)), torch.tensor(np.array(batch_attention_masks))
 
 class NeuralNetwork(nn.Module):
     def __init__(self):
@@ -125,8 +127,7 @@ def create_trainer(hyperparameters, model):
 def train_model(model, dataset, hyperparameters, loss_function, optimizer, device):
     for epoch in range(hyperparameters.number_of_epochs):
         total_loss = 0
-        data_loader = DataLoader(dataset, batch_size=hyperparameters.training_batch_size, shuffle=True)
-        for i, (batch_inputs, batch_labels, _) in enumerate(data_loader):
+        for i, (batch_inputs, batch_labels, _) in enumerate(dataset):
             batch_inputs, batch_labels = batch_inputs.to(device), batch_labels.to(device)
             optimizer.zero_grad()
             outputs = model(batch_inputs)
@@ -137,16 +138,15 @@ def train_model(model, dataset, hyperparameters, loss_function, optimizer, devic
         print(f"Epoch {epoch+1}, Loss: {total_loss / (i+1)}")
     torch.save(model.state_dict(), os.path.join(hyperparameters.output_directory_path, "final_model.pth"))
 
-def evaluate_model(model, dataset, loss_function, device):
+def evaluate_model(model, dataset, loss_function, device, hyperparameters):
     total_loss = 0
-    data_loader = DataLoader(dataset, batch_size=hyperparameters.evaluation_batch_size, shuffle=False)
-    with torch.no_grad():
-        for batch_inputs, batch_labels, _ in data_loader:
-            batch_inputs, batch_labels = batch_inputs.to(device), batch_labels.to(device)
+    for batch_inputs, batch_labels, _ in dataset:
+        batch_inputs, batch_labels = batch_inputs.to(device), batch_labels.to(device)
+        with torch.no_grad():
             outputs = model(batch_inputs)
             loss = loss_function(outputs, batch_labels)
-            total_loss += loss.item()
-    print(f"Test Loss: {total_loss / len(data_loader)}")
+        total_loss += loss.item()
+    print(f"Test Loss: {total_loss / len(list(dataset))}")
 
 def main():
     hyperparameters = load_hyperparameters("t5-base", "none", True)
@@ -157,7 +157,7 @@ def main():
         dataset = Dataset(training_data, hyperparameters)
         train_model(model, dataset, hyperparameters, loss_function, optimizer, device)
         test_dataset = Dataset(testing_data, hyperparameters)
-        evaluate_model(model, test_dataset, loss_function, device)
+        evaluate_model(model, test_dataset, loss_function, device, hyperparameters)
 
 if __name__ == "__main__":
     main()
