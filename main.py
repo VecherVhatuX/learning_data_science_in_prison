@@ -2,12 +2,9 @@ import os
 import json
 import dataclasses
 import typing
-import torch
-import torch.nn as nn
-import torch.optim as optim
+from tensorflow import keras
+from tensorflow.keras import layers
 import numpy as np
-from torch.utils.data import Dataset, DataLoader
-from typing import Dict, Tuple
 
 @dataclasses.dataclass
 class Config:
@@ -46,67 +43,65 @@ class Config:
     resume_checkpoint: str = None
 
 class DatasetImpl:
-    def __init__(self, config: Config, data: Dict):
+    def __init__(self, config: Config, data: list):
         self.config = config
         self.data = self._prepare(data)
 
-    def _prepare(self, data: Dict) -> Dict:
-        return {
-            "input_ids": [f"{self.config.chat_format} {example['input']}" for example in data],
-            "labels": [f"{self.config.chat_format} {example['output']}" for example in data],
-            "attention_mask": [1] * len(data)
-        }
+    def _prepare(self, data: list) -> list:
+        prepared_data = []
+        for example in data:
+            prepared_example = {
+                "input_ids": f"{self.config.chat_format} {example['input']}",
+                "labels": f"{self.config.chat_format} {example['output']}",
+                "attention_mask": 1
+            }
+            prepared_data.append(prepared_example)
+        return prepared_data
 
     def __len__(self):
-        return len(self.data["input_ids"])
+        return len(self.data)
 
-    def __getitem__(self, idx: int) -> Dict:
-        return {
-            "input_ids": self.data["input_ids"][idx],
-            "labels": self.data["labels"][idx],
-            "attention_mask": self.data["attention_mask"][idx]
-        }
+    def __getitem__(self, idx: int) -> dict:
+        return self.data[idx]
 
-class ModelImpl(nn.Module):
+class ModelImpl(keras.Model):
     def __init__(self):
         super(ModelImpl, self).__init__()
-        self.fc_layers = nn.ModuleList([nn.Linear(128, 128) for _ in range(2)])
-        self.fc_out = nn.Linear(128, 1000)
-        self.relu = nn.ReLU()
+        self.fc_layers = [layers.Dense(128, activation='relu') for _ in range(2)]
+        self.fc_out = layers.Dense(1000)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def call(self, x: np.ndarray) -> np.ndarray:
         for layer in self.fc_layers:
-            x = self.relu(layer(x))
+            x = layer(x)
         x = self.fc_out(x)
         return x
 
 class TrainerImpl:
-    def __init__(self, config: Config, model: ModelImpl, device: torch.device):
+    def __init__(self, config: Config, model: ModelImpl):
         self.config = config
         self.model = model
-        self.device = device
-        self.criterion = nn.MSELoss()
-        self.optimizer = optim.AdamW(model.parameters(), lr=0.001, betas=(0.9, 0.999), eps=1e-08)
+        self.criterion = keras.losses.MeanSquaredError()
+        self.optimizer = keras.optimizers.AdamW(learning_rate=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-08)
 
-    def training_step(self, batch: Dict) -> float:
-        inputs, labels = batch["input_ids"], batch["labels"]
-        inputs, labels = torch.tensor(inputs, dtype=torch.float32).to(self.device), torch.tensor(labels, dtype=torch.float32).to(self.device)
-        self.optimizer.zero_grad()
-        outputs = self.model(inputs)
-        loss = self.criterion(outputs, labels)
-        loss.backward()
-        self.optimizer.step()
-        return loss.item()
+    def training_step(self, batch: list) -> float:
+        inputs = np.array([example['input_ids'] for example in batch], dtype=np.float32)
+        labels = np.array([example['labels'] for example in batch], dtype=np.float32)
+        with keras.GradientTape() as tape:
+            outputs = self.model(inputs)
+            loss = self.criterion(labels, outputs)
+        gradients = tape.gradient(loss, self.model.trainable_variables)
+        self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+        return loss.numpy()
 
     def training_epoch(self, dataset: DatasetImpl, batch_size: int) -> float:
-        data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        batches = [dataset[i:i+batch_size] for i in range(0, len(dataset), batch_size)]
         total_loss = 0
-        for batch in data_loader:
+        for batch in batches:
             loss = self.training_step(batch)
             total_loss += loss
-        return total_loss / len(data_loader)
+        return total_loss / len(batches)
 
-def _load_dataset(config: Config) -> Tuple[DatasetImpl, DatasetImpl]:
+def _load_dataset(config: Config) -> tuple:
     with open("train.json", 'r') as f:
         train_data = json.load(f)
     with open("test.json", 'r') as f:
@@ -117,10 +112,8 @@ def _load_dataset(config: Config) -> Tuple[DatasetImpl, DatasetImpl]:
 
 def _main():
     config = Config(model_id="t5-base", chat_format="none", triplet_loss_training=True)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = ModelImpl()
-    model.to(device)
-    trainer = TrainerImpl(config, model, device)
+    trainer = TrainerImpl(config, model)
     train_dataset, _ = _load_dataset(config)
     for epoch in range(config.num_epochs):
         loss = trainer.training_epoch(train_dataset, config.train_batch_size)
