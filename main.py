@@ -86,6 +86,7 @@ class Trainer:
 
     def _create_checkpoint_manager(self):
         checkpoint_directory = os.path.join(self.hyperparameters.output_directory_path, "checkpoints")
+        os.makedirs(checkpoint_directory, exist_ok=True)
         checkpoint_path = os.path.join(checkpoint_directory, "ckpt-{epoch:02d}")
         cp_callback = keras.callbacks.ModelCheckpoint(
             filepath=checkpoint_path,
@@ -121,20 +122,25 @@ class Trainer:
         self.model.save(os.path.join(self.hyperparameters.output_directory_path, "final_model"))
 
 def load_data(hyperparameters: Hyperparameters) -> tuple:
-    with open("train.json", 'r') as f:
-        training_data = json.load(f)
-    with open("test.json", 'r') as f:
-        testing_data = json.load(f)
-    training_dataset = DataContainer(hyperparameters, training_data)
-    testing_dataset = DataContainer(hyperparameters, testing_data)
-    return training_dataset, testing_dataset
+    try:
+        with open("train.json", 'r') as f:
+            training_data = json.load(f)
+        with open("test.json", 'r') as f:
+            testing_data = json.load(f)
+        training_dataset = DataContainer(hyperparameters, training_data)
+        testing_dataset = DataContainer(hyperparameters, testing_data)
+        return training_dataset, testing_dataset
+    except FileNotFoundError:
+        print("One or both of the data files not found.")
+        return None, None
 
 def main():
     hyperparameters = Hyperparameters(base_model_identifier="t5-base", conversation_format_identifier="none", triplet_loss_training_enabled=True)
     model = NeuralNetwork()
     trainer = Trainer(hyperparameters, model)
     training_dataset, _ = load_data(hyperparameters)
-    trainer.fit(training_dataset, hyperparameters.training_batch_size)
+    if training_dataset is not None:
+        trainer.fit(training_dataset, hyperparameters.training_batch_size)
 
 if __name__ == "__main__":
     main()
