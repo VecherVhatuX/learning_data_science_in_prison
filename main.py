@@ -7,7 +7,6 @@ from torch import nn
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import torch.optim as optim
-from torch.optim import lr_scheduler
 
 @dataclass
 class Hyperparameters:
@@ -57,27 +56,31 @@ def load_json_data(file_name):
         print(f"{file_name} not found.")
         return None
 
-def load_dataset(hyperparameters):
-    training_data = load_json_data("train.json")
-    testing_data = load_json_data("test.json")
-    return training_data, testing_data
+class DataLoaderHelper:
+    def __init__(self, hyperparameters):
+        self.hyperparameters = hyperparameters
 
-def preprocess_example(example, hyperparameters):
-    input_ids = [0] + [ord(c) for c in f"{hyperparameters.conversation_format_identifier} {example['input']}"] + [1]
-    labels = [0] + [ord(c) for c in f"{hyperparameters.conversation_format_identifier} {example['output']}"] + [1]
-    attention_mask = [1] * len(input_ids)
-    return np.array(input_ids, dtype=np.float32), np.array(labels, dtype=np.float32), np.array(attention_mask, dtype=np.float32)
+    def load_dataset(self):
+        training_data = load_json_data("train.json")
+        testing_data = load_json_data("test.json")
+        return training_data, testing_data
+
+    def preprocess_example(self, example):
+        input_ids = [0] + [ord(c) for c in f"{self.hyperparameters.conversation_format_identifier} {example['input']}"] + [1]
+        labels = [0] + [ord(c) for c in f"{self.hyperparameters.conversation_format_identifier} {example['output']}"] + [1]
+        attention_mask = [1] * len(input_ids)
+        return np.array(input_ids, dtype=np.float32), np.array(labels, dtype=np.float32), np.array(attention_mask, dtype=np.float32)
 
 class Dataset(Dataset):
-    def __init__(self, data, hyperparameters):
+    def __init__(self, data, data_loader_helper):
         self.data = data
-        self.hyperparameters = hyperparameters
+        self.data_loader_helper = data_loader_helper
         self.sample_indices = np.arange(len(self.data))
         self.epoch = 0
         self.batch_indices = []
 
         positive_samples = list(range(len(self.data)))
-        negative_samples = [np.random.choice(len(self.data)) for _ in range(len(self.data) * self.hyperparameters.negative_samples_per_positive_sample)]
+        negative_samples = [np.random.choice(len(self.data)) for _ in range(len(self.data) * self.data_loader_helper.hyperparameters.negative_samples_per_positive_sample)]
         self.sample_indices = np.concatenate((positive_samples, negative_samples))
 
     def __iter__(self):
@@ -87,9 +90,9 @@ class Dataset(Dataset):
             batch_inputs, batch_labels, batch_attention_masks = [], [], []
             for idx in batch_indices:
                 if idx < len(self.data):
-                    input_ids, labels, attention_mask = preprocess_example(self.data[idx], self.hyperparameters)
+                    input_ids, labels, attention_mask = self.data_loader_helper.preprocess_example(self.data[idx])
                 else:
-                    input_ids, labels, attention_mask = preprocess_example(self.data[np.random.choice(len(self.data))], self.hyperparameters)
+                    input_ids, labels, attention_mask = self.data_loader_helper.preprocess_example(self.data[np.random.choice(len(self.data))])
                 batch_inputs.append(input_ids)
                 batch_labels.append(labels)
                 batch_attention_masks.append(attention_mask)
@@ -97,7 +100,7 @@ class Dataset(Dataset):
 
     def shuffle(self):
         np.random.shuffle(self.sample_indices)
-        self.batch_indices = np.array_split(self.sample_indices, len(self.sample_indices) // self.hyperparameters.training_batch_size)
+        self.batch_indices = np.array_split(self.sample_indices, len(self.sample_indices) // self.data_loader_helper.hyperparameters.training_batch_size)
 
     def __len__(self):
         return len(self.batch_indices)
@@ -117,47 +120,50 @@ class NeuralNetwork(nn.Module):
         x = self.fc3(x)
         return x
 
-def create_trainer(hyperparameters, model):
-    loss_function = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001, betas=(0.9, 0.999), eps=1e-08)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model.to(device)
-    return loss_function, optimizer, device
+class Trainer:
+    def __init__(self, hyperparameters, model):
+        self.hyperparameters = hyperparameters
+        self.model = model
+        self.loss_function = nn.MSELoss()
+        self.optimizer = optim.Adam(model.parameters(), lr=0.001, betas=(0.9, 0.999), eps=1e-08)
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model.to(self.device)
 
-def train_model(model, dataset, hyperparameters, loss_function, optimizer, device):
-    for epoch in range(hyperparameters.number_of_epochs):
+    def train_model(self, dataset):
+        for epoch in range(self.hyperparameters.number_of_epochs):
+            total_loss = 0
+            for i, (batch_inputs, batch_labels, _) in enumerate(dataset):
+                batch_inputs, batch_labels = batch_inputs.to(self.device), batch_labels.to(self.device)
+                self.optimizer.zero_grad()
+                outputs = self.model(batch_inputs)
+                loss = self.loss_function(outputs, batch_labels)
+                loss.backward()
+                self.optimizer.step()
+                total_loss += loss.item()
+            print(f"Epoch {epoch+1}, Loss: {total_loss / (i+1)}")
+        torch.save(self.model.state_dict(), os.path.join(self.hyperparameters.output_directory_path, "final_model.pth"))
+
+    def evaluate_model(self, dataset):
         total_loss = 0
-        for i, (batch_inputs, batch_labels, _) in enumerate(dataset):
-            batch_inputs, batch_labels = batch_inputs.to(device), batch_labels.to(device)
-            optimizer.zero_grad()
-            outputs = model(batch_inputs)
-            loss = loss_function(outputs, batch_labels)
-            loss.backward()
-            optimizer.step()
+        for batch_inputs, batch_labels, _ in dataset:
+            batch_inputs, batch_labels = batch_inputs.to(self.device), batch_labels.to(self.device)
+            with torch.no_grad():
+                outputs = self.model(batch_inputs)
+                loss = self.loss_function(outputs, batch_labels)
             total_loss += loss.item()
-        print(f"Epoch {epoch+1}, Loss: {total_loss / (i+1)}")
-    torch.save(model.state_dict(), os.path.join(hyperparameters.output_directory_path, "final_model.pth"))
-
-def evaluate_model(model, dataset, loss_function, device, hyperparameters):
-    total_loss = 0
-    for batch_inputs, batch_labels, _ in dataset:
-        batch_inputs, batch_labels = batch_inputs.to(device), batch_labels.to(device)
-        with torch.no_grad():
-            outputs = model(batch_inputs)
-            loss = loss_function(outputs, batch_labels)
-        total_loss += loss.item()
-    print(f"Test Loss: {total_loss / len(list(dataset))}")
+        print(f"Test Loss: {total_loss / len(list(dataset))}")
 
 def main():
     hyperparameters = load_hyperparameters("t5-base", "none", True)
     model = NeuralNetwork()
-    loss_function, optimizer, device = create_trainer(hyperparameters, model)
-    training_data, testing_data = load_dataset(hyperparameters)
+    data_loader_helper = DataLoaderHelper(hyperparameters)
+    training_data, testing_data = data_loader_helper.load_dataset()
     if training_data is not None:
-        dataset = Dataset(training_data, hyperparameters)
-        train_model(model, dataset, hyperparameters, loss_function, optimizer, device)
-        test_dataset = Dataset(testing_data, hyperparameters)
-        evaluate_model(model, test_dataset, loss_function, device, hyperparameters)
+        dataset = Dataset(training_data, data_loader_helper)
+        trainer = Trainer(hyperparameters, model)
+        trainer.train_model(dataset)
+        test_dataset = Dataset(testing_data, data_loader_helper)
+        trainer.evaluate_model(test_dataset)
 
 if __name__ == "__main__":
     main()
