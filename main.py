@@ -44,28 +44,22 @@ class Hyperparameters:
     negative_samples_per_positive_sample: int = 5
 
 def preprocess_example(example, hyperparameters):
-    return {
-        "input_ids": np.array([0] + [ord(c) for c in f"{hyperparameters.conversation_format_identifier} {example['input']}"] + [1], dtype=np.float32),
-        "labels": np.array([0] + [ord(c) for c in f"{hyperparameters.conversation_format_identifier} {example['output']}"] + [1], dtype=np.float32),
-        "attention_mask": np.ones(len([0] + [ord(c) for c in f"{hyperparameters.conversation_format_identifier} {example['input']}"] + [1]), dtype=np.float32)
-    }
+    input_ids = [0] + [ord(c) for c in f"{hyperparameters.conversation_format_identifier} {example['input']}"] + [1]
+    labels = [0] + [ord(c) for c in f"{hyperparameters.conversation_format_identifier} {example['output']}"] + [1]
+    attention_mask = [1] * len(input_ids)
+    return np.array(input_ids, dtype=np.float32), np.array(labels, dtype=np.float32), np.array(attention_mask, dtype=np.float32)
 
 class Dataset:
     def __init__(self, data, hyperparameters):
         self.data = data
         self.hyperparameters = hyperparameters
-        self.positive_samples = []
-        self.negative_samples = []
         self.sample_indices = np.arange(len(self.data))
         self.epoch = 0
         self.batch_indices = []
 
-        for i in range(len(self.data)):
-            self.positive_samples.append(i)
-            for _ in range(self.hyperparameters.negative_samples_per_positive_sample):
-                self.negative_samples.append(np.random.choice(len(self.data)))
-
-        self.sample_indices = np.concatenate((self.positive_samples, self.negative_samples))
+        positive_samples = list(range(len(self.data)))
+        negative_samples = [np.random.choice(len(self.data)) for _ in range(len(self.data) * self.hyperparameters.negative_samples_per_positive_sample)]
+        self.sample_indices = np.concatenate((positive_samples, negative_samples))
 
     def shuffle(self):
         np.random.shuffle(self.sample_indices)
@@ -75,20 +69,24 @@ class Dataset:
         if not self.batch_indices:
             self.shuffle()
         batch_indices = self.batch_indices.pop(0)
-        batch = []
+        batch_inputs, batch_labels, batch_attention_masks = [], [], []
         for index in batch_indices:
             if index < len(self.data):
-                batch.append(preprocess_example(self.data[index], self.hyperparameters))
+                input_ids, labels, attention_mask = preprocess_example(self.data[index], self.hyperparameters)
             else:
-                batch.append(preprocess_example(self.data[np.random.choice(len(self.data))], self.hyperparameters))
-        return batch
+                input_ids, labels, attention_mask = preprocess_example(self.data[np.random.choice(len(self.data))], self.hyperparameters)
+            batch_inputs.append(input_ids)
+            batch_labels.append(labels)
+            batch_attention_masks.append(attention_mask)
+        return np.array(batch_inputs), np.array(batch_labels), np.array(batch_attention_masks)
 
-def build_neural_network():
-    inputs = layers.Input(shape=(None,))
-    x = layers.Dense(128, activation='relu')(inputs)
-    x = layers.Dense(128, activation='relu')(x)
-    outputs = layers.Dense(1000)(x)
-    return keras.Model(inputs=inputs, outputs=outputs)
+def build_neural_network(input_shape):
+    model = keras.Sequential([
+        layers.Dense(128, activation='relu', input_shape=input_shape),
+        layers.Dense(128, activation='relu'),
+        layers.Dense(1000)
+    ])
+    return model
 
 def create_trainer(hyperparameters, model):
     loss_function = keras.losses.MeanSquaredError()
@@ -110,13 +108,10 @@ def train_model(model, dataset, hyperparameters, cp_callback):
     for epoch in range(hyperparameters.number_of_epochs):
         total_loss = 0
         dataset.shuffle()
-        for _ in range(len(dataset.batch_indices)):
-            batch = dataset.get_batch()
-            inputs = np.array([example['input_ids'] for example in batch])
-            labels = np.array([example['labels'] for example in batch])
-            loss = model.train_on_batch(inputs, labels)
+        for i, (batch_inputs, batch_labels, _) in enumerate(zip(dataset.get_batch() for _ in range(len(dataset.batch_indices)))):
+            loss = model.train_on_batch(batch_inputs, batch_labels)
             total_loss += loss
-        print(f"Epoch {epoch+1}, Loss: {total_loss / (len(dataset.batch_indices))}")
+        print(f"Epoch {epoch+1}, Loss: {total_loss / (i+1)}")
     model.save(os.path.join(hyperparameters.output_directory_path, "final_model"))
 
 def load_dataset(hyperparameters):
@@ -132,7 +127,7 @@ def load_dataset(hyperparameters):
 
 def main():
     hyperparameters = Hyperparameters(base_model_identifier="t5-base", conversation_format_identifier="none", triplet_loss_training_enabled=True)
-    model = build_neural_network()
+    model = build_neural_network((None,))
     cp_callback, model = create_trainer(hyperparameters, model)
     training_data, _ = load_dataset(hyperparameters)
     if training_data is not None:
