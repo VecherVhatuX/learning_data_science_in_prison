@@ -4,9 +4,6 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 
-def normalize_embeddings(embeddings):
-    return embeddings / torch.norm(embeddings, dim=1, keepdim=True)
-
 class TripletNetwork(nn.Module):
     def __init__(self, num_embeddings, embedding_dim, margin):
         super(TripletNetwork, self).__init__()
@@ -21,7 +18,7 @@ class TripletNetwork(nn.Module):
         x = self.pool(x).squeeze(2)
         x = self.linear(x)
         x = self.batch_norm(x)
-        return normalize_embeddings(x)
+        return x / torch.norm(x, dim=1, keepdim=True)
 
 class TripletDataset(Dataset):
     def __init__(self, samples, labels, num_negatives):
@@ -76,26 +73,23 @@ def train_model(network, dataset, epochs, learning_rate, batch_size, device):
     triplet_loss = TripletLoss(1.0)
     triplet_loss.to(device)
 
-    def train_step(data):
-        anchor_input_ids = data['anchor_input_ids'].to(device)
-        positive_input_ids = data['positive_input_ids'].to(device)
-        negative_input_ids = data['negative_input_ids'].to(device)
-
-        optimizer.zero_grad()
-        anchor_embeddings = network(anchor_input_ids)
-        positive_embeddings = network(positive_input_ids)
-        negative_embeddings = network(negative_input_ids)
-        loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
-        loss.backward()
-        optimizer.step()
-        return loss.item()
-
     for epoch in range(epochs):
         total_loss = 0.0
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
         for i, data in enumerate(dataloader):
-            total_loss += train_step(data)
+            anchor_input_ids = data['anchor_input_ids'].to(device)
+            positive_input_ids = data['positive_input_ids'].to(device)
+            negative_input_ids = data['negative_input_ids'].to(device)
+
+            optimizer.zero_grad()
+            anchor_embeddings = network(anchor_input_ids)
+            positive_embeddings = network(positive_input_ids)
+            negative_embeddings = network(negative_input_ids)
+            loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
 
         print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
@@ -107,20 +101,17 @@ def evaluate_model(network, dataset, batch_size, device):
     triplet_loss = TripletLoss(1.0)
     triplet_loss.to(device)
 
-    def evaluate_step(data):
-        anchor_input_ids = data['anchor_input_ids'].to(device)
-        positive_input_ids = data['positive_input_ids'].to(device)
-        negative_input_ids = data['negative_input_ids'].to(device)
+    with torch.no_grad():
+        for i, data in enumerate(dataloader):
+            anchor_input_ids = data['anchor_input_ids'].to(device)
+            positive_input_ids = data['positive_input_ids'].to(device)
+            negative_input_ids = data['negative_input_ids'].to(device)
 
-        with torch.no_grad():
             anchor_embeddings = network(anchor_input_ids)
             positive_embeddings = network(positive_input_ids)
             negative_embeddings = network(negative_input_ids)
             loss = triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
-            return loss.item()
-
-    for i, data in enumerate(dataloader):
-        total_loss += evaluate_step(data)
+            total_loss += loss.item()
 
     print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
@@ -130,13 +121,10 @@ def predict(network, input_ids, batch_size, device):
     predictions = []
     dataloader = DataLoader(input_ids, batch_size=batch_size, shuffle=False)
 
-    def predict_step(data):
-        with torch.no_grad():
+    with torch.no_grad():
+        for data in dataloader:
             output = network(data.to(device))
-            return output.cpu().numpy()
-
-    for data in dataloader:
-        predictions.extend(predict_step(data))
+            predictions.extend(output.cpu().numpy())
     return predictions
 
 def save_model(network, path):
