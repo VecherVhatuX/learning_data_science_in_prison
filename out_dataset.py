@@ -127,10 +127,13 @@ class CodeSimilarityModel:
                 positive_attention_masks = batch['positive']['attention_mask']
                 negative_input_ids = batch['negative']['input_ids']
                 negative_attention_masks = batch['negative']['attention_mask']
-                anchor_embeddings = model.predict([anchor_input_ids, anchor_attention_masks])
-                positive_embeddings = model.predict([positive_input_ids, positive_attention_masks])
-                negative_embeddings = model.predict([negative_input_ids, negative_attention_masks])
-                loss = self.calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
+                with tf.GradientTape() as tape:
+                    anchor_embeddings = model([anchor_input_ids, anchor_attention_masks], training=True)
+                    positive_embeddings = model([positive_input_ids, positive_attention_masks], training=True)
+                    negative_embeddings = model([negative_input_ids, negative_attention_masks], training=True)
+                    loss = self.calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
+                gradients = tape.gradient(loss, model.trainable_variables)
+                model.optimizer.apply_gradients(zip(gradients, model.trainable_variables))
                 total_loss += loss
             print(f'Epoch {epoch+1}, Loss: {total_loss / len(train_dataset)}')
         self.evaluate_model(model, test_dataset)
@@ -144,9 +147,9 @@ class CodeSimilarityModel:
             positive_attention_masks = batch['positive']['attention_mask']
             negative_input_ids = batch['negative']['input_ids']
             negative_attention_masks = batch['negative']['attention_mask']
-            anchor_embeddings = model.predict([anchor_input_ids, anchor_attention_masks])
-            positive_embeddings = model.predict([positive_input_ids, positive_attention_masks])
-            negative_embeddings = model.predict([negative_input_ids, negative_attention_masks])
+            anchor_embeddings = model([anchor_input_ids, anchor_attention_masks])
+            positive_embeddings = model([positive_input_ids, positive_attention_masks])
+            negative_embeddings = model([negative_input_ids, negative_attention_masks])
             for i in range(len(anchor_embeddings)):
                 similarity_positive = np.dot(anchor_embeddings[i], positive_embeddings[i]) / (np.linalg.norm(anchor_embeddings[i]) * np.linalg.norm(positive_embeddings[i]))
                 similarity_negative = np.dot(anchor_embeddings[i], negative_embeddings[i]) / (np.linalg.norm(anchor_embeddings[i]) * np.linalg.norm(negative_embeddings[i]))
