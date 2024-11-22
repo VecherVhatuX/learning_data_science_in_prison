@@ -1,13 +1,10 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader, random_split
+import tensorflow as tf
+from tensorflow.keras.preprocessing.text import Tokenizer
+from tensorflow.keras.preprocessing.sequence import pad_sequences
 import numpy as np
 import random
 import json
 import os
-from transformers import BertTokenizer
-from typing import List, Tuple, Dict
 
 # Constants
 MAX_SEQUENCE_LENGTH = 512
@@ -19,16 +16,16 @@ EPOCHS = 5
 BATCH_SIZE = 32
 NUM_NEGATIVES_PER_POSITIVE = 1
 
-def load_data(file_path: str) -> np.ndarray or Dict:
+def load_data(file_path: str) -> np.ndarray or dict:
     if file_path.endswith('.npy'):
         return np.load(file_path, allow_pickle=True)
     else:
         return json.load(open(file_path, 'r', encoding='utf-8'))
 
-def load_snippets(folder_path: str) -> List[Tuple[str, str]]:
+def load_snippets(folder_path: str) -> list:
     return [(os.path.join(folder_path, folder), os.path.join(folder_path, folder, 'snippet.json')) for folder in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, folder))]
 
-def separate_snippets(snippets: List[Tuple[str, str]]) -> Tuple[List[Tuple[str, bool]], List[Tuple[str, bool]]]:
+def separate_snippets(snippets: list) -> tuple:
     bug_snippets = []
     non_bug_snippets = []
     for folder_path, snippet_file_path in snippets:
@@ -39,10 +36,10 @@ def separate_snippets(snippets: List[Tuple[str, str]]) -> Tuple[List[Tuple[str, 
             non_bug_snippets.append((snippet_data['snippet'], False))
     return bug_snippets, non_bug_snippets
 
-def create_triplets(problem_statement: str, positive_snippets: List[Tuple[str, bool]], negative_snippets: List[Tuple[str, bool]], num_negatives_per_positive: int) -> List[Dict]:
+def create_triplets(problem_statement: str, positive_snippets: list, negative_snippets: list, num_negatives_per_positive: int) -> list:
     return [{'anchor': problem_statement, 'positive': positive_doc[0], 'negative': random.choice(negative_snippets)[0]} for positive_doc in positive_snippets for _ in range(min(num_negatives_per_positive, len(negative_snippets)))]
 
-def prepare_data(dataset_path: str, snippet_folder_path: str, num_negatives_per_positive: int) -> Tuple[List[Dict], List[Dict]]:
+def prepare_data(dataset_path: str, snippet_folder_path: str, num_negatives_per_positive: int) -> tuple:
     instance_id_map = {item['instance_id']: item['problem_statement'] for item in load_data(dataset_path)}
     snippets = load_snippets(snippet_folder_path)
     bug_snippets, non_bug_snippets = separate_snippets(snippets)
@@ -50,127 +47,84 @@ def prepare_data(dataset_path: str, snippet_folder_path: str, num_negatives_per_
     for folder_path, _ in snippets:
         problem_statement = instance_id_map.get(os.path.basename(folder_path))
         triplets.extend(create_triplets(problem_statement, bug_snippets, non_bug_snippets, num_negatives_per_positive))
-    return random_split(triplets, [int(len(triplets)*0.8), len(triplets)-int(len(triplets)*0.8)])
+    train_size = int(len(triplets)*0.8)
+    return triplets[:train_size], triplets[train_size:]
 
-class CustomDataset(Dataset):
-    def __init__(self, triplets: List[Dict], max_sequence_length: int, tokenizer: BertTokenizer):
-        self.triplets = triplets
-        self.max_sequence_length = max_sequence_length
-        self.tokenizer = tokenizer
+def create_dataset(triplets: list, max_sequence_length: int, tokenizer: Tokenizer):
+    anchor_texts = [triplet['anchor'] for triplet in triplets]
+    positive_texts = [triplet['positive'] for triplet in triplets]
+    negative_texts = [triplet['negative'] for triplet in triplets]
+    
+    anchor_sequences = tokenizer.texts_to_sequences(anchor_texts)
+    positive_sequences = tokenizer.texts_to_sequences(positive_texts)
+    negative_sequences = tokenizer.texts_to_sequences(negative_texts)
+    
+    anchor_padded = pad_sequences(anchor_sequences, maxlen=max_sequence_length, padding='post')
+    positive_padded = pad_sequences(positive_sequences, maxlen=max_sequence_length, padding='post')
+    negative_padded = pad_sequences(negative_sequences, maxlen=max_sequence_length, padding='post')
+    
+    return anchor_padded, positive_padded, negative_padded
 
-    def __len__(self):
-        return len(self.triplets)
+def create_model(max_sequence_length: int, embedding_size: int, fully_connected_size: int, dropout_rate: float):
+    inputs = tf.keras.Input(shape=(max_sequence_length,), dtype='float32')
+    x = tf.keras.layers.Embedding(input_dim=10000, output_dim=128, input_length=max_sequence_length)(inputs)
+    x = tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(64))(x)
+    x = tf.keras.layers.Dropout(dropout_rate)(x)
+    x = tf.keras.layers.Dense(fully_connected_size, activation='relu')(x)
+    outputs = tf.keras.layers.Dense(embedding_size)(x)
+    model = tf.keras.Model(inputs=inputs, outputs=outputs)
+    return model
 
-    def __getitem__(self, idx: int) -> Dict:
-        anchor = self.tokenizer.encode_plus(
-            self.triplets[idx]['anchor'],
-            max_length=self.max_sequence_length,
-            padding='max_length',
-            truncation=True,
-            return_attention_mask=True,
-            return_tensors='pt'
-        )
-        positive = self.tokenizer.encode_plus(
-            self.triplets[idx]['positive'],
-            max_length=self.max_sequence_length,
-            padding='max_length',
-            truncation=True,
-            return_attention_mask=True,
-            return_tensors='pt'
-        )
-        negative = self.tokenizer.encode_plus(
-            self.triplets[idx]['negative'],
-            max_length=self.max_sequence_length,
-            padding='max_length',
-            truncation=True,
-            return_attention_mask=True,
-            return_tensors='pt'
-        )
-        return {
-            'anchor_input_ids': anchor['input_ids'].squeeze(0),
-            'anchor_attention_mask': anchor['attention_mask'].squeeze(0),
-            'positive_input_ids': positive['input_ids'].squeeze(0),
-            'positive_attention_mask': positive['attention_mask'].squeeze(0),
-            'negative_input_ids': negative['input_ids'].squeeze(0),
-            'negative_attention_mask': negative['attention_mask'].squeeze(0)
-        }
+def calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
+    positive_distance = tf.reduce_mean(tf.square(anchor_embeddings - positive_embeddings))
+    negative_distance = tf.reduce_mean(tf.square(anchor_embeddings - negative_embeddings))
+    return positive_distance + tf.maximum(negative_distance - positive_distance, 0)
 
-class Model(nn.Module):
-    def __init__(self, embedding_size: int, fully_connected_size: int, dropout_rate: float):
-        super(Model, self).__init__()
-        self.model = torch.hub.load('huggingface/pytorch-transformers', 'model', 'bert-base-uncased')
-        self.dropout = nn.Dropout(dropout_rate)
-        self.fc1 = nn.Linear(768, fully_connected_size)
-        self.fc2 = nn.Linear(fully_connected_size, embedding_size)
-
-    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        outputs = self.model(x, attention_mask=attention_mask)
-        outputs = outputs.pooler_output
-        outputs = self.dropout(outputs)
-        outputs = torch.relu(self.fc1(outputs))
-        outputs = self.fc2(outputs)
-        return outputs
-
-def calculate_loss(anchor_embeddings: torch.Tensor, positive_embeddings: torch.Tensor, negative_embeddings: torch.Tensor) -> torch.Tensor:
-    positive_distance = torch.mean(torch.pow(anchor_embeddings - positive_embeddings, 2))
-    negative_distance = torch.mean(torch.pow(anchor_embeddings - negative_embeddings, 2))
-    return positive_distance + torch.max(negative_distance - positive_distance, torch.tensor(0.0))
-
-def train(model: Model, device: torch.device, dataset: CustomDataset, epochs: int, learning_rate_value: float, batch_size: int, optimizer: optim.Optimizer):
+def train(model, anchor_padded, positive_padded, negative_padded, epochs, learning_rate_value, batch_size):
+    optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate_value)
     for epoch in range(epochs):
         total_loss = 0
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-        for batch_idx, batch in enumerate(dataloader):
-            anchor_input_ids = batch['anchor_input_ids'].to(device)
-            anchor_attention_mask = batch['anchor_attention_mask'].to(device)
-            positive_input_ids = batch['positive_input_ids'].to(device)
-            positive_attention_mask = batch['positive_attention_mask'].to(device)
-            negative_input_ids = batch['negative_input_ids'].to(device)
-            negative_attention_mask = batch['negative_attention_mask'].to(device)
-            anchor_embeddings = model(anchor_input_ids, anchor_attention_mask)
-            positive_embeddings = model(positive_input_ids, positive_attention_mask)
-            negative_embeddings = model(negative_input_ids, negative_attention_mask)
-            loss = calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-        print(f'Epoch {epoch+1}, Loss: {total_loss / len(dataloader)}')
+        for i in range(0, len(anchor_padded), batch_size):
+            anchor_batch = anchor_padded[i:i+batch_size]
+            positive_batch = positive_padded[i:i+batch_size]
+            negative_batch = negative_padded[i:i+batch_size]
+            with tf.GradientTape() as tape:
+                anchor_embeddings = model(anchor_batch, training=True)
+                positive_embeddings = model(positive_batch, training=True)
+                negative_embeddings = model(negative_batch, training=True)
+                loss = calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
+            gradients = tape.gradient(loss, model.trainable_variables)
+            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+            total_loss += loss
+        print(f'Epoch {epoch+1}, Loss: {total_loss / (len(anchor_padded) // batch_size)}')
 
-def evaluate(model: Model, device: torch.device, dataset: CustomDataset, batch_size: int):
+def evaluate(model, anchor_padded, positive_padded, negative_padded, batch_size):
     total_correct = 0
-    with torch.no_grad():
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
-        for batch_idx, batch in enumerate(dataloader):
-            anchor_input_ids = batch['anchor_input_ids'].to(device)
-            anchor_attention_mask = batch['anchor_attention_mask'].to(device)
-            positive_input_ids = batch['positive_input_ids'].to(device)
-            positive_attention_mask = batch['positive_attention_mask'].to(device)
-            negative_input_ids = batch['negative_input_ids'].to(device)
-            negative_attention_mask = batch['negative_attention_mask'].to(device)
-            anchor_embeddings = model(anchor_input_ids, anchor_attention_mask)
-            positive_embeddings = model(positive_input_ids, positive_attention_mask)
-            negative_embeddings = model(negative_input_ids, negative_attention_mask)
-            for i in range(len(anchor_embeddings)):
-                similarity_positive = torch.dot(anchor_embeddings[i], positive_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(positive_embeddings[i]))
-                similarity_negative = torch.dot(anchor_embeddings[i], negative_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(negative_embeddings[i]))
-                total_correct += int(similarity_positive > similarity_negative)
-    accuracy = total_correct / len(dataset)
+    for i in range(0, len(anchor_padded), batch_size):
+        anchor_batch = anchor_padded[i:i+batch_size]
+        positive_batch = positive_padded[i:i+batch_size]
+        negative_batch = negative_padded[i:i+batch_size]
+        anchor_embeddings = model(anchor_batch)
+        positive_embeddings = model(positive_batch)
+        negative_embeddings = model(negative_batch)
+        for j in range(len(anchor_embeddings)):
+            similarity_positive = tf.reduce_sum(tf.multiply(anchor_embeddings[j], positive_embeddings[j])) / (tf.norm(anchor_embeddings[j]) * tf.norm(positive_embeddings[j]))
+            similarity_negative = tf.reduce_sum(tf.multiply(anchor_embeddings[j], negative_embeddings[j])) / (tf.norm(anchor_embeddings[j]) * tf.norm(negative_embeddings[j]))
+            total_correct += int(similarity_positive > similarity_negative)
+    accuracy = total_correct / len(anchor_padded)
     print(f'Test Accuracy: {accuracy}')
 
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
     train_triplets, test_triplets = prepare_data(dataset_path, snippet_folder_path, NUM_NEGATIVES_PER_POSITIVE)
-    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-    train_dataset = CustomDataset(train_triplets, MAX_SEQUENCE_LENGTH, tokenizer)
-    test_dataset = CustomDataset(test_triplets, MAX_SEQUENCE_LENGTH, tokenizer)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = Model(EMBEDDING_SIZE, FULLY_CONNECTED_SIZE, DROPOUT_RATE)
-    model.to(device)
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE_VALUE)
-    train(model, device, train_dataset, EPOCHS, LEARNING_RATE_VALUE, BATCH_SIZE, optimizer)
-    evaluate(model, device, test_dataset, BATCH_SIZE)
+    tokenizer = Tokenizer(num_words=10000)
+    tokenizer.fit_on_texts([triplet['anchor'] for triplet in train_triplets] + [triplet['positive'] for triplet in train_triplets] + [triplet['negative'] for triplet in train_triplets])
+    train_anchor, train_positive, train_negative = create_dataset(train_triplets, MAX_SEQUENCE_LENGTH, tokenizer)
+    test_anchor, test_positive, test_negative = create_dataset(test_triplets, MAX_SEQUENCE_LENGTH, tokenizer)
+    model = create_model(MAX_SEQUENCE_LENGTH, EMBEDDING_SIZE, FULLY_CONNECTED_SIZE, DROPOUT_RATE)
+    train(model, train_anchor, train_positive, train_negative, EPOCHS, LEARNING_RATE_VALUE, BATCH_SIZE)
+    evaluate(model, test_anchor, test_positive, test_negative, BATCH_SIZE)
 
 if __name__ == "__main__":
     main()
