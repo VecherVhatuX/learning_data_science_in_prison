@@ -49,11 +49,9 @@ class DataLoaderHelper:
         self.hyperparameters = hyperparameters
 
     def load_dataset(self):
-        training_data = self.load_json_data("train.json")
-        testing_data = self.load_json_data("test.json")
-        return training_data, testing_data
+        return self._load_json_data("train.json"), self._load_json_data("test.json")
 
-    def load_json_data(self, file_name):
+    def _load_json_data(self, file_name):
         try:
             with open(file_name, 'r') as f:
                 return json.load(f)
@@ -62,12 +60,12 @@ class DataLoaderHelper:
             return None
 
     def preprocess_example(self, example):
-        input_ids = [0] + [ord(c) for c in f"{self.hyperparameters.conversation_format_identifier} {example['input']}"] + [1]
-        labels = [0] + [ord(c) for c in f"{self.hyperparameters.conversation_format_identifier} {example['output']}"] + [1]
-        attention_mask = [1] * len(input_ids)
-        return torch.tensor(input_ids, dtype=torch.float32), torch.tensor(labels, dtype=torch.float32), torch.tensor(attention_mask, dtype=torch.float32)
+        input_ids = torch.tensor([0] + [ord(c) for c in f"{self.hyperparameters.conversation_format_identifier} {example['input']}"] + [1], dtype=torch.float32)
+        labels = torch.tensor([0] + [ord(c) for c in f"{self.hyperparameters.conversation_format_identifier} {example['output']}"] + [1], dtype=torch.float32)
+        attention_mask = torch.tensor([1] * len(input_ids), dtype=torch.float32)
+        return input_ids, labels, attention_mask
 
-class Dataset(torch.utils.data.Dataset):
+class CustomDataset(Dataset):
     def __init__(self, data, data_loader_helper):
         self.data = data
         self.data_loader_helper = data_loader_helper
@@ -78,9 +76,9 @@ class Dataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         return self.data_loader_helper.preprocess_example(self.data[idx])
 
-class NeuralNetwork(nn.Module):
+class NeuralNetworkModel(nn.Module):
     def __init__(self):
-        super(NeuralNetwork, self).__init__()
+        super(NeuralNetworkModel, self).__init__()
         self.fc1 = nn.Linear(128, 128)
         self.relu = nn.ReLU()
         self.fc2 = nn.Linear(128, 128)
@@ -92,14 +90,14 @@ class NeuralNetwork(nn.Module):
         x = self.fc3(x)
         return x
 
-class Trainer:
+class ModelTrainer:
     def __init__(self, hyperparameters, model):
         self.hyperparameters = hyperparameters
         self.model = model
         self.loss_function = nn.MSELoss()
         self.optimizer = optim.Adam(self.model.parameters(), lr=0.001)
 
-    def train_model(self, dataset):
+    def train(self, dataset):
         data_loader = DataLoader(dataset, batch_size=self.hyperparameters.training_batch_size, shuffle=True)
         for epoch in range(self.hyperparameters.number_of_epochs):
             total_loss = 0
@@ -113,7 +111,7 @@ class Trainer:
             print(f"Epoch {epoch+1}, Loss: {total_loss / (i+1)}")
         torch.save(self.model.state_dict(), os.path.join(self.hyperparameters.output_directory_path, "final_model.pth"))
 
-    def evaluate_model(self, dataset):
+    def evaluate(self, dataset):
         data_loader = DataLoader(dataset, batch_size=self.hyperparameters.evaluation_batch_size, shuffle=False)
         total_loss = 0
         with torch.no_grad():
@@ -128,15 +126,15 @@ def load_hyperparameters(base_model_identifier, conversation_format_identifier, 
 
 def main():
     hyperparameters = load_hyperparameters("t5-base", "none", True)
-    model = NeuralNetwork()
+    model = NeuralNetworkModel()
     data_loader_helper = DataLoaderHelper(hyperparameters)
     training_data, testing_data = data_loader_helper.load_dataset()
     if training_data is not None:
-        training_dataset = Dataset(training_data, data_loader_helper)
-        testing_dataset = Dataset(testing_data, data_loader_helper)
-        trainer = Trainer(hyperparameters, model)
-        trainer.train_model(training_dataset)
-        trainer.evaluate_model(testing_dataset)
+        training_dataset = CustomDataset(training_data, data_loader_helper)
+        testing_dataset = CustomDataset(testing_data, data_loader_helper)
+        model_trainer = ModelTrainer(hyperparameters, model)
+        model_trainer.train(training_dataset)
+        model_trainer.evaluate(testing_dataset)
 
 if __name__ == "__main__":
     main()
