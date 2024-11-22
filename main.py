@@ -44,20 +44,6 @@ class Hyperparameters:
     resume_checkpoint_path: str = None
     negative_samples_per_positive_sample: int = 5
 
-def load_json_data(file_name):
-    try:
-        with open(file_name, 'r') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        print(f"{file_name} not found.")
-        return None
-
-def preprocess_example(example, conversation_format_identifier):
-    input_ids = torch.tensor([0] + [ord(c) for c in f"{conversation_format_identifier} {example['input']}"] + [1], dtype=torch.float32)
-    labels = torch.tensor([0] + [ord(c) for c in f"{conversation_format_identifier} {example['output']}"] + [1], dtype=torch.float32)
-    attention_mask = torch.tensor([1] * len(input_ids), dtype=torch.float32)
-    return input_ids, labels, attention_mask
-
 class CustomDataset(Dataset):
     def __init__(self, data, conversation_format_identifier):
         self.data = data
@@ -67,7 +53,11 @@ class CustomDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        return preprocess_example(self.data[idx], self.conversation_format_identifier)
+        example = self.data[idx]
+        input_ids = torch.tensor([0] + [ord(c) for c in f"{self.conversation_format_identifier} {example['input']}"] + [1], dtype=torch.float32)
+        labels = torch.tensor([0] + [ord(c) for c in f"{self.conversation_format_identifier} {example['output']}"] + [1], dtype=torch.float32)
+        attention_mask = torch.tensor([1] * len(input_ids), dtype=torch.float32)
+        return input_ids, labels, attention_mask
 
 class NeuralNetworkModel(nn.Module):
     def __init__(self):
@@ -82,6 +72,14 @@ class NeuralNetworkModel(nn.Module):
         x = self.relu(self.fc2(x))
         x = self.fc3(x)
         return x
+
+def load_json_data(file_name):
+    try:
+        with open(file_name, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print(f"{file_name} not found.")
+        return None
 
 def train_model(model, dataset, device, hyperparameters):
     model.to(device)
