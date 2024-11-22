@@ -7,6 +7,39 @@ import random
 import json
 import os
 
+# Data loading functions
+def load_data(file_path):
+    if file_path.endswith('.npy'):
+        return np.load(file_path, allow_pickle=True)
+    else:
+        return json.load(open(file_path, 'r', encoding='utf-8'))
+
+def load_snippets(folder_path):
+    snippet_paths = []
+    for folder in os.listdir(folder_path):
+        if os.path.isdir(os.path.join(folder_path, folder)):
+            snippet_paths.append((os.path.join(folder_path, folder), os.path.join(folder_path, folder, 'snippet.json')))
+    return snippet_paths
+
+def separate_snippets(snippets):
+    bug_snippets = []
+    non_bug_snippets = []
+    for folder_path, snippet_file_path in snippets:
+        snippet_data = load_data(snippet_file_path)
+        if snippet_data.get('is_bug', False):
+            bug_snippets.append((snippet_data['snippet'], True))
+        else:
+            non_bug_snippets.append((snippet_data['snippet'], False))
+    return bug_snippets, non_bug_snippets
+
+def create_triplets(problem_statement, positive_snippets, negative_snippets, num_negatives_per_positive):
+    triplets = []
+    for positive_doc in positive_snippets:
+        for _ in range(min(num_negatives_per_positive, len(negative_snippets))):
+            triplets.append({'anchor': problem_statement, 'positive': positive_doc[0], 'negative': random.choice(negative_snippets)[0]})
+    return triplets
+
+# Dataset class
 class CustomDataset(Dataset):
     def __init__(self, triplets, max_sequence_length, tokenizer):
         self.triplets = triplets
@@ -50,6 +83,7 @@ class CustomDataset(Dataset):
             'negative_attention_mask': negative['attention_mask'].squeeze(0)
         }
 
+# Model class
 class Model(nn.Module):
     def __init__(self, embedding_size, fully_connected_size, dropout_rate):
         super(Model, self).__init__()
@@ -67,11 +101,13 @@ class Model(nn.Module):
         x = self.fc2(x)
         return x
 
+# Loss calculation function
 def calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
     positive_distance = torch.mean(torch.pow(anchor_embeddings - positive_embeddings, 2))
     negative_distance = torch.mean(torch.pow(anchor_embeddings - negative_embeddings, 2))
     return positive_distance + torch.max(negative_distance - positive_distance, torch.tensor(0.0))
 
+# Training function
 def train(model, device, dataset, epochs, learning_rate_value, batch_size, optimizer):
     for epoch in range(epochs):
         total_loss = 0
@@ -90,6 +126,7 @@ def train(model, device, dataset, epochs, learning_rate_value, batch_size, optim
             total_loss += loss.item()
         print(f'Epoch {epoch+1}, Loss: {total_loss / len(dataloader)}')
 
+# Evaluation function
 def evaluate(model, device, dataset, batch_size):
     total_correct = 0
     with torch.no_grad():
@@ -108,37 +145,7 @@ def evaluate(model, device, dataset, batch_size):
     accuracy = total_correct / len(dataset)
     print(f'Test Accuracy: {accuracy}')
 
-def load_data(file_path):
-    if file_path.endswith('.npy'):
-        return np.load(file_path, allow_pickle=True)
-    else:
-        return json.load(open(file_path, 'r', encoding='utf-8'))
-
-def load_snippets(folder_path):
-    snippet_paths = []
-    for folder in os.listdir(folder_path):
-        if os.path.isdir(os.path.join(folder_path, folder)):
-            snippet_paths.append((os.path.join(folder_path, folder), os.path.join(folder_path, folder, 'snippet.json')))
-    return snippet_paths
-
-def separate_snippets(snippets):
-    bug_snippets = []
-    non_bug_snippets = []
-    for folder_path, snippet_file_path in snippets:
-        snippet_data = load_data(snippet_file_path)
-        if snippet_data.get('is_bug', False):
-            bug_snippets.append((snippet_data['snippet'], True))
-        else:
-            non_bug_snippets.append((snippet_data['snippet'], False))
-    return bug_snippets, non_bug_snippets
-
-def create_triplets(problem_statement, positive_snippets, negative_snippets, num_negatives_per_positive):
-    triplets = []
-    for positive_doc in positive_snippets:
-        for _ in range(min(num_negatives_per_positive, len(negative_snippets))):
-            triplets.append({'anchor': problem_statement, 'positive': positive_doc[0], 'negative': random.choice(negative_snippets)[0]})
-    return triplets
-
+# Main function
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
