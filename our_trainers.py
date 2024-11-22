@@ -49,6 +49,16 @@ class TripletDataset(Dataset):
             'negative_input_ids': torch.tensor([self.samples[i] for i in negative_idx], dtype=torch.long)
         }
 
+class InputDataset(Dataset):
+    def __init__(self, input_ids):
+        self.input_ids = input_ids
+
+    def __len__(self):
+        return len(self.input_ids)
+
+    def __getitem__(self, index):
+        return self.input_ids[index]
+
 def calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
     return torch.mean(torch.clamp(torch.norm(anchor_embeddings - positive_embeddings, p=2, dim=1) - torch.norm(anchor_embeddings.unsqueeze(1) - negative_embeddings, p=2, dim=2).min(dim=1)[0] + 1.0, min=0.0))
 
@@ -148,16 +158,6 @@ def calculate_knn_f1(embeddings, labels, k=5):
     recall = calculate_knn_recall(embeddings, labels, k)
     return 2 * (precision * recall) / (precision + recall)
 
-class InputDataset(Dataset):
-    def __init__(self, input_ids):
-        self.input_ids = input_ids
-
-    def __len__(self):
-        return len(self.input_ids)
-
-    def __getitem__(self, index):
-        return self.input_ids[index]
-
 def main():
     np.random.seed(42)
     torch.manual_seed(42)
@@ -195,7 +195,7 @@ def main():
     cosine_distance = calculate_cosine_distance(torch.tensor(predicted_embeddings[0], dtype=torch.float), torch.tensor(predicted_embeddings[0], dtype=torch.float))
     print(cosine_distance)
 
-    all_embeddings = predict(model, TripletDataset(samples, labels, num_negatives, batch_size), batch_size=32)
+    all_embeddings = predict(model, dataset, batch_size=32)
     nearest_neighbors = get_nearest_neighbors(torch.tensor(all_embeddings, dtype=torch.float), torch.tensor(predicted_embeddings[0], dtype=torch.float), k=5)
     print(nearest_neighbors)
 
