@@ -5,23 +5,16 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import torch.nn.functional as F
 
-class TripletModel(nn.Module):
-    def __init__(self, num_embeddings, features):
-        super(TripletModel, self).__init__()
-        self.embedding = nn.Embedding(num_embeddings, features)
-        self.avg_pool = nn.AvgPool1d(kernel_size=10)
-        self.fc = nn.Linear(features, features)
-        self.bn = nn.BatchNorm1d(features)
-
-    def forward(self, x):
-        x = self.embedding(x)
-        x = x.transpose(1, 2)
-        x = self.avg_pool(x)
-        x = x.squeeze(2)
-        x = self.fc(x)
-        x = self.bn(x)
-        x = F.normalize(x, p=2, dim=1)
-        return x
+def create_triplet_model(num_embeddings, features):
+    return nn.Sequential(
+        nn.Embedding(num_embeddings, features),
+        lambda x: x.transpose(1, 2),
+        nn.AvgPool1d(kernel_size=10),
+        lambda x: x.squeeze(2),
+        nn.Linear(features, features),
+        nn.BatchNorm1d(features),
+        lambda x: F.normalize(x, p=2, dim=1)
+    )
 
 def calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
     return torch.mean(torch.clamp(torch.norm(anchor_embeddings - positive_embeddings, p=2, dim=1) - torch.norm(anchor_embeddings.unsqueeze(1) - negative_embeddings, p=2, dim=2).min(dim=1)[0] + 1.0, min=0.0))
@@ -54,53 +47,49 @@ class Dataset(Dataset):
             'negative_input_ids': torch.tensor([self.samples[i] for i in negative_idx], dtype=torch.long)
         }
 
-class Trainer:
-    def __init__(self, model, learning_rate, batch_size):
-        self.model = model
-        self.optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-        self.batch_size = batch_size
+def train_step(model, batch, optimizer):
+    optimizer.zero_grad()
+    anchor_embeddings = model(batch['anchor_input_ids'])
+    positive_embeddings = model(batch['positive_input_ids'])
+    negative_embeddings = model(batch['negative_input_ids'])
+    loss = calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
+    loss.backward()
+    optimizer.step()
+    return loss
 
-    def train_step(self, batch):
-        self.optimizer.zero_grad()
-        anchor_embeddings = self.model(batch['anchor_input_ids'])
-        positive_embeddings = self.model(batch['positive_input_ids'])
-        negative_embeddings = self.model(batch['negative_input_ids'])
-        loss = calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
-        loss.backward()
-        self.optimizer.step()
-
-    def train(self, dataset, epochs):
-        for epoch in range(epochs):
-            total_loss = 0.0
-            dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
-            for i, batch in enumerate(dataloader):
-                self.train_step(batch)
-                total_loss += calculate_triplet_loss(self.model(batch['anchor_input_ids']), self.model(batch['positive_input_ids']), self.model(batch['negative_input_ids']))
-            print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
-
-    def evaluate(self, dataset):
+def train(model, dataset, epochs, batch_size, optimizer):
+    for epoch in range(epochs):
         total_loss = 0.0
-        dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False)
-        with torch.no_grad():
-            for i, batch in enumerate(dataloader):
-                total_loss += calculate_triplet_loss(self.model(batch['anchor_input_ids']), self.model(batch['positive_input_ids']), self.model(batch['negative_input_ids']))
-        print(f'Validation Loss: {total_loss / (i+1):.3f}')
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        for i, batch in enumerate(dataloader):
+            total_loss += train_step(model, batch, optimizer)
+        print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
-    def predict(self, input_ids, batch_size):
-        predictions = []
-        dataloader = DataLoader(input_ids, batch_size=batch_size, shuffle=False)
-        with torch.no_grad():
-            for batch in dataloader:
-                output = self.model(batch)
-                predictions.extend(output.numpy())
-        return np.array(predictions)
+def evaluate(model, dataset, batch_size):
+    total_loss = 0.0
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    with torch.no_grad():
+        for i, batch in enumerate(dataloader):
+            anchor_embeddings = model(batch['anchor_input_ids'])
+            positive_embeddings = model(batch['positive_input_ids'])
+            negative_embeddings = model(batch['negative_input_ids'])
+            total_loss += calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
+    print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
-    def save_model(self, path):
-        torch.save(self.model.state_dict(), path)
+def predict(model, input_ids, batch_size):
+    predictions = []
+    dataloader = DataLoader(input_ids, batch_size=batch_size, shuffle=False)
+    with torch.no_grad():
+        for batch in dataloader:
+            output = model(batch)
+            predictions.extend(output.numpy())
+    return np.array(predictions)
 
-    @staticmethod
-    def load_model(path, model):
-        model.load_state_dict(torch.load(path))
+def save_model(model, path):
+    torch.save(model.state_dict(), path)
+
+def load_model(path, model):
+    model.load_state_dict(torch.load(path))
 
 def calculate_distance(embedding1, embedding2):
     return torch.norm(embedding1 - embedding2, p=2, dim=1)
@@ -165,20 +154,20 @@ def main():
     epochs = 10
     learning_rate = 1e-4
 
-    model = TripletModel(num_embeddings=101, features=10)
-    trainer = Trainer(model, learning_rate, batch_size)
+    model = create_triplet_model(num_embeddings=101, features=10)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     dataset = Dataset(samples, labels, num_negatives, batch_size)
-    trainer.train(dataset, epochs)
+    train(model, dataset, epochs, batch_size, optimizer)
 
     input_ids = np.array([1, 2, 3, 4, 5], dtype=np.int32).reshape((1, 10))
-    output = trainer.predict(torch.tensor(input_ids, dtype=torch.long), batch_size=1)
+    output = predict(model, torch.tensor(input_ids, dtype=torch.long), batch_size=1)
     print(output)
 
-    trainer.save_model("triplet_model.pth")
+    save_model(model, "triplet_model.pth")
 
-    trainer.evaluate(dataset)
+    evaluate(model, dataset, batch_size)
 
-    predicted_embeddings = trainer.predict(torch.tensor(np.array([1, 2, 3, 4, 5], dtype=np.int32).reshape((1, 10)), dtype=torch.long), batch_size=1)
+    predicted_embeddings = predict(model, torch.tensor(np.array([1, 2, 3, 4, 5], dtype=np.int32).reshape((1, 10)), dtype=torch.long), batch_size=1)
     print(predicted_embeddings)
 
     distance = calculate_distance(torch.tensor(predicted_embeddings[0], dtype=torch.float), torch.tensor(predicted_embeddings[0], dtype=torch.float))
@@ -190,7 +179,7 @@ def main():
     cosine_distance = calculate_cosine_distance(torch.tensor(predicted_embeddings[0], dtype=torch.float), torch.tensor(predicted_embeddings[0], dtype=torch.float))
     print(cosine_distance)
 
-    all_embeddings = trainer.predict(torch.tensor(np.array(samples, dtype=np.int32), dtype=torch.long), batch_size=32)
+    all_embeddings = predict(model, torch.tensor(np.array(samples, dtype=np.int32), dtype=torch.long), batch_size=32)
     nearest_neighbors = get_nearest_neighbors(torch.tensor(all_embeddings, dtype=torch.float), torch.tensor(predicted_embeddings[0], dtype=torch.float), k=5)
     print(nearest_neighbors)
 
