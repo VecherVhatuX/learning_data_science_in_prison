@@ -97,11 +97,13 @@ class ModelTrainer:
         self.loss_function = nn.MSELoss()
         self.optimizer = optim.Adam(self.model.parameters(), lr=0.001)
 
-    def train(self, dataset):
+    def train(self, dataset, device):
+        self.model.to(device)
         data_loader = DataLoader(dataset, batch_size=self.hyperparameters.training_batch_size, shuffle=True)
         for epoch in range(self.hyperparameters.number_of_epochs):
             total_loss = 0
             for i, (batch_inputs, batch_labels, _) in enumerate(data_loader):
+                batch_inputs, batch_labels = batch_inputs.to(device), batch_labels.to(device)
                 self.optimizer.zero_grad()
                 outputs = self.model(batch_inputs)
                 loss = self.loss_function(batch_labels, outputs)
@@ -111,15 +113,19 @@ class ModelTrainer:
             print(f"Epoch {epoch+1}, Loss: {total_loss / (i+1)}")
         torch.save(self.model.state_dict(), os.path.join(self.hyperparameters.output_directory_path, "final_model.pth"))
 
-    def evaluate(self, dataset):
+    def evaluate(self, dataset, device):
+        self.model.to(device)
+        self.model.eval()
         data_loader = DataLoader(dataset, batch_size=self.hyperparameters.evaluation_batch_size, shuffle=False)
         total_loss = 0
         with torch.no_grad():
             for batch_inputs, batch_labels, _ in data_loader:
+                batch_inputs, batch_labels = batch_inputs.to(device), batch_labels.to(device)
                 outputs = self.model(batch_inputs)
                 loss = self.loss_function(batch_labels, outputs)
                 total_loss += loss.item()
         print(f"Test Loss: {total_loss / len(list(data_loader))}")
+        self.model.train()
 
 def load_hyperparameters(base_model_identifier, conversation_format_identifier, triplet_loss_training_enabled):
     return Hyperparameters(base_model_identifier=base_model_identifier, conversation_format_identifier=conversation_format_identifier, triplet_loss_training_enabled=triplet_loss_training_enabled)
@@ -132,9 +138,10 @@ def main():
     if training_data is not None:
         training_dataset = CustomDataset(training_data, data_loader_helper)
         testing_dataset = CustomDataset(testing_data, data_loader_helper)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model_trainer = ModelTrainer(hyperparameters, model)
-        model_trainer.train(training_dataset)
-        model_trainer.evaluate(testing_dataset)
+        model_trainer.train(training_dataset, device)
+        model_trainer.evaluate(testing_dataset, device)
 
 if __name__ == "__main__":
     main()
