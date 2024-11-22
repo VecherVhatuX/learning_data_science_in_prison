@@ -57,21 +57,6 @@ def create_dataset(triplets):
     tokenized_triplets = tokenize_triplets(triplets)
     return tf.data.Dataset.from_tensor_slices(tokenized_triplets).batch(BATCH_SIZE)
 
-class Model(tf.keras.Model):
-    def __init__(self):
-        super(Model, self).__init__()
-        self.embedding = layers.Embedding(input_dim=10000, output_dim=EMBEDDING_SIZE, input_length=MAX_SEQUENCE_LENGTH)
-        self.bi_lstm = layers.Bidirectional(layers.LSTM(FULLY_CONNECTED_SIZE, dropout=DROPOUT_RATE))
-        self.fully_connected = layers.Dense(FULLY_CONNECTED_SIZE, activation='relu')
-        self.embedding_size = layers.Dense(EMBEDDING_SIZE)
-
-    def call(self, inputs):
-        x = self.embedding(inputs)
-        x = self.bi_lstm(x)
-        x = self.fully_connected(x)
-        x = self.embedding_size(x)
-        return x
-
 def calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
     return tf.reduce_mean((anchor_embeddings - positive_embeddings) ** 2) + tf.keras.backend.maximum(tf.reduce_mean((anchor_embeddings - negative_embeddings) ** 2) - tf.reduce_mean((anchor_embeddings - positive_embeddings) ** 2), 0)
 
@@ -101,13 +86,21 @@ def evaluate(model, dataset):
             total_correct += int(similarity_positive > similarity_negative)
     return total_correct / len(dataset)
 
+def create_model():
+    return tf.keras.Sequential([
+        layers.Embedding(input_dim=10000, output_dim=EMBEDDING_SIZE, input_length=MAX_SEQUENCE_LENGTH),
+        layers.Bidirectional(layers.LSTM(FULLY_CONNECTED_SIZE, dropout=DROPOUT_RATE)),
+        layers.Dense(FULLY_CONNECTED_SIZE, activation='relu'),
+        layers.Dense(EMBEDDING_SIZE)
+    ])
+
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
     train_triplets, test_triplets = prepare_data(dataset_path, snippet_folder_path, NUM_NEGATIVES_PER_POSITIVE)
     train_dataset = create_dataset(train_triplets)
     test_dataset = create_dataset(test_triplets)
-    model = Model()
+    model = create_model()
     for epoch in range(EPOCHS):
         loss = train(model, train_dataset)
         print(f'Epoch {epoch+1}, Loss: {loss}')
