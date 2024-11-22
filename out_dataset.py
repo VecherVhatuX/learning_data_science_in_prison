@@ -72,9 +72,7 @@ def calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
     negative_distance = torch.mean(torch.pow(anchor_embeddings - negative_embeddings, 2))
     return positive_distance + torch.max(negative_distance - positive_distance, torch.tensor(0.0))
 
-def train(model, device, dataset, epochs, learning_rate_value, max_sequence_length, tokenizer, batch_size):
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate_value)
+def train(model, device, dataset, epochs, learning_rate_value, batch_size, optimizer):
     for epoch in range(epochs):
         total_loss = 0
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
@@ -92,7 +90,7 @@ def train(model, device, dataset, epochs, learning_rate_value, max_sequence_leng
             total_loss += loss.item()
         print(f'Epoch {epoch+1}, Loss: {total_loss / len(dataloader)}')
 
-def evaluate(model, device, dataset, max_sequence_length, tokenizer, batch_size):
+def evaluate(model, device, dataset, batch_size):
     total_correct = 0
     with torch.no_grad():
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
@@ -116,22 +114,6 @@ def load_data(file_path):
     else:
         return json.load(open(file_path, 'r', encoding='utf-8'))
 
-class NegativeSampler:
-    def __init__(self, dataset):
-        self.dataset = dataset
-        self.positive_indices = [triplet['positive'] for triplet in dataset]
-        self.negative_indices = [i for i in range(len(dataset)) if i not in self.positive_indices]
-
-    def sample(self, batch_size):
-        return torch.utils.data.Subset(self.dataset, self.negative_indices[:batch_size])
-
-def create_triplets(problem_statement, positive_snippets, negative_snippets, num_negatives_per_positive):
-    triplets = []
-    for positive_doc in positive_snippets:
-        for _ in range(min(num_negatives_per_positive, len(negative_snippets))):
-            triplets.append({'anchor': problem_statement, 'positive': positive_doc, 'negative': random.choice(negative_snippets)})
-    return triplets
-
 def load_snippets(folder_path):
     snippet_paths = []
     for folder in os.listdir(folder_path):
@@ -148,23 +130,14 @@ def separate_snippets(snippets):
             bug_snippets.append((snippet_data['snippet'], True))
         else:
             non_bug_snippets.append((snippet_data['snippet'], False))
-    return tuple(map(list, zip(*[(bug_snippets, non_bug_snippets)])))
+    return bug_snippets, non_bug_snippets
 
-class Sampler:
-    def __init__(self, dataset, num_negatives_per_positive):
-        self.dataset = dataset
-        self.num_negatives_per_positive = num_negatives_per_positive
-        self.positive_snippets = [triplet['positive'] for triplet in dataset]
-        self.negative_snippets = [triplet['negative'] for triplet in dataset]
-
-    def sample(self, batch_size):
-        sampled_triplets = []
-        for _ in range(batch_size):
-            problem_statement = random.choice(self.dataset)['anchor']
-            positive_snippet = random.choice(self.positive_snippets)
-            negative_snippets = random.sample(self.negative_snippets, self.num_negatives_per_positive)
-            sampled_triplets.append({'anchor': problem_statement, 'positive': positive_snippet, 'negative': random.choice(negative_snippets)})
-        return sampled_triplets
+def create_triplets(problem_statement, positive_snippets, negative_snippets, num_negatives_per_positive):
+    triplets = []
+    for positive_doc in positive_snippets:
+        for _ in range(min(num_negatives_per_positive, len(negative_snippets))):
+            triplets.append({'anchor': problem_statement, 'positive': positive_doc[0], 'negative': random.choice(negative_snippets)[0]})
+    return triplets
 
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
@@ -180,39 +153,20 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     instance_id_map = {item['instance_id']: item['problem_statement'] for item in load_data(dataset_path)}
     snippets = load_snippets(snippet_folder_path)
+    bug_snippets, non_bug_snippets = separate_snippets(snippets)
     triplets = []
     for folder_path, _ in snippets:
-        bug_snippets, non_bug_snippets = separate_snippets([(folder_path, os.path.join(folder_path, 'snippet.json'))])
         problem_statement = instance_id_map.get(os.path.basename(folder_path))
-        for bug_snippet, non_bug_snippet in [(bug, non_bug) for bug in bug_snippets for non_bug in non_bug_snippets]:
-            triplets.extend(create_triplets(problem_statement, [bug_snippet], non_bug_snippets, num_negatives_per_positive))
+        triplets.extend(create_triplets(problem_statement, bug_snippets, non_bug_snippets, num_negatives_per_positive))
     train_triplets, test_triplets = torch.utils.data.random_split(triplets, [int(len(triplets)*0.8), len(triplets)-int(len(triplets)*0.8)])
     tokenizer = torch.hub.load('huggingface/pytorch-transformers', 'tokenizer', 'bert-base-uncased')
     train_dataset = CustomDataset(train_triplets, max_sequence_length, tokenizer)
     test_dataset = CustomDataset(test_triplets, max_sequence_length, tokenizer)
-    train_sampler = Sampler(train_dataset, num_negatives_per_positive)
-    test_sampler = Sampler(test_dataset, num_negatives_per_positive)
     model = Model(embedding_size, fully_connected_size, dropout_rate)
     model.to(device)
-    for epoch in range(epochs):
-        print(f'Epoch {epoch+1}:')
-        train_dataloader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler)
-        total_loss = 0
-        for batch_idx, batch in enumerate(train_dataloader):
-            anchor_input_ids = batch['anchor_input_ids'].to(device)
-            positive_input_ids = batch['positive_input_ids'].to(device)
-            negative_input_ids = batch['negative_input_ids'].to(device)
-            anchor_embeddings = model(anchor_input_ids)
-            positive_embeddings = model(positive_input_ids)
-            negative_embeddings = model(negative_input_ids)
-            loss = calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
-            optimizer = optim.Adam(model.parameters(), lr=learning_rate_value)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-        print(f'Loss: {total_loss / len(train_dataloader)}')
-    evaluate(model, device, test_dataset, max_sequence_length, tokenizer, batch_size)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate_value)
+    train(model, device, train_dataset, epochs, learning_rate_value, batch_size, optimizer)
+    evaluate(model, device, test_dataset, batch_size)
 
 if __name__ == "__main__":
     main()
