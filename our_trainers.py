@@ -77,7 +77,7 @@ class Trainer:
         for epoch in range(epochs):
             total_loss = 0.0
             dataloader = tf.data.Dataset.from_generator(dataset, output_types={'anchor_input_ids': tf.int32, 'positive_input_ids': tf.int32, 'negative_input_ids': tf.int32})
-            dataloader = dataloader.batch(self.state.batch_size)
+            dataloader = dataloader.batch(self.batch_size)
             dataloader = dataloader.prefetch(tf.data.AUTOTUNE)
 
             for i, batch in enumerate(dataloader):
@@ -90,7 +90,7 @@ class Trainer:
     def evaluate(self, dataset):
         total_loss = 0.0
         dataloader = tf.data.Dataset.from_generator(dataset, output_types={'anchor_input_ids': tf.int32, 'positive_input_ids': tf.int32, 'negative_input_ids': tf.int32})
-        dataloader = dataloader.batch(self.state.batch_size)
+        dataloader = dataloader.batch(self.batch_size)
         dataloader = dataloader.prefetch(tf.data.AUTOTUNE)
 
         for i, batch in enumerate(dataloader):
