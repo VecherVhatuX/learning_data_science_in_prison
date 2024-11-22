@@ -21,7 +21,7 @@ class TripletModel(nn.Module):
     def forward(self, x):
         return self.model(x)
 
-class Dataset(Dataset):
+class TripletDataset(Dataset):
     def __init__(self, samples, labels, num_negatives, batch_size, shuffle=True):
         self.samples = samples
         self.labels = labels
@@ -148,6 +148,16 @@ def calculate_knn_f1(embeddings, labels, k=5):
     recall = calculate_knn_recall(embeddings, labels, k)
     return 2 * (precision * recall) / (precision + recall)
 
+class InputDataset(Dataset):
+    def __init__(self, input_ids):
+        self.input_ids = input_ids
+
+    def __len__(self):
+        return len(self.input_ids)
+
+    def __getitem__(self, index):
+        return self.input_ids[index]
+
 def main():
     np.random.seed(42)
     torch.manual_seed(42)
@@ -161,18 +171,19 @@ def main():
 
     model = TripletModel(num_embeddings=101, features=10)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    dataset = Dataset(samples, labels, num_negatives, batch_size)
+    dataset = TripletDataset(samples, labels, num_negatives, batch_size)
     train(model, dataset, epochs, batch_size, optimizer)
 
     input_ids = torch.tensor(np.array([1, 2, 3, 4, 5], dtype=np.int32).reshape((1, 10)), dtype=torch.long)
-    output = predict(model, input_ids, batch_size=1)
+    input_dataset = InputDataset(input_ids)
+    output = predict(model, input_dataset, batch_size=1)
     print(output)
 
     save_model(model, "triplet_model.pth")
 
     evaluate(model, dataset, batch_size)
 
-    predicted_embeddings = predict(model, torch.tensor(np.array([1, 2, 3, 4, 5], dtype=np.int32).reshape((1, 10)), dtype=torch.long), batch_size=1)
+    predicted_embeddings = predict(model, input_dataset, batch_size=1)
     print(predicted_embeddings)
 
     distance = calculate_distance(torch.tensor(predicted_embeddings[0], dtype=torch.float), torch.tensor(predicted_embeddings[0], dtype=torch.float))
@@ -184,7 +195,7 @@ def main():
     cosine_distance = calculate_cosine_distance(torch.tensor(predicted_embeddings[0], dtype=torch.float), torch.tensor(predicted_embeddings[0], dtype=torch.float))
     print(cosine_distance)
 
-    all_embeddings = predict(model, torch.tensor(np.array(samples, dtype=np.int32), dtype=torch.long), batch_size=32)
+    all_embeddings = predict(model, TripletDataset(samples, labels, num_negatives, batch_size), batch_size=32)
     nearest_neighbors = get_nearest_neighbors(torch.tensor(all_embeddings, dtype=torch.float), torch.tensor(predicted_embeddings[0], dtype=torch.float), k=5)
     print(nearest_neighbors)
 
