@@ -53,7 +53,7 @@ class CustomDataset(Dataset):
 class Model(nn.Module):
     def __init__(self, embedding_size, fully_connected_size, dropout_rate):
         super(Model, self).__init__()
-        self.embedding = nn.Embedding(10000, embedding_size)
+        self.embedding = nn.Embedding(30522, embedding_size) # Changed from 10000
         self.pooling = nn.AdaptiveAvgPool1d(1)
         self.dropout = nn.Dropout(dropout_rate)
         self.fc1 = nn.Linear(embedding_size, fully_connected_size)
@@ -101,7 +101,7 @@ def evaluate(model, device, dataset):
             for i in range(len(anchor_embeddings)):
                 similarity_positive = torch.dot(anchor_embeddings[i], positive_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(positive_embeddings[i]))
                 similarity_negative = torch.dot(anchor_embeddings[i], negative_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(negative_embeddings[i]))
-                total_correct += similarity_positive > similarity_negative
+                total_correct += int(similarity_positive > similarity_negative)
     accuracy = total_correct / (len(dataset) * 32)
     print(f'Test Accuracy: {accuracy}')
 
