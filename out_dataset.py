@@ -25,19 +25,22 @@ def load_snippets(folder_path):
     return [(os.path.join(folder_path, folder), os.path.join(folder_path, folder, 'snippet.json')) for folder in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, folder))]
 
 def separate_snippets(snippets):
-    return ([snippet_data['snippet'] for _, snippet_file_path in snippets for snippet_data in [load_data(snippet_file_path)] if snippet_data.get('is_bug', False)], 
-            [snippet_data['snippet'] for _, snippet_file_path in snippets for snippet_data in [load_data(snippet_file_path)] if not snippet_data.get('is_bug', False)])
+    bug_snippets = [snippet_data['snippet'] for _, snippet_file_path in snippets for snippet_data in [load_data(snippet_file_path)] if snippet_data.get('is_bug', False)]
+    non_bug_snippets = [snippet_data['snippet'] for _, snippet_file_path in snippets for snippet_data in [load_data(snippet_file_path)] if not snippet_data.get('is_bug', False)]
+    return bug_snippets, non_bug_snippets
 
 def create_triplets(instance_id_map, snippets, num_negatives_per_positive):
-    return [{'anchor': instance_id_map[os.path.basename(folder_path)], 'positive': positive_doc, 'negative': random.choice(separate_snippets(snippets)[1])} 
+    bug_snippets, non_bug_snippets = separate_snippets(snippets)
+    return [{'anchor': instance_id_map[os.path.basename(folder_path)], 'positive': positive_doc, 'negative': random.choice(non_bug_snippets)} 
             for folder_path, _ in snippets 
-            for positive_doc in separate_snippets(snippets)[0] 
-            for _ in range(min(num_negatives_per_positive, len(separate_snippets(snippets)[1])))]
+            for positive_doc in bug_snippets 
+            for _ in range(min(num_negatives_per_positive, len(non_bug_snippets)))]
 
 def prepare_data(dataset_path, snippet_folder_path, num_negatives_per_positive):
     instance_id_map = {item['instance_id']: item['problem_statement'] for item in load_data(dataset_path)}
     snippets = load_snippets(snippet_folder_path)
-    return tuple(np.array_split(np.array(create_triplets(instance_id_map, snippets, num_negatives_per_positive)), 2))
+    triplets = create_triplets(instance_id_map, snippets, num_negatives_per_positive)
+    return np.array_split(np.array(triplets), 2)
 
 def tokenize_triplets(triplets):
     tokenizer = Tokenizer()
@@ -57,8 +60,8 @@ def create_dataset(triplets):
 class Model(tf.keras.Model):
     def __init__(self):
         super(Model, self).__init__()
-        self.embedding = layers.Embedding(input_dim=10000, output_dim=128, input_length=MAX_SEQUENCE_LENGTH)
-        self.bi_lstm = layers.Bidirectional(layers.LSTM(64, dropout=DROPOUT_RATE))
+        self.embedding = layers.Embedding(input_dim=10000, output_dim=EMBEDDING_SIZE, input_length=MAX_SEQUENCE_LENGTH)
+        self.bi_lstm = layers.Bidirectional(layers.LSTM(FULLY_CONNECTED_SIZE, dropout=DROPOUT_RATE))
         self.fully_connected = layers.Dense(FULLY_CONNECTED_SIZE, activation='relu')
         self.embedding_size = layers.Dense(EMBEDDING_SIZE)
 
