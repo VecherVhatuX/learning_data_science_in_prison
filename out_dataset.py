@@ -54,12 +54,16 @@ class CustomDataset(Dataset):
         self.tokenizer = tokenizer
         self.max_sequence_length = max_sequence_length
         self.triplets = tokenize_triplets(triplets, tokenizer, max_sequence_length)
+        self.indices = list(range(len(self.triplets)))
 
     def __len__(self):
         return len(self.triplets)
 
     def __getitem__(self, idx):
-        return self.triplets[idx]
+        return self.triplets[self.indices[idx]]
+
+    def on_epoch_end(self):
+        random.shuffle(self.indices)
 
 def model():
     return nn.Sequential(
@@ -120,13 +124,14 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
     train_dataset = CustomDataset(train_triplets, tokenizer, MAX_SEQUENCE_LENGTH)
     test_dataset = CustomDataset(test_triplets, tokenizer, MAX_SEQUENCE_LENGTH)
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=lambda x: {k: torch.stack([d[k] for d in x]) for k in x[0]})
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=lambda x: {k: torch.stack([d[k] for d in x]) for k in x[0]})
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model()
     model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE_VALUE)
     for epoch in range(EPOCHS):
+        train_dataset.on_epoch_end()
         loss = train(model, device, train_loader, optimizer)
         print(f'Epoch {epoch+1}, Loss: {loss}')
     print(f'Test Accuracy: {evaluate(model, device, test_loader)}')
