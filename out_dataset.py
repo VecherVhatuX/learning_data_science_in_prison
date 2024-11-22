@@ -40,6 +40,17 @@ def create_triplets(problem_statement, positive_snippets, negative_snippets, num
             triplets.append({'anchor': problem_statement, 'positive': positive_doc[0], 'negative': random.choice(negative_snippets)[0]})
     return triplets
 
+# Data preparation function
+def prepare_data(dataset_path, snippet_folder_path, num_negatives_per_positive):
+    instance_id_map = {item['instance_id']: item['problem_statement'] for item in load_data(dataset_path)}
+    snippets = load_snippets(snippet_folder_path)
+    bug_snippets, non_bug_snippets = separate_snippets(snippets)
+    triplets = []
+    for folder_path, _ in snippets:
+        problem_statement = instance_id_map.get(os.path.basename(folder_path))
+        triplets.extend(create_triplets(problem_statement, bug_snippets, non_bug_snippets, num_negatives_per_positive))
+    return torch.utils.data.random_split(triplets, [int(len(triplets)*0.8), len(triplets)-int(len(triplets)*0.8)])
+
 # Dataset class
 class CustomDataset(Dataset):
     def __init__(self, triplets, max_sequence_length, tokenizer):
@@ -151,6 +162,16 @@ def evaluate(model, device, dataset, batch_size):
     accuracy = total_correct / len(dataset)
     print(f'Test Accuracy: {accuracy}')
 
+# Model creation function
+def create_model(embedding_size, fully_connected_size, dropout_rate, device):
+    model = Model(embedding_size, fully_connected_size, dropout_rate)
+    model.to(device)
+    return model
+
+# Optimizer creation function
+def create_optimizer(model, learning_rate_value):
+    return optim.Adam(model.parameters(), lr=learning_rate_value)
+
 # Main function
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
@@ -163,20 +184,12 @@ def main():
     epochs = 5
     batch_size = 32
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    instance_id_map = {item['instance_id']: item['problem_statement'] for item in load_data(dataset_path)}
-    snippets = load_snippets(snippet_folder_path)
-    bug_snippets, non_bug_snippets = separate_snippets(snippets)
-    triplets = []
-    for folder_path, _ in snippets:
-        problem_statement = instance_id_map.get(os.path.basename(folder_path))
-        triplets.extend(create_triplets(problem_statement, bug_snippets, non_bug_snippets, num_negatives_per_positive))
-    train_triplets, test_triplets = torch.utils.data.random_split(triplets, [int(len(triplets)*0.8), len(triplets)-int(len(triplets)*0.8)])
+    train_triplets, test_triplets = prepare_data(dataset_path, snippet_folder_path, num_negatives_per_positive)
     tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
     train_dataset = CustomDataset(train_triplets, max_sequence_length, tokenizer)
     test_dataset = CustomDataset(test_triplets, max_sequence_length, tokenizer)
-    model = Model(128, fully_connected_size, dropout_rate)
-    model.to(device)
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate_value)
+    model = create_model(128, fully_connected_size, dropout_rate, device)
+    optimizer = create_optimizer(model, learning_rate_value)
     train(model, device, train_dataset, epochs, learning_rate_value, batch_size, optimizer)
     evaluate(model, device, test_dataset, batch_size)
 
