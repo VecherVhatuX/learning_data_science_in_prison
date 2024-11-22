@@ -6,58 +6,25 @@ import numpy as np
 import torch.nn.functional as F
 
 class TripletModel(nn.Module):
-    """
-    Triplet network model.
-    
-    This model takes an input, embeds it into a higher-dimensional space, 
-    applies average pooling, and then outputs a normalized embedding.
-    """
     def __init__(self, embedding_dim, num_features):
         super(TripletModel, self).__init__()
-        # Initialize the embedding layer
         self.embedding = nn.Embedding(embedding_dim, num_features)
-        
-        # Initialize the average pooling layer
         self.avg_pool = nn.AvgPool1d(kernel_size=10)
-        
-        # Initialize the linear layer
         self.linear = nn.Linear(num_features, num_features)
-        
-        # Initialize the batch normalization layer
         self.batch_norm = nn.BatchNorm1d(num_features)
 
     def forward(self, x):
-        # Embed the input
         x = self.embedding(x)
-        
-        # Transpose the embedded input
         x = x.transpose(1, 2)
-        
-        # Apply average pooling
         x = self.avg_pool(x)
-        
-        # Squeeze the pooled output
         x = x.squeeze(2)
-        
-        # Apply the linear layer
         x = self.linear(x)
-        
-        # Apply batch normalization
         x = self.batch_norm(x)
-        
-        # Normalize the output
         x = F.normalize(x, p=2, dim=1)
-        
         return x
 
 
 class TripletDataset(Dataset):
-    """
-    Triplet dataset class.
-    
-    This class generates triplets (anchor, positive, negative) 
-    based on the input samples and labels.
-    """
     def __init__(self, samples, labels, num_negatives, batch_size, shuffle=True):
         self.samples = samples
         self.labels = labels
@@ -67,30 +34,16 @@ class TripletDataset(Dataset):
         self.indices = np.arange(len(self.samples))
 
     def __len__(self):
-        # Return the number of batches
         return len(self.samples) // self.batch_size
 
     def __getitem__(self, index):
-        # Shuffle the indices if required
         if self.shuffle:
             np.random.shuffle(self.indices)
-        
-        # Get the batch indices
         batch_indices = self.indices[index*self.batch_size:(index+1)*self.batch_size]
-        
-        # Select the anchor indices
         anchor_idx = np.random.choice(batch_indices, size=self.batch_size)
-        
-        # Get the anchor labels
         anchor_label = self.labels[anchor_idx]
-        
-        # Select the positive indices
         positive_idx = np.array([np.random.choice(np.where(self.labels == label)[0], size=1)[0] for label in anchor_label])
-        
-        # Select the negative indices
         negative_idx = np.array([np.random.choice(np.where(self.labels != label)[0], size=self.num_negatives, replace=False) for label in anchor_label])
-        
-        # Return the anchor, positive, and negative samples
         return {
             'anchor': torch.tensor([self.samples[i] for i in anchor_idx], dtype=torch.long),
             'positive': torch.tensor([self.samples[i] for i in positive_idx], dtype=torch.long),
@@ -99,41 +52,21 @@ class TripletDataset(Dataset):
 
 
 class InputDataset(Dataset):
-    """
-    Input dataset class.
-    
-    This class returns the input IDs.
-    """
     def __init__(self, input_ids):
         self.input_ids = input_ids
 
     def __len__(self):
-        # Return the number of input IDs
         return len(self.input_ids)
 
     def __getitem__(self, index):
-        # Return the input ID
         return self.input_ids[index]
 
 
 def calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
-    """
-    Calculate the triplet loss.
-    
-    The triplet loss is calculated as the difference between the 
-    distance between the anchor and positive embeddings and the 
-    minimum distance between the anchor and negative embeddings.
-    """
     return torch.mean(torch.clamp(torch.norm(anchor_embeddings - positive_embeddings, p=2, dim=1) - torch.norm(anchor_embeddings.unsqueeze(1) - negative_embeddings, p=2, dim=2).min(dim=1)[0] + 1.0, min=0.0))
 
 
 def train_step(model, batch, optimizer):
-    """
-    Perform a training step.
-    
-    This function performs a forward pass, calculates the loss, 
-    and updates the model parameters.
-    """
     optimizer.zero_grad()
     anchor_embeddings = model(batch['anchor'])
     positive_embeddings = model(batch['positive'])
@@ -145,11 +78,6 @@ def train_step(model, batch, optimizer):
 
 
 def train(model, dataset, epochs, batch_size, optimizer):
-    """
-    Train the model.
-    
-    This function trains the model for the specified number of epochs.
-    """
     for epoch in range(epochs):
         total_loss = 0.0
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
@@ -159,11 +87,6 @@ def train(model, dataset, epochs, batch_size, optimizer):
 
 
 def evaluate(model, dataset, batch_size):
-    """
-    Evaluate the model.
-    
-    This function calculates the validation loss.
-    """
     total_loss = 0.0
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     with torch.no_grad():
@@ -176,11 +99,6 @@ def evaluate(model, dataset, batch_size):
 
 
 def predict(model, dataset, batch_size):
-    """
-    Make predictions.
-    
-    This function returns the predicted embeddings.
-    """
     predictions = []
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     with torch.no_grad():
@@ -191,78 +109,38 @@ def predict(model, dataset, batch_size):
 
 
 def save_model(model, path):
-    """
-    Save the model.
-    
-    This function saves the model state dictionary to the specified path.
-    """
     torch.save(model.state_dict(), path)
 
 
 def load_model(path, model):
-    """
-    Load the model.
-    
-    This function loads the model state dictionary from the specified path.
-    """
     model.load_state_dict(torch.load(path))
 
 
 def calculate_distance(embedding1, embedding2):
-    """
-    Calculate the distance between two embeddings.
-    
-    This function calculates the L2 distance between the two embeddings.
-    """
     return torch.norm(embedding1 - embedding2, p=2, dim=1)
 
 
 def calculate_similarity(embedding1, embedding2):
-    """
-    Calculate the similarity between two embeddings.
-    
-    This function calculates the cosine similarity between the two embeddings.
-    """
     return torch.sum(embedding1 * embedding2, dim=1) / (torch.norm(embedding1, p=2, dim=1) * torch.norm(embedding2, p=2, dim=1))
 
 
 def calculate_cosine_distance(embedding1, embedding2):
-    """
-    Calculate the cosine distance between two embeddings.
-    
-    This function calculates the cosine distance between the two embeddings.
-    """
     return 1 - calculate_similarity(embedding1, embedding2)
 
 
 def get_nearest_neighbors(embeddings, target_embedding, k=5):
-    """
-    Get the nearest neighbors.
-    
-    This function returns the indices of the k nearest neighbors.
-    """
     distances = calculate_distance(embeddings, target_embedding)
     _, indices = torch.topk(-distances, k)
     return indices
 
 
 def get_similar_embeddings(embeddings, target_embedding, k=5):
-    """
-    Get the similar embeddings.
-    
-    This function returns the indices of the k most similar embeddings.
-    """
     similarities = calculate_similarity(embeddings, target_embedding)
     _, indices = torch.topk(similarities, k)
     return indices
 
 
 def calculate_knn_accuracy(embeddings, labels, k=5):
-    """
-    Calculate the k-NN accuracy.
-    
-    This function calculates the accuracy of the k-NN classifier.
-    """
     correct = 0
     for i in range(len(embeddings)):
         distances = calculate_distance(embeddings, embeddings[i])
@@ -274,11 +152,6 @@ def calculate_knn_accuracy(embeddings, labels, k=5):
 
 
 def calculate_knn_precision(embeddings, labels, k=5):
-    """
-    Calculate the k-NN precision.
-    
-    This function calculates the precision of the k-NN classifier.
-    """
     precision = 0
     for i in range(len(embeddings)):
         distances = calculate_distance(embeddings, embeddings[i])
@@ -289,11 +162,6 @@ def calculate_knn_precision(embeddings, labels, k=5):
 
 
 def calculate_knn_recall(embeddings, labels, k=5):
-    """
-    Calculate the k-NN recall.
-    
-    This function calculates the recall of the k-NN classifier.
-    """
     recall = 0
     for i in range(len(embeddings)):
         distances = calculate_distance(embeddings, embeddings[i])
@@ -304,11 +172,6 @@ def calculate_knn_recall(embeddings, labels, k=5):
 
 
 def calculate_knn_f1(embeddings, labels, k=5):
-    """
-    Calculate the k-NN F1-score.
-    
-    This function calculates the F1-score of the k-NN classifier.
-    """
     precision = calculate_knn_precision(embeddings, labels, k)
     recall = calculate_knn_recall(embeddings, labels, k)
     return 2 * (precision * recall) / (precision + recall)
