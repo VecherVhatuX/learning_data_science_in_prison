@@ -8,39 +8,15 @@ import json
 import os
 
 class CustomDataset(Dataset):
-    """
-    Handles the triplets data.
-
-    Args:
-        triplets (list): List of triplets.
-        max_sequence_length (int): Maximum sequence length.
-        tokenizer (object): Tokenizer object.
-        batch_size (int, optional): Batch size. Defaults to 32.
-    """
     def __init__(self, triplets, max_sequence_length, tokenizer, batch_size=32):
         self.triplets = triplets
         self.max_sequence_length = max_sequence_length
         self.tokenizer = tokenizer
         self.batch_size = batch_size
 
-    """
-    Returns the length of the dataset.
-
-    Returns:
-        int: Length of the dataset.
-    """
     def __len__(self):
         return len(self.triplets) // self.batch_size + 1
 
-    """
-    Returns a batch of data from the dataset.
-
-    Args:
-        idx (int): Index of the batch.
-
-    Returns:
-        dict: Batch of data.
-    """
     def __getitem__(self, idx):
         batch_triplets = self.triplets[idx * self.batch_size:(idx + 1) * self.batch_size]
         inputs = []
@@ -74,66 +50,24 @@ class CustomDataset(Dataset):
             attention_masks.extend([anchor['attention_mask'].squeeze(0), positive['attention_mask'].squeeze(0), negative['attention_mask'].squeeze(0)])
         return {'input_ids': torch.stack(inputs), 'attention_mask': torch.stack(attention_masks)}
 
-def build_model(embedding_size, fully_connected_size, dropout_rate, max_sequence_length):
-    """
-    Builds the model.
+class Model(nn.Module):
+    def __init__(self, embedding_size, fully_connected_size, dropout_rate):
+        super(Model, self).__init__()
+        self.embedding = nn.Embedding(10000, embedding_size)
+        self.pooling = nn.AdaptiveAvgPool1d(1)
+        self.dropout = nn.Dropout(dropout_rate)
+        self.fc1 = nn.Linear(embedding_size, fully_connected_size)
+        self.fc2 = nn.Linear(fully_connected_size, embedding_size)
 
-    Args:
-        embedding_size (int): Embedding size.
-        fully_connected_size (int): Fully connected size.
-        dropout_rate (float): Dropout rate.
-        max_sequence_length (int): Maximum sequence length.
-
-    Returns:
-        object: Model object.
-    """
-    class Model(nn.Module):
-        """
-        Model class.
-
-        Args:
-            embedding_size (int): Embedding size.
-            fully_connected_size (int): Fully connected size.
-            dropout_rate (float): Dropout rate.
-            max_sequence_length (int): Maximum sequence length.
-        """
-        def __init__(self):
-            super(Model, self).__init__()
-            self.embedding = nn.Embedding(10000, embedding_size)
-            self.pooling = nn.AdaptiveAvgPool1d(1)
-            self.dropout = nn.Dropout(dropout_rate)
-            self.fc1 = nn.Linear(embedding_size, fully_connected_size)
-            self.fc2 = nn.Linear(fully_connected_size, embedding_size)
-
-        """
-        Forward pass.
-
-        Args:
-            x (tensor): Input tensor.
-
-        Returns:
-            tensor: Output tensor.
-        """
-        def forward(self, x):
-            x = self.embedding(x)
-            x = self.pooling(x.permute(0, 2, 1)).squeeze(2)
-            x = self.dropout(x)
-            x = torch.relu(self.fc1(x))
-            x = self.fc2(x)
-            return x
-    return Model()
+    def forward(self, x):
+        x = self.embedding(x)
+        x = self.pooling(x.permute(0, 2, 1)).squeeze(2)
+        x = self.dropout(x)
+        x = torch.relu(self.fc1(x))
+        x = self.fc2(x)
+        return x
 
 def train(model, device, dataset, epochs, learning_rate_value):
-    """
-    Trains the model.
-
-    Args:
-        model (object): Model object.
-        device (str): Device to use.
-        dataset (object): Dataset object.
-        epochs (int): Number of epochs.
-        learning_rate_value (float): Learning rate value.
-    """
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate_value)
     for epoch in range(epochs):
@@ -154,14 +88,6 @@ def train(model, device, dataset, epochs, learning_rate_value):
         print(f'Epoch {epoch+1}, Loss: {total_loss / len(dataset)}')
 
 def evaluate(model, device, dataset):
-    """
-    Evaluates the model.
-
-    Args:
-        model (object): Model object.
-        device (str): Device to use.
-        dataset (object): Dataset object.
-    """
     total_correct = 0
     with torch.no_grad():
         for batch in dataset:
@@ -180,46 +106,17 @@ def evaluate(model, device, dataset):
     print(f'Test Accuracy: {accuracy}')
 
 def calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
-    """
-    Calculates the loss.
-
-    Args:
-        anchor_embeddings (tensor): Anchor embeddings.
-        positive_embeddings (tensor): Positive embeddings.
-        negative_embeddings (tensor): Negative embeddings.
-
-    Returns:
-        tensor: Loss tensor.
-    """
     positive_distance = torch.mean(torch.pow(anchor_embeddings - positive_embeddings, 2))
     negative_distance = torch.mean(torch.pow(anchor_embeddings - negative_embeddings, 2))
     return positive_distance + torch.max(negative_distance - positive_distance, torch.tensor(0.0))
 
 def load_data(file_path):
-    """
-    Loads data from a file.
-
-    Args:
-        file_path (str): File path.
-
-    Returns:
-        object: Loaded data.
-    """
     if file_path.endswith('.npy'):
         return np.load(file_path, allow_pickle=True)
     else:
         return json.load(open(file_path, 'r', encoding='utf-8'))
 
 def load_snippets(folder_path):
-    """
-    Loads snippets from a folder.
-
-    Args:
-        folder_path (str): Folder path.
-
-    Returns:
-        list: List of snippet paths.
-    """
     snippet_paths = []
     for folder in os.listdir(folder_path):
         if os.path.isdir(os.path.join(folder_path, folder)):
@@ -227,15 +124,6 @@ def load_snippets(folder_path):
     return snippet_paths
 
 def separate_snippets(snippets):
-    """
-    Separates snippets into bug and non-bug snippets.
-
-    Args:
-        snippets (list): List of snippets.
-
-    Returns:
-        tuple: Tuple of bug and non-bug snippets.
-    """
     bug_snippets = []
     non_bug_snippets = []
     for folder_path, snippet_file_path in snippets:
@@ -247,18 +135,6 @@ def separate_snippets(snippets):
     return tuple(map(list, zip(*[(bug_snippets, non_bug_snippets)])))
 
 def create_triplets(problem_statement, positive_snippets, negative_snippets, num_negatives_per_positive):
-    """
-    Creates triplets from the problem statement, positive snippets, negative snippets, and number of negatives per positive.
-
-    Args:
-        problem_statement (str): Problem statement.
-        positive_snippets (list): List of positive snippets.
-        negative_snippets (list): List of negative snippets.
-        num_negatives_per_positive (int): Number of negatives per positive.
-
-    Returns:
-        list: List of triplets.
-    """
     triplets = []
     for positive_doc in positive_snippets:
         for _ in range(min(num_negatives_per_positive, len(negative_snippets))):
@@ -291,7 +167,7 @@ def main():
     test_data = CustomDataset(test_triplets, max_sequence_length, tokenizer, batch_size=batch_size)
     train_loader = DataLoader(train_data, batch_size=1, shuffle=True)
     test_loader = DataLoader(test_data, batch_size=1, shuffle=False)
-    model = build_model(embedding_size, fully_connected_size, dropout_rate, max_sequence_length)
+    model = Model(embedding_size, fully_connected_size, dropout_rate)
     model.to(device)
     train(model, device, train_loader, epochs, learning_rate_value)
     evaluate(model, device, test_loader)
