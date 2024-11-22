@@ -2,11 +2,10 @@ import os
 import json
 from dataclasses import dataclass
 from typing import List
-import jax
-import jax.numpy as jnp
-from jax.experimental import stax
-from jax.experimental.stax import Dense, Relu
-import optax
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
 
 # Define hyperparameters class to hold model configuration
 @dataclass
@@ -48,7 +47,7 @@ class Hyperparameters:
     negative_samples_per_positive_sample: int = 5
 
 # Custom dataset class for data loading
-class CustomDataset:
+class CustomDataset(Dataset):
     # Initialize the custom dataset
     def __init__(self, data, conversation_format_identifier):
         self.data = data
@@ -61,22 +60,28 @@ class CustomDataset:
     # Return the item at the specified index
     def __getitem__(self, idx):
         example = self.data[idx]
-        input_ids = jnp.array([0] + [ord(c) for c in f"{self.conversation_format_identifier} {example['input']}"] + [1], dtype=jnp.float32)
-        labels = jnp.array([0] + [ord(c) for c in f"{self.conversation_format_identifier} {example['output']}"] + [1], dtype=jnp.float32)
-        attention_mask = jnp.array([1] * len(input_ids), dtype=jnp.float32)
+        input_ids = torch.tensor([0] + [ord(c) for c in f"{self.conversation_format_identifier} {example['input']}"] + [1], dtype=torch.float32)
+        labels = torch.tensor([0] + [ord(c) for c in f"{self.conversation_format_identifier} {example['output']}"] + [1], dtype=torch.float32)
+        attention_mask = torch.tensor([1] * len(input_ids), dtype=torch.float32)
         return {"input_ids": input_ids, "labels": labels, "attention_mask": attention_mask}
 
 # Define neural network model
-def neural_network_model():
-    # Model architecture
-    init_fn, apply_fn = stax.serial(
-        Dense(128, W_init=jax.nn.initializers.normal(1.0)),
-        Relu(),
-        Dense(128, W_init=jax.nn.initializers.normal(1.0)),
-        Relu(),
-        Dense(1000, W_init=jax.nn.initializers.normal(1.0))
-    )
-    return init_fn, apply_fn
+class NeuralNetworkModel(nn.Module):
+    def __init__(self):
+        super(NeuralNetworkModel, self).__init__()
+        self.fc1 = nn.Linear(128, 128)
+        self.relu1 = nn.ReLU()
+        self.fc2 = nn.Linear(128, 128)
+        self.relu2 = nn.ReLU()
+        self.fc3 = nn.Linear(128, 1000)
+
+    def forward(self, x):
+        out = self.fc1(x)
+        out = self.relu1(out)
+        out = self.fc2(out)
+        out = self.relu2(out)
+        out = self.fc3(out)
+        return out
 
 # Load JSON data from file
 def load_json_data(file_name):
@@ -97,59 +102,60 @@ def load_hyperparameters(base_model_identifier, conversation_format_identifier, 
 def create_data_loader(data, conversation_format_identifier, batch_size):
     # Create data loader
     dataset = CustomDataset(data, conversation_format_identifier)
-    data_loader = []
-    for i in range(0, len(dataset), batch_size):
-        batch = []
-        for j in range(batch_size):
-            if i + j < len(dataset):
-                batch.append(dataset[i + j])
-            else:
-                break
-        if batch:
-            input_ids = jnp.stack([example["input_ids"] for example in batch])
-            labels = jnp.stack([example["labels"] for example in batch])
-            attention_mask = jnp.stack([example["attention_mask"] for example in batch])
-            data_loader.append((input_ids, labels, attention_mask))
-    return data_loader
+    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
 # Perform a training step
-def train_step(params, opt_state, batch):
+def train_step(model, device, optimizer, batch):
     # Training step
-    grads = jax.grad(lambda params: jnp.mean((apply_fn(params, batch[0]) - batch[1]) ** 2))(params)
-    updates, opt_state = optax.adam(learning_rate=0.001).update(grads, opt_state)
-    params = optax.apply_updates(params, updates)
-    return params, opt_state
+    model.train()
+    input_ids = batch["input_ids"].to(device)
+    labels = batch["labels"].to(device)
+    attention_mask = batch["attention_mask"].to(device)
+    optimizer.zero_grad()
+    outputs = model(input_ids)
+    loss = nn.MSELoss()(outputs, labels)
+    loss.backward()
+    optimizer.step()
+    return loss.item()
 
 # Train the model
-def train_model(init_fn, apply_fn, dataset, hyperparameters):
+def train_model(model, device, dataset, hyperparameters):
     # Train model
-    rng = jax.random.PRNGKey(hyperparameters.random_seed_value)
-    params = init_fn(rng, (-1, 128))
-    opt_state = optax.adam(learning_rate=0.001).init(params)
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
     for epoch in range(hyperparameters.number_of_epochs):
+        total_loss = 0
         for batch in dataset:
-            params, opt_state = train_step(params, opt_state, batch)
-        print(f"Epoch {epoch+1}, Loss: {jax.grad(lambda params: jnp.mean((apply_fn(params, batch[0]) - batch[1]) ** 2))(params)}")
+            loss = train_step(model, device, optimizer, batch)
+            total_loss += loss
+        print(f"Epoch {epoch+1}, Loss: {total_loss / len(dataset)}")
 
 # Evaluate the model
-def evaluate_model(init_fn, apply_fn, dataset):
+def evaluate_model(model, device, dataset):
     # Evaluate model
-    params = jnp.load(os.path.join(Hyperparameters().output_directory_path, "final_model.npy"))
+    model.eval()
     total_loss = 0
-    for batch in dataset:
-        total_loss += jnp.mean((apply_fn(params, batch[0]) - batch[1]) ** 2)
+    with torch.no_grad():
+        for batch in dataset:
+            input_ids = batch["input_ids"].to(device)
+            labels = batch["labels"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            outputs = model(input_ids)
+            loss = nn.MSELoss()(outputs, labels)
+            total_loss += loss.item()
     print(f"Test Loss: {total_loss / len(dataset)}")
 
 # Main function
 def main():
     hyperparameters = load_hyperparameters("t5-base", "none", True)
-    init_fn, apply_fn = neural_network_model()
+    model = NeuralNetworkModel()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
     training_data, testing_data = load_json_data("train.json"), load_json_data("test.json")
     if training_data is not None and testing_data is not None:
         train_data_loader = create_data_loader(training_data, hyperparameters.conversation_format_identifier, hyperparameters.training_batch_size)
         test_data_loader = create_data_loader(testing_data, hyperparameters.conversation_format_identifier, hyperparameters.evaluation_batch_size)
-        train_model(init_fn, apply_fn, train_data_loader, hyperparameters)
-        evaluate_model(init_fn, apply_fn, test_data_loader)
+        train_model(model, device, train_data_loader, hyperparameters)
+        evaluate_model(model, device, test_data_loader)
 
 if __name__ == "__main__":
     main()
