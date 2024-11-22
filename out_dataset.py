@@ -53,7 +53,7 @@ class CustomDataset(Dataset):
 class Model(nn.Module):
     def __init__(self, embedding_size, fully_connected_size, dropout_rate):
         super(Model, self).__init__()
-        self.embedding = nn.Embedding(30522, embedding_size) # Changed from 10000
+        self.embedding = nn.Embedding(30522, embedding_size) 
         self.pooling = nn.AdaptiveAvgPool1d(1)
         self.dropout = nn.Dropout(dropout_rate)
         self.fc1 = nn.Linear(embedding_size, fully_connected_size)
