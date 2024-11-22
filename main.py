@@ -80,8 +80,11 @@ class T5Model(nn.Module):
     def __init__(self):
         super().__init__()
         self.model = torch.hub.load('t5', 't5-base', use_cuda=torch.cuda.is_available())
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)
 
     def forward(self, input_ids):
+        input_ids = input_ids.to(self.device)
         outputs = self.model(input_ids=input_ids)
         return outputs.last_hidden_state
 
@@ -100,11 +103,11 @@ def create_data_loader(data, conversation_format_identifier, batch_size):
     dataset = CustomDataset(data, conversation_format_identifier)
     return DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-def train_step(model, device, optimizer, batch):
+def train_step(model, optimizer, batch):
     model.train()
-    input_ids = batch["input_ids"].to(device)
-    labels = batch["labels"].to(device)
-    attention_mask = batch["attention_mask"].to(device)
+    input_ids = batch["input_ids"]
+    labels = batch["labels"]
+    attention_mask = batch["attention_mask"]
     optimizer.zero_grad()
     outputs = model(input_ids)
     loss = nn.CrossEntropyLoss()(outputs.view(-1, outputs.shape[-1]), labels.view(-1))
@@ -112,42 +115,40 @@ def train_step(model, device, optimizer, batch):
     optimizer.step()
     return loss.item()
 
-def train_model(model, device, dataset, hyperparameters):
+def train_model(model, dataset, hyperparameters):
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     for epoch in range(hyperparameters.number_of_epochs):
         total_loss = 0
         for batch in dataset:
-            loss = train_step(model, device, optimizer, batch)
+            loss = train_step(model, optimizer, batch)
             total_loss += loss
         print(f"Epoch {epoch+1}, Loss: {total_loss / len(dataset)}")
 
-def evaluate_model(model, device, dataset):
+def evaluate_model(model, dataset):
     model.eval()
     total_loss = 0
     with torch.no_grad():
         for batch in dataset:
-            input_ids = batch["input_ids"].to(device)
-            labels = batch["labels"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
+            input_ids = batch["input_ids"]
+            labels = batch["labels"]
+            attention_mask = batch["attention_mask"]
             outputs = model(input_ids)
             loss = nn.CrossEntropyLoss()(outputs.view(-1, outputs.shape[-1]), labels.view(-1))
             total_loss += loss.item()
     print(f"Test Loss: {total_loss / len(dataset)}")
 
-def main(hyperparameters, model, device, training_data, testing_data):
+def main(hyperparameters, model, training_data, testing_data):
     train_data_loader = create_data_loader(training_data, hyperparameters.conversation_format_identifier, hyperparameters.training_batch_size)
     test_data_loader = create_data_loader(testing_data, hyperparameters.conversation_format_identifier, hyperparameters.evaluation_batch_size)
-    train_model(model, device, train_data_loader, hyperparameters)
-    evaluate_model(model, device, test_data_loader)
+    train_model(model, train_data_loader, hyperparameters)
+    evaluate_model(model, test_data_loader)
 
 def run():
     hyperparameters = load_hyperparameters("t5-base", "none", True)
     model = T5Model()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
     training_data, testing_data = load_json_data("train.json"), load_json_data("test.json")
     if training_data is not None and testing_data is not None:
-        main(hyperparameters, model, device, training_data, testing_data)
+        main(hyperparameters, model, training_data, testing_data)
 
 if __name__ == "__main__":
     run()
