@@ -5,19 +5,22 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import torch.nn.functional as F
 
-def create_model(num_embeddings, features):
-    return nn.Sequential(
-        nn.Embedding(num_embeddings, features),
-        lambda x: x.transpose(1, 2),
-        nn.AvgPool1d(kernel_size=10),
-        lambda x: x.squeeze(2),
-        nn.Linear(features, features),
-        nn.BatchNorm1d(features),
-        lambda x: F.normalize(x, p=2, dim=1)
-    )
+class TripletModel(nn.Module):
+    def __init__(self, num_embeddings, features):
+        super(TripletModel, self).__init__()
+        self.model = nn.Sequential(
+            nn.Embedding(num_embeddings, features),
+            lambda x: x.transpose(1, 2),
+            nn.AvgPool1d(kernel_size=10),
+            lambda x: x.squeeze(2),
+            nn.Linear(features, features),
+            nn.BatchNorm1d(features),
+            lambda x: F.normalize(x, p=2, dim=1)
+        )
 
-def create_triplet_dataset(samples, labels, num_negatives, batch_size, shuffle=True):
-    return TripletDataset(samples, labels, num_negatives, batch_size, shuffle)
+    def forward(self, x):
+        return self.model(x)
+
 
 class TripletDataset(Dataset):
     def __init__(self, samples, labels, num_negatives, batch_size, shuffle=True):
@@ -45,6 +48,7 @@ class TripletDataset(Dataset):
             'negative_input_ids': torch.tensor([self.samples[i] for i in negative_idx], dtype=torch.long)
         }
 
+
 class InputDataset(Dataset):
     def __init__(self, input_ids):
         self.input_ids = input_ids
@@ -55,8 +59,10 @@ class InputDataset(Dataset):
     def __getitem__(self, index):
         return self.input_ids[index]
 
+
 def calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
     return torch.mean(torch.clamp(torch.norm(anchor_embeddings - positive_embeddings, p=2, dim=1) - torch.norm(anchor_embeddings.unsqueeze(1) - negative_embeddings, p=2, dim=2).min(dim=1)[0] + 1.0, min=0.0))
+
 
 def train_step(model, batch, optimizer):
     optimizer.zero_grad()
@@ -68,6 +74,7 @@ def train_step(model, batch, optimizer):
     optimizer.step()
     return loss
 
+
 def train(model, dataset, epochs, batch_size, optimizer):
     for epoch in range(epochs):
         total_loss = 0.0
@@ -75,6 +82,7 @@ def train(model, dataset, epochs, batch_size, optimizer):
         for i, batch in enumerate(dataloader):
             total_loss += train_step(model, batch, optimizer).item()
         print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
+
 
 def evaluate(model, dataset, batch_size):
     total_loss = 0.0
@@ -87,6 +95,7 @@ def evaluate(model, dataset, batch_size):
             total_loss += calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
     print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
+
 def predict(model, dataset, batch_size):
     predictions = []
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
@@ -96,30 +105,38 @@ def predict(model, dataset, batch_size):
             predictions.extend(output.cpu().numpy())
     return np.array(predictions)
 
+
 def save_model(model, path):
     torch.save(model.state_dict(), path)
+
 
 def load_model(path, model):
     model.load_state_dict(torch.load(path))
 
+
 def calculate_distance(embedding1, embedding2):
     return torch.norm(embedding1 - embedding2, p=2, dim=1)
+
 
 def calculate_similarity(embedding1, embedding2):
     return torch.sum(embedding1 * embedding2, dim=1) / (torch.norm(embedding1, p=2, dim=1) * torch.norm(embedding2, p=2, dim=1))
 
+
 def calculate_cosine_distance(embedding1, embedding2):
     return 1 - calculate_similarity(embedding1, embedding2)
+
 
 def get_nearest_neighbors(embeddings, target_embedding, k=5):
     distances = calculate_distance(embeddings, target_embedding)
     _, indices = torch.topk(-distances, k)
     return indices
 
+
 def get_similar_embeddings(embeddings, target_embedding, k=5):
     similarities = calculate_similarity(embeddings, target_embedding)
     _, indices = torch.topk(similarities, k)
     return indices
+
 
 def calculate_knn_accuracy(embeddings, labels, k=5):
     correct = 0
@@ -131,6 +148,7 @@ def calculate_knn_accuracy(embeddings, labels, k=5):
             correct += 1
     return correct / len(embeddings)
 
+
 def calculate_knn_precision(embeddings, labels, k=5):
     precision = 0
     for i in range(len(embeddings)):
@@ -139,6 +157,7 @@ def calculate_knn_precision(embeddings, labels, k=5):
         nearest_labels = labels[indices[1:]]
         precision += len(torch.where(nearest_labels == labels[i])[0]) / k
     return precision / len(embeddings)
+
 
 def calculate_knn_recall(embeddings, labels, k=5):
     recall = 0
@@ -149,10 +168,12 @@ def calculate_knn_recall(embeddings, labels, k=5):
         recall += len(torch.where(nearest_labels == labels[i])[0]) / len(torch.where(labels == labels[i])[0])
     return recall / len(embeddings)
 
+
 def calculate_knn_f1(embeddings, labels, k=5):
     precision = calculate_knn_precision(embeddings, labels, k)
     recall = calculate_knn_recall(embeddings, labels, k)
     return 2 * (precision * recall) / (precision + recall)
+
 
 def main():
     np.random.seed(42)
@@ -165,17 +186,9 @@ def main():
     epochs = 10
     learning_rate = 1e-4
 
-    model = nn.Sequential(
-        nn.Embedding(101, 10),
-        lambda x: x.transpose(1, 2),
-        nn.AvgPool1d(kernel_size=10),
-        lambda x: x.squeeze(2),
-        nn.Linear(10, 10),
-        nn.BatchNorm1d(10),
-        lambda x: F.normalize(x, p=2, dim=1)
-    )
+    model = TripletModel(101, 10)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    dataset = create_triplet_dataset(samples, labels, num_negatives, batch_size)
+    dataset = TripletDataset(samples, labels, num_negatives, batch_size)
     train(model, dataset, epochs, batch_size, optimizer)
 
     input_ids = torch.tensor(np.array([1, 2, 3, 4, 5], dtype=np.int32).reshape((1, 10)), dtype=torch.long)
@@ -213,6 +226,7 @@ def main():
     print("KNN Recall:", calculate_knn_recall(torch.tensor(all_embeddings, dtype=torch.float), torch.tensor(labels, dtype=torch.long), k=5))
 
     print("KNN F1-score:", calculate_knn_f1(torch.tensor(all_embeddings, dtype=torch.float), torch.tensor(labels, dtype=torch.long), k=5))
+
 
 if __name__ == "__main__":
     main()
