@@ -72,14 +72,16 @@ def neural_network_model():
 
 def train_model(model, dataset, hyperparameters):
     init_fn, apply_fn = model
-    params = init_fn(jax.random.PRNGKey(0), (-1, 128))
-    opt_state = optax.adam(learning_rate=0.001)(params)
+    rng = jax.random.PRNGKey(hyperparameters.random_seed_value)
+    params = init_fn(rng, (-1, 128))
+    optimizer = optax.adam(learning_rate=0.001)
+    opt_state = optimizer.init(params)
     loss_fn = lambda params, x, y: jnp.mean((apply_fn(params, x) - y) ** 2)
     for epoch in range(hyperparameters.number_of_epochs):
         total_loss = 0
         for i, (batch_inputs, batch_labels, _) in enumerate(dataset):
             grads = jax.grad(loss_fn)(params, batch_inputs, batch_labels)
-            updates, opt_state = optax.adam(learning_rate=0.001)(grads, opt_state)
+            updates, opt_state = optimizer.update(grads, opt_state)
             params = optax.apply_updates(params, updates)
             total_loss += loss_fn(params, batch_inputs, batch_labels)
         print(f"Epoch {epoch+1}, Loss: {total_loss / (i+1)}")
@@ -108,11 +110,18 @@ def main():
     hyperparameters = load_hyperparameters("t5-base", "none", True)
     model = neural_network_model()
     training_data, testing_data = load_json_data("train.json"), load_json_data("test.json")
-    if training_data is not None:
-        training_dataset = CustomDataset(training_data, hyperparameters.conversation_format_identifier)
-        testing_dataset = CustomDataset(testing_data, hyperparameters.conversation_format_identifier)
-        train_model(model, training_dataset, hyperparameters)
-        evaluate_model(model, testing_dataset, hyperparameters)
+    if training_data is not None and testing_data is not None:
+        batch_size = hyperparameters.training_batch_size
+        train_data_loader = jax.tree_util.tree_leaves(CustomDataset(training_data, hyperparameters.conversation_format_identifier))
+        train_data_loader = jax.tree_util.tree_map(lambda x: x.reshape(-1, batch_size, x.shape[-1]), train_data_loader)
+        train_data_loader = jax.tree_util.tree_map(lambda x: x.swapaxes(0, 1), train_data_loader)
+
+        test_data_loader = jax.tree_util.tree_leaves(CustomDataset(testing_data, hyperparameters.conversation_format_identifier))
+        test_data_loader = jax.tree_util.tree_map(lambda x: x.reshape(-1, batch_size, x.shape[-1]), test_data_loader)
+        test_data_loader = jax.tree_util.tree_map(lambda x: x.swapaxes(0, 1), test_data_loader)
+
+        train_model(model, zip(*train_data_loader), hyperparameters)
+        evaluate_model(model, zip(*test_data_loader), hyperparameters)
 
 if __name__ == "__main__":
     main()
