@@ -102,7 +102,7 @@ def evaluate(model, device, dataset):
                 similarity_positive = torch.dot(anchor_embeddings[i], positive_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(positive_embeddings[i]))
                 similarity_negative = torch.dot(anchor_embeddings[i], negative_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(negative_embeddings[i]))
                 total_correct += int(similarity_positive > similarity_negative)
-    accuracy = total_correct / (len(dataset) * 32)
+    accuracy = total_correct / ((len(dataset) * 32) // 3)
     print(f'Test Accuracy: {accuracy}')
 
 def calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
