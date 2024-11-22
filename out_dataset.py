@@ -67,14 +67,68 @@ class Model(nn.Module):
         x = self.fc2(x)
         return x
 
-def train(model, device, dataset, epochs, learning_rate_value):
+class TripletDataset(Dataset):
+    def __init__(self, triplets, num_negatives_per_positive, batch_size):
+        self.triplets = triplets
+        self.num_negatives_per_positive = num_negatives_per_positive
+        self.batch_size = batch_size
+        self.positive_snippets = [triplet['positive'] for triplet in triplets]
+        self.negative_snippets = [triplet['negative'] for triplet in triplets]
+        self.anchor = [triplet['anchor'] for triplet in triplets]
+
+    def __len__(self):
+        return len(self.anchor) // self.batch_size + 1
+
+    def __getitem__(self, idx):
+        batch_anchor = self.anchor[idx * self.batch_size:(idx + 1) * self.batch_size]
+        batch_positive_snippets = self.positive_snippets[idx * self.batch_size:(idx + 1) * self.batch_size]
+        batch_negative_snippets = self.negative_snippets[idx * self.batch_size:(idx + 1) * self.batch_size]
+        batch_triplets = []
+        for i in range(len(batch_anchor)):
+            for _ in range(self.num_negatives_per_positive):
+                batch_triplets.append({'anchor': batch_anchor[i], 'positive': batch_positive_snippets[i], 'negative': random.choice(self.negative_snippets)})
+        return batch_triplets
+
+def train(model, device, dataset, epochs, learning_rate_value, max_sequence_length, tokenizer, batch_size):
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate_value)
     for epoch in range(epochs):
         total_loss = 0
-        for batch in dataset:
-            inputs = batch['input_ids'].to(device)
-            attention_masks = batch['attention_mask'].to(device)
+        for batch_idx, batch_triplets in enumerate(dataset):
+            batch_triplets = batch_triplets
+            inputs = []
+            attention_masks = []
+            for triplet in batch_triplets:
+                anchor = tokenizer.encode_plus(
+                    triplet['anchor'],
+                    max_length=max_sequence_length,
+                    padding='max_length',
+                    truncation=True,
+                    return_attention_mask=True,
+                    return_tensors='pt'
+                )
+                positive = tokenizer.encode_plus(
+                    triplet['positive'],
+                    max_length=max_sequence_length,
+                    padding='max_length',
+                    truncation=True,
+                    return_attention_mask=True,
+                    return_tensors='pt'
+                )
+                negative = tokenizer.encode_plus(
+                    triplet['negative'],
+                    max_length=max_sequence_length,
+                    padding='max_length',
+                    truncation=True,
+                    return_attention_mask=True,
+                    return_tensors='pt'
+                )
+                inputs.extend([anchor['input_ids'].squeeze(0), positive['input_ids'].squeeze(0), negative['input_ids'].squeeze(0)])
+                attention_masks.extend([anchor['attention_mask'].squeeze(0), positive['attention_mask'].squeeze(0), negative['attention_mask'].squeeze(0)])
+            inputs = torch.stack(inputs)
+            attention_masks = torch.stack(attention_masks)
+            inputs = inputs.to(device)
+            attention_masks = attention_masks.to(device)
             inputs = torch.split(inputs, inputs.size(0) // 3, dim=0)
             attention_masks = torch.split(attention_masks, attention_masks.size(0) // 3, dim=0)
             optimizer.zero_grad()
@@ -87,12 +141,44 @@ def train(model, device, dataset, epochs, learning_rate_value):
             total_loss += loss.item()
         print(f'Epoch {epoch+1}, Loss: {total_loss / len(dataset)}')
 
-def evaluate(model, device, dataset):
+def evaluate(model, device, dataset, max_sequence_length, tokenizer, batch_size):
     total_correct = 0
     with torch.no_grad():
-        for batch in dataset:
-            inputs = batch['input_ids'].to(device)
-            attention_masks = batch['attention_mask'].to(device)
+        for batch_idx, batch_triplets in enumerate(dataset):
+            batch_triplets = batch_triplets
+            inputs = []
+            attention_masks = []
+            for triplet in batch_triplets:
+                anchor = tokenizer.encode_plus(
+                    triplet['anchor'],
+                    max_length=max_sequence_length,
+                    padding='max_length',
+                    truncation=True,
+                    return_attention_mask=True,
+                    return_tensors='pt'
+                )
+                positive = tokenizer.encode_plus(
+                    triplet['positive'],
+                    max_length=max_sequence_length,
+                    padding='max_length',
+                    truncation=True,
+                    return_attention_mask=True,
+                    return_tensors='pt'
+                )
+                negative = tokenizer.encode_plus(
+                    triplet['negative'],
+                    max_length=max_sequence_length,
+                    padding='max_length',
+                    truncation=True,
+                    return_attention_mask=True,
+                    return_tensors='pt'
+                )
+                inputs.extend([anchor['input_ids'].squeeze(0), positive['input_ids'].squeeze(0), negative['input_ids'].squeeze(0)])
+                attention_masks.extend([anchor['attention_mask'].squeeze(0), positive['attention_mask'].squeeze(0), negative['attention_mask'].squeeze(0)])
+            inputs = torch.stack(inputs)
+            attention_masks = torch.stack(attention_masks)
+            inputs = inputs.to(device)
+            attention_masks = attention_masks.to(device)
             inputs = torch.split(inputs, inputs.size(0) // 3, dim=0)
             attention_masks = torch.split(attention_masks, attention_masks.size(0) // 3, dim=0)
             anchor_embeddings = model(inputs[0])
@@ -102,7 +188,7 @@ def evaluate(model, device, dataset):
                 similarity_positive = torch.dot(anchor_embeddings[i], positive_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(positive_embeddings[i]))
                 similarity_negative = torch.dot(anchor_embeddings[i], negative_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(negative_embeddings[i]))
                 total_correct += int(similarity_positive > similarity_negative)
-    accuracy = total_correct / ((len(dataset) * 32) // 3)
+    accuracy = total_correct / ((len(dataset) * batch_size) // 3)
     print(f'Test Accuracy: {accuracy}')
 
 def calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
@@ -163,14 +249,12 @@ def main():
             triplets.extend(create_triplets(problem_statement, [bug_snippet], non_bug_snippets, num_negatives_per_positive))
     train_triplets, test_triplets = torch.utils.data.random_split(triplets, [int(len(triplets)*0.8), len(triplets)-int(len(triplets)*0.8)])
     tokenizer = torch.hub.load('huggingface/pytorch-transformers', 'tokenizer', 'bert-base-uncased')
-    train_data = CustomDataset(train_triplets, max_sequence_length, tokenizer, batch_size=batch_size)
-    test_data = CustomDataset(test_triplets, max_sequence_length, tokenizer, batch_size=batch_size)
-    train_loader = DataLoader(train_data, batch_size=1, shuffle=True)
-    test_loader = DataLoader(test_data, batch_size=1, shuffle=False)
+    train_data = TripletDataset(train_triplets, num_negatives_per_positive, batch_size)
+    test_data = TripletDataset(test_triplets, num_negatives_per_positive, batch_size)
     model = Model(embedding_size, fully_connected_size, dropout_rate)
     model.to(device)
-    train(model, device, train_loader, epochs, learning_rate_value)
-    evaluate(model, device, test_loader)
+    train(model, device, train_data, epochs, learning_rate_value, max_sequence_length, tokenizer, batch_size)
+    evaluate(model, device, test_data, max_sequence_length, tokenizer, batch_size)
 
 if __name__ == "__main__":
     main()
