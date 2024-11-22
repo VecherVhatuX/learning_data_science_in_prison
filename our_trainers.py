@@ -7,19 +7,20 @@ import numpy as np
 import tensorflow as tf
 import optax
 
-### Model Generation
-def construct_triplet_model(num_embeddings, features):
-    def model(x):
-        x = nn.Embed(num_embeddings=num_embeddings, features=features)(x)
+class TripletModel(nn.Module):
+    num_embeddings: int
+    features: int
+
+    @nn.compact
+    def __call__(self, x):
+        x = nn.Embed(num_embeddings=self.num_embeddings, features=self.features)(x)
         x = x.transpose((0, 2, 1))
         x = nn.avg_pool(x, window_shape=(x.shape[-1],), strides=None, padding='VALID')
         x = x.squeeze(2)
-        x = nn.Dense(features=features)(x)
+        x = nn.Dense(features=self.features)(x)
         x = nn.BatchNorm(use_running_average=False)(x)
         return x / jnp.linalg.norm(x, axis=1, keepdims=True)
-    return nn.Model(model)
 
-### Loss Function Definition
 def define_triplet_loss_fn():
     def loss_fn(anchor_embeddings, positive_embeddings, negative_embeddings):
         return jnp.mean(jnp.maximum(jnp.linalg.norm(anchor_embeddings - positive_embeddings, axis=1)
@@ -27,96 +28,96 @@ def define_triplet_loss_fn():
                                     + 1.0, 0.0))
     return loss_fn
 
-### Dataset Generation
-def generate_dataset(samples, labels, num_negatives, batch_size, shuffle=True):
-    def dataset():
-        indices = np.arange(len(samples))
-        if shuffle:
+class Dataset:
+    def __init__(self, samples, labels, num_negatives, batch_size, shuffle=True):
+        self.samples = samples
+        self.labels = labels
+        self.num_negatives = num_negatives
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+
+    def __call__(self):
+        indices = np.arange(len(self.samples))
+        if self.shuffle:
             np.random.shuffle(indices)
         
-        for i in range(len(indices) // batch_size):
-            batch_indices = indices[i*batch_size:(i+1)*batch_size]
-            anchor_idx = np.random.choice(batch_indices, size=batch_size)
-            anchor_label = labels[anchor_idx]
+        for i in range(len(indices) // self.batch_size):
+            batch_indices = indices[i*self.batch_size:(i+1)*self.batch_size]
+            anchor_idx = np.random.choice(batch_indices, size=self.batch_size)
+            anchor_label = self.labels[anchor_idx]
 
-            positive_idx = np.array([np.random.choice(np.where(labels == label)[0], size=1)[0] for label in anchor_label])
-            negative_idx = np.array([np.random.choice(np.where(labels != label)[0], size=num_negatives, replace=False) for label in anchor_label])
+            positive_idx = np.array([np.random.choice(np.where(self.labels == label)[0], size=1)[0] for label in anchor_label])
+            negative_idx = np.array([np.random.choice(np.where(self.labels != label)[0], size=self.num_negatives, replace=False) for label in anchor_label])
 
             yield {
-                'anchor_input_ids': np.array([samples[i] for i in anchor_idx], dtype=np.int32),
-                'positive_input_ids': np.array([samples[i] for i in positive_idx], dtype=np.int32),
-                'negative_input_ids': np.array([samples[i] for i in negative_idx], dtype=np.int32)
+                'anchor_input_ids': np.array([self.samples[i] for i in anchor_idx], dtype=np.int32),
+                'positive_input_ids': np.array([self.samples[i] for i in positive_idx], dtype=np.int32),
+                'negative_input_ids': np.array([self.samples[i] for i in negative_idx], dtype=np.int32)
             }
-    return dataset
 
-### Training State Initialization
-def initialize_train_state(model, learning_rate, batch_size):
-    tx = optax.adam(learning_rate=learning_rate)
-    key = jax.random.PRNGKey(42)
-    params = model.init(key, jnp.ones((1, 10), dtype=jnp.int32))
-    return train_state.TrainState(params, tx)
+class Trainer:
+    def __init__(self, model, learning_rate, batch_size):
+        self.model = model
+        self.tx = optax.adam(learning_rate=learning_rate)
+        self.key = jax.random.PRNGKey(42)
+        self.params = self.model.init(self.key, jnp.ones((1, 10), dtype=jnp.int32))
+        self.state = train_state.TrainState(self.params, self.tx)
 
-### Training Loop
-def train_step(state, batch, model, loss_fn):
-    def loss_fn_step(params, batch):
-        anchor_embeddings = model.apply(params, batch['anchor_input_ids'])
-        positive_embeddings = model.apply(params, batch['positive_input_ids'])
-        negative_embeddings = model.apply(params, batch['negative_input_ids'])
-        return loss_fn(anchor_embeddings, positive_embeddings, negative_embeddings)
+    def train_step(self, batch):
+        def loss_fn_step(params, batch):
+            anchor_embeddings = self.model.apply(params, batch['anchor_input_ids'])
+            positive_embeddings = self.model.apply(params, batch['positive_input_ids'])
+            negative_embeddings = self.model.apply(params, batch['negative_input_ids'])
+            return define_triplet_loss_fn()(anchor_embeddings, positive_embeddings, negative_embeddings)
 
-    grads = jax.grad(loss_fn_step, has_aux=False)(state.params, batch)
-    state = state.apply_gradients(grads=grads)
-    return state
+        grads = jax.grad(loss_fn_step, has_aux=False)(self.state.params, batch)
+        self.state = self.state.apply_gradients(grads=grads)
 
-def train(model, dataset, loss_fn, state, epochs, batch_size):
-    for epoch in range(epochs):
+    def train(self, dataset, epochs):
+        for epoch in range(epochs):
+            total_loss = 0.0
+            dataloader = tf.data.Dataset.from_generator(dataset, output_types={'anchor_input_ids': tf.int32, 'positive_input_ids': tf.int32, 'negative_input_ids': tf.int32})
+            dataloader = dataloader.batch(self.state.batch_size)
+            dataloader = dataloader.prefetch(tf.data.AUTOTUNE)
+
+            for i, batch in enumerate(dataloader):
+                batch = {k: jax.device_put(v.numpy()) for k, v in batch.items()}
+                self.train_step(batch)
+                total_loss += define_triplet_loss_fn()(self.model.apply(self.state.params, batch['anchor_input_ids']), self.model.apply(self.state.params, batch['positive_input_ids']), self.model.apply(self.state.params, batch['negative_input_ids']))
+
+            print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
+
+    def evaluate(self, dataset):
         total_loss = 0.0
         dataloader = tf.data.Dataset.from_generator(dataset, output_types={'anchor_input_ids': tf.int32, 'positive_input_ids': tf.int32, 'negative_input_ids': tf.int32})
-        dataloader = dataloader.batch(batch_size)
+        dataloader = dataloader.batch(self.state.batch_size)
         dataloader = dataloader.prefetch(tf.data.AUTOTUNE)
 
         for i, batch in enumerate(dataloader):
             batch = {k: jax.device_put(v.numpy()) for k, v in batch.items()}
-            state = train_step(state, batch, model, loss_fn)
-            total_loss += loss_fn(model.apply(state.params, batch['anchor_input_ids']), model.apply(state.params, batch['positive_input_ids']), model.apply(state.params, batch['negative_input_ids']))
+            total_loss += define_triplet_loss_fn()(self.model.apply(self.state.params, batch['anchor_input_ids']), self.model.apply(self.state.params, batch['positive_input_ids']), self.model.apply(self.state.params, batch['negative_input_ids']))
 
-        print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
+        print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
-### Evaluation Loop
-def evaluate(model, dataset, loss_fn, state, batch_size):
-    total_loss = 0.0
-    dataloader = tf.data.Dataset.from_generator(dataset, output_types={'anchor_input_ids': tf.int32, 'positive_input_ids': tf.int32, 'negative_input_ids': tf.int32})
-    dataloader = dataloader.batch(batch_size)
-    dataloader = dataloader.prefetch(tf.data.AUTOTUNE)
+    def predict(self, input_ids, batch_size):
+        predictions = []
+        dataloader = tf.data.Dataset.from_tensor_slices(input_ids)
+        dataloader = dataloader.batch(batch_size)
+        dataloader = dataloader.prefetch(tf.data.AUTOTUNE)
 
-    for i, batch in enumerate(dataloader):
-        batch = {k: jax.device_put(v.numpy()) for k, v in batch.items()}
-        total_loss += loss_fn(model.apply(state.params, batch['anchor_input_ids']), model.apply(state.params, batch['positive_input_ids']), model.apply(state.params, batch['negative_input_ids']))
+        for batch in dataloader:
+            batch = jax.device_put(batch.numpy())
+            output = self.model.apply(self.state.params, batch)
+            predictions.extend(output)
 
-    print(f'Validation Loss: {total_loss / (i+1):.3f}')
+        return np.array(predictions)
 
-### Prediction
-def predict(model, state, input_ids, batch_size):
-    predictions = []
-    dataloader = tf.data.Dataset.from_tensor_slices(input_ids)
-    dataloader = dataloader.batch(batch_size)
-    dataloader = dataloader.prefetch(tf.data.AUTOTUNE)
-
-    for batch in dataloader:
-        batch = jax.device_put(batch.numpy())
-        output = model.apply(state.params, batch)
-        predictions.extend(output)
-
-    return np.array(predictions)
-
-### Model Saving and Loading
 def save_model(params, path):
     jax2tf.convert(params, 'triplet_model')
 
 def load_model(path):
     return jax2tf.checkpoint.load(path, target='')
 
-### Distance and Similarity Calculations
 def calculate_distance(embedding1, embedding2):
     return jnp.linalg.norm(embedding1 - embedding2, axis=1)
 
@@ -126,7 +127,6 @@ def calculate_similarity(embedding1, embedding2):
 def calculate_cosine_distance(embedding1, embedding2):
     return 1 - calculate_similarity(embedding1, embedding2)
 
-### Nearest Neighbors and Similar Embeddings
 def get_nearest_neighbors(embeddings, target_embedding, k=5):
     distances = calculate_distance(embeddings, target_embedding)
     indices = jnp.argsort(distances)[:k]
@@ -137,7 +137,6 @@ def get_similar_embeddings(embeddings, target_embedding, k=5):
     indices = jnp.argsort(similarities)[-k:]
     return indices
 
-### KNN Metrics
 def calculate_knn_accuracy(embeddings, labels, k=5):
     correct = 0
     for i in range(len(embeddings)):
@@ -171,7 +170,6 @@ def calculate_knn_f1(embeddings, labels, k=5):
     recall = calculate_knn_recall(embeddings, labels, k)
     return 2 * (precision * recall) / (precision + recall)
 
-### Main Function
 def main():
     np.random.seed(42)
 
@@ -182,22 +180,21 @@ def main():
     epochs = 10
     learning_rate = 1e-4
 
-    model = construct_triplet_model(num_embeddings=101, features=10)
-    loss_fn = define_triplet_loss_fn()
-    dataset = generate_dataset(samples, labels, num_negatives, batch_size)
-    state = initialize_train_state(model, learning_rate, batch_size)
-    train(model, dataset, loss_fn, state, epochs, batch_size)
+    model = TripletModel(num_embeddings=101, features=10)
+    trainer = Trainer(model, learning_rate, batch_size)
+    dataset = Dataset(samples, labels, num_negatives, batch_size)
+    trainer.train(dataset, epochs)
 
     input_ids = np.array([1, 2, 3, 4, 5], dtype=np.int32).reshape((1, 10))
-    output = predict(model, state, input_ids, batch_size=1)
+    output = trainer.predict(input_ids, batch_size=1)
     print(output)
 
-    save_model(state.params, "triplet_model")
+    save_model(trainer.state.params, "triplet_model")
     loaded_params = load_model("triplet_model")
 
-    evaluate(model, dataset, loss_fn, state, batch_size)
+    trainer.evaluate(dataset)
 
-    predicted_embeddings = predict(model, state, np.array([1, 2, 3, 4, 5], dtype=np.int32).reshape((1, 10)), batch_size=1)
+    predicted_embeddings = trainer.predict(np.array([1, 2, 3, 4, 5], dtype=np.int32).reshape((1, 10)), batch_size=1)
     print(predicted_embeddings)
 
     distance = calculate_distance(predicted_embeddings[0], predicted_embeddings[0])
@@ -209,7 +206,7 @@ def main():
     cosine_distance = calculate_cosine_distance(predicted_embeddings[0], predicted_embeddings[0])
     print(cosine_distance)
 
-    all_embeddings = predict(model, state, np.array(samples, dtype=np.int32), batch_size=32)
+    all_embeddings = trainer.predict(np.array(samples, dtype=np.int32), batch_size=32)
     nearest_neighbors = get_nearest_neighbors(all_embeddings, predicted_embeddings[0], k=5)
     print(nearest_neighbors)
 
