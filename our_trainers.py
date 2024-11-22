@@ -31,13 +31,16 @@ class TripletDataset(Dataset):
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.indices = np.arange(len(self.samples))
+        self.on_epoch_end()
+
+    def on_epoch_end(self):
+        if self.shuffle:
+            np.random.shuffle(self.indices)
 
     def __len__(self):
         return len(self.samples) // self.batch_size
 
     def __getitem__(self, index):
-        if self.shuffle:
-            np.random.shuffle(self.indices)
         batch_indices = self.indices[index * self.batch_size:(index + 1) * self.batch_size]
         anchor_idx = np.random.choice(batch_indices, size=self.batch_size)
         anchor_label = self.labels[anchor_idx]
@@ -80,6 +83,7 @@ class Trainer:
     def train(self, dataset, epochs, batch_size):
         for epoch in range(epochs):
             total_loss = 0.0
+            dataset.on_epoch_end()
             dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
             for i, batch in enumerate(dataloader):
                 total_loss += self.train_step(batch).item()
