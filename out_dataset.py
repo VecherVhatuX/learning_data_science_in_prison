@@ -6,6 +6,7 @@ import numpy as np
 import random
 import json
 import os
+from transformers import BertTokenizer
 
 # Data loading functions
 def load_data(file_path):
@@ -87,19 +88,18 @@ class CustomDataset(Dataset):
 class Model(nn.Module):
     def __init__(self, embedding_size, fully_connected_size, dropout_rate):
         super(Model, self).__init__()
-        self.embedding = nn.Embedding(30522, embedding_size)
-        self.pooling = nn.AdaptiveAvgPool1d(1)
+        self.model = torch.hub.load('huggingface/pytorch-transformers', 'model', 'bert-base-uncased')
         self.dropout = nn.Dropout(dropout_rate)
-        self.fc1 = nn.Linear(embedding_size, fully_connected_size)
+        self.fc1 = nn.Linear(768, fully_connected_size)
         self.fc2 = nn.Linear(fully_connected_size, embedding_size)
 
-    def forward(self, x):
-        x = self.embedding(x)
-        x = self.pooling(x.permute(0, 2, 1)).squeeze(2)
-        x = self.dropout(x)
-        x = torch.relu(self.fc1(x))
-        x = self.fc2(x)
-        return x
+    def forward(self, x, attention_mask):
+        outputs = self.model(x, attention_mask=attention_mask)
+        outputs = outputs.pooler_output
+        outputs = self.dropout(outputs)
+        outputs = torch.relu(self.fc1(outputs))
+        outputs = self.fc2(outputs)
+        return outputs
 
 # Loss calculation function
 def calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
@@ -114,11 +114,14 @@ def train(model, device, dataset, epochs, learning_rate_value, batch_size, optim
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
         for batch_idx, batch in enumerate(dataloader):
             anchor_input_ids = batch['anchor_input_ids'].to(device)
+            anchor_attention_mask = batch['anchor_attention_mask'].to(device)
             positive_input_ids = batch['positive_input_ids'].to(device)
+            positive_attention_mask = batch['positive_attention_mask'].to(device)
             negative_input_ids = batch['negative_input_ids'].to(device)
-            anchor_embeddings = model(anchor_input_ids)
-            positive_embeddings = model(positive_input_ids)
-            negative_embeddings = model(negative_input_ids)
+            negative_attention_mask = batch['negative_attention_mask'].to(device)
+            anchor_embeddings = model(anchor_input_ids, anchor_attention_mask)
+            positive_embeddings = model(positive_input_ids, positive_attention_mask)
+            negative_embeddings = model(negative_input_ids, negative_attention_mask)
             loss = calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
             optimizer.zero_grad()
             loss.backward()
@@ -133,11 +136,14 @@ def evaluate(model, device, dataset, batch_size):
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
         for batch_idx, batch in enumerate(dataloader):
             anchor_input_ids = batch['anchor_input_ids'].to(device)
+            anchor_attention_mask = batch['anchor_attention_mask'].to(device)
             positive_input_ids = batch['positive_input_ids'].to(device)
+            positive_attention_mask = batch['positive_attention_mask'].to(device)
             negative_input_ids = batch['negative_input_ids'].to(device)
-            anchor_embeddings = model(anchor_input_ids)
-            positive_embeddings = model(positive_input_ids)
-            negative_embeddings = model(negative_input_ids)
+            negative_attention_mask = batch['negative_attention_mask'].to(device)
+            anchor_embeddings = model(anchor_input_ids, anchor_attention_mask)
+            positive_embeddings = model(positive_input_ids, positive_attention_mask)
+            negative_embeddings = model(negative_input_ids, negative_attention_mask)
             for i in range(len(anchor_embeddings)):
                 similarity_positive = torch.dot(anchor_embeddings[i], positive_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(positive_embeddings[i]))
                 similarity_negative = torch.dot(anchor_embeddings[i], negative_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(negative_embeddings[i]))
@@ -150,7 +156,6 @@ def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
     num_negatives_per_positive = 1
-    embedding_size = 128
     fully_connected_size = 64
     dropout_rate = 0.2
     max_sequence_length = 512
@@ -166,10 +171,10 @@ def main():
         problem_statement = instance_id_map.get(os.path.basename(folder_path))
         triplets.extend(create_triplets(problem_statement, bug_snippets, non_bug_snippets, num_negatives_per_positive))
     train_triplets, test_triplets = torch.utils.data.random_split(triplets, [int(len(triplets)*0.8), len(triplets)-int(len(triplets)*0.8)])
-    tokenizer = torch.hub.load('huggingface/pytorch-transformers', 'tokenizer', 'bert-base-uncased')
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
     train_dataset = CustomDataset(train_triplets, max_sequence_length, tokenizer)
     test_dataset = CustomDataset(test_triplets, max_sequence_length, tokenizer)
-    model = Model(embedding_size, fully_connected_size, dropout_rate)
+    model = Model(128, fully_connected_size, dropout_rate)
     model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate_value)
     train(model, device, train_dataset, epochs, learning_rate_value, batch_size, optimizer)
