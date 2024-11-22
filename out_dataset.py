@@ -1,10 +1,13 @@
-import tensorflow as tf
-from tensorflow.keras.preprocessing.text import Tokenizer
-from tensorflow.keras.preprocessing.sequence import pad_sequences
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import random
 import json
 import os
+from transformers import AutoTokenizer, AutoModel
+from sklearn.model_selection import train_test_split
 
 # Constants
 MAX_SEQUENCE_LENGTH = 512
@@ -50,102 +53,142 @@ def prepare_data(dataset_path: str, snippet_folder_path: str, num_negatives_per_
     train_size = int(len(triplets)*0.8)
     return triplets[:train_size], triplets[train_size:]
 
-def create_dataset(triplets: list, max_sequence_length: int, tokenizer: Tokenizer):
-    anchor_texts = [triplet['anchor'] for triplet in triplets]
-    positive_texts = [triplet['positive'] for triplet in triplets]
-    negative_texts = [triplet['negative'] for triplet in triplets]
-    
-    anchor_sequences = tokenizer.texts_to_sequences(anchor_texts)
-    positive_sequences = tokenizer.texts_to_sequences(positive_texts)
-    negative_sequences = tokenizer.texts_to_sequences(negative_texts)
-    
-    anchor_padded = pad_sequences(anchor_sequences, maxlen=max_sequence_length, padding='post')
-    positive_padded = pad_sequences(positive_sequences, maxlen=max_sequence_length, padding='post')
-    negative_padded = pad_sequences(negative_sequences, maxlen=max_sequence_length, padding='post')
-    
-    return anchor_padded, positive_padded, negative_padded
+class CustomDataset(Dataset):
+    def __init__(self, triplets, tokenizer, max_sequence_length):
+        self.triplets = triplets
+        self.tokenizer = tokenizer
+        self.max_sequence_length = max_sequence_length
+        self.anchor_inputs = []
+        self.positive_inputs = []
+        self.negative_inputs = []
+        for triplet in self.triplets:
+            anchor_inputs = self.tokenizer.encode_plus(
+                triplet['anchor'],
+                max_length=self.max_sequence_length,
+                padding='max_length',
+                truncation=True,
+                return_attention_mask=True,
+                return_tensors='pt'
+            )
+            positive_inputs = self.tokenizer.encode_plus(
+                triplet['positive'],
+                max_length=self.max_sequence_length,
+                padding='max_length',
+                truncation=True,
+                return_attention_mask=True,
+                return_tensors='pt'
+            )
+            negative_inputs = self.tokenizer.encode_plus(
+                triplet['negative'],
+                max_length=self.max_sequence_length,
+                padding='max_length',
+                truncation=True,
+                return_attention_mask=True,
+                return_tensors='pt'
+            )
+            self.anchor_inputs.append({
+                'input_ids': anchor_inputs['input_ids'].flatten(),
+                'attention_mask': anchor_inputs['attention_mask'].flatten()
+            })
+            self.positive_inputs.append({
+                'input_ids': positive_inputs['input_ids'].flatten(),
+                'attention_mask': positive_inputs['attention_mask'].flatten()
+            })
+            self.negative_inputs.append({
+                'input_ids': negative_inputs['input_ids'].flatten(),
+                'attention_mask': negative_inputs['attention_mask'].flatten()
+            })
 
-def create_model(max_sequence_length: int, embedding_size: int, fully_connected_size: int, dropout_rate: float):
-    inputs = tf.keras.Input(shape=(max_sequence_length,), dtype='float32')
-    x = tf.keras.layers.Embedding(input_dim=10000, output_dim=128, input_length=max_sequence_length)(inputs)
-    x = tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(64))(x)
-    x = tf.keras.layers.Dropout(dropout_rate)(x)
-    x = tf.keras.layers.Dense(fully_connected_size, activation='relu')(x)
-    outputs = tf.keras.layers.Dense(embedding_size)(x)
-    model = tf.keras.Model(inputs=inputs, outputs=outputs)
-    return model
+    def __len__(self):
+        return len(self.triplets)
+
+    def __getitem__(self, idx):
+        return {
+            'anchor_input_ids': self.anchor_inputs[idx]['input_ids'],
+            'anchor_attention_mask': self.anchor_inputs[idx]['attention_mask'],
+            'positive_input_ids': self.positive_inputs[idx]['input_ids'],
+            'positive_attention_mask': self.positive_inputs[idx]['attention_mask'],
+            'negative_input_ids': self.negative_inputs[idx]['input_ids'],
+            'negative_attention_mask': self.negative_inputs[idx]['attention_mask']
+        }
+
+class Model(nn.Module):
+    def __init__(self):
+        super(Model, self).__init__()
+        self.bert = AutoModel.from_pretrained('bert-base-uncased')
+        self.dropout = nn.Dropout(DROPOUT_RATE)
+        self.fc = nn.Linear(self.bert.config.hidden_size, FULLY_CONNECTED_SIZE)
+        self.fc2 = nn.Linear(FULLY_CONNECTED_SIZE, EMBEDDING_SIZE)
+
+    def forward(self, input_ids, attention_mask):
+        outputs = self.bert(input_ids, attention_mask=attention_mask)
+        outputs = self.dropout(outputs.pooler_output)
+        outputs = torch.relu(self.fc(outputs))
+        outputs = self.fc2(outputs)
+        return outputs
 
 def calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
-    positive_distance = tf.reduce_mean(tf.square(anchor_embeddings - positive_embeddings))
-    negative_distance = tf.reduce_mean(tf.square(anchor_embeddings - negative_embeddings))
-    return positive_distance + tf.maximum(negative_distance - positive_distance, 0)
+    positive_distance = torch.mean((anchor_embeddings - positive_embeddings) ** 2)
+    negative_distance = torch.mean((anchor_embeddings - negative_embeddings) ** 2)
+    return positive_distance + torch.clamp(negative_distance - positive_distance, min=0)
 
-class Dataset:
-    def __init__(self, triplets, max_sequence_length, tokenizer, batch_size):
-        self.triplets = triplets
-        self.max_sequence_length = max_sequence_length
-        self.tokenizer = tokenizer
-        self.batch_size = batch_size
-        self.anchor_padded, self.positive_padded, self.negative_padded = create_dataset(self.triplets, self.max_sequence_length, self.tokenizer)
-        
-    def __len__(self):
-        return len(self.anchor_padded) // self.batch_size
-    
-    def on_epoch_end(self):
-        indices = np.arange(len(self.triplets))
-        np.random.shuffle(indices)
-        self.anchor_padded = self.anchor_padded[indices]
-        self.positive_padded = self.positive_padded[indices]
-        self.negative_padded = self.negative_padded[indices]
-        
-    def __getitem__(self, idx):
-        start_idx = idx * self.batch_size
-        end_idx = (idx + 1) * self.batch_size
-        return self.anchor_padded[start_idx:end_idx], self.positive_padded[start_idx:end_idx], self.negative_padded[start_idx:end_idx]
+def train(model, device, loader, optimizer, epoch):
+    model.train()
+    total_loss = 0
+    for batch in loader:
+        anchor_input_ids = batch['anchor_input_ids'].to(device)
+        anchor_attention_mask = batch['anchor_attention_mask'].to(device)
+        positive_input_ids = batch['positive_input_ids'].to(device)
+        positive_attention_mask = batch['positive_attention_mask'].to(device)
+        negative_input_ids = batch['negative_input_ids'].to(device)
+        negative_attention_mask = batch['negative_attention_mask'].to(device)
+        optimizer.zero_grad()
+        anchor_embeddings = model(anchor_input_ids, anchor_attention_mask)
+        positive_embeddings = model(positive_input_ids, positive_attention_mask)
+        negative_embeddings = model(negative_input_ids, negative_attention_mask)
+        loss = calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+    print(f'Epoch {epoch+1}, Loss: {total_loss / len(loader)}')
 
-def train(model, dataset, epochs, learning_rate_value):
-    optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate_value)
-    for epoch in range(epochs):
-        total_loss = 0
-        dataset.on_epoch_end()
-        for anchor_batch, positive_batch, negative_batch in dataset:
-            with tf.GradientTape() as tape:
-                anchor_embeddings = model(anchor_batch, training=True)
-                positive_embeddings = model(positive_batch, training=True)
-                negative_embeddings = model(negative_batch, training=True)
-                loss = calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
-            gradients = tape.gradient(loss, model.trainable_variables)
-            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-            total_loss += loss
-        print(f'Epoch {epoch+1}, Loss: {total_loss / len(dataset)}')
-
-def evaluate(model, anchor_padded, positive_padded, negative_padded, batch_size):
+def evaluate(model, device, loader):
+    model.eval()
     total_correct = 0
-    for i in range(0, len(anchor_padded), batch_size):
-        anchor_batch = anchor_padded[i:i+batch_size]
-        positive_batch = positive_padded[i:i+batch_size]
-        negative_batch = negative_padded[i:i+batch_size]
-        anchor_embeddings = model(anchor_batch)
-        positive_embeddings = model(positive_batch)
-        negative_embeddings = model(negative_batch)
-        for j in range(len(anchor_embeddings)):
-            similarity_positive = tf.reduce_sum(tf.multiply(anchor_embeddings[j], positive_embeddings[j])) / (tf.norm(anchor_embeddings[j]) * tf.norm(positive_embeddings[j]))
-            similarity_negative = tf.reduce_sum(tf.multiply(anchor_embeddings[j], negative_embeddings[j])) / (tf.norm(anchor_embeddings[j]) * tf.norm(negative_embeddings[j]))
-            total_correct += int(similarity_positive > similarity_negative)
-    accuracy = total_correct / len(anchor_padded)
+    with torch.no_grad():
+        for batch in loader:
+            anchor_input_ids = batch['anchor_input_ids'].to(device)
+            anchor_attention_mask = batch['anchor_attention_mask'].to(device)
+            positive_input_ids = batch['positive_input_ids'].to(device)
+            positive_attention_mask = batch['positive_attention_mask'].to(device)
+            negative_input_ids = batch['negative_input_ids'].to(device)
+            negative_attention_mask = batch['negative_attention_mask'].to(device)
+            anchor_embeddings = model(anchor_input_ids, anchor_attention_mask)
+            positive_embeddings = model(positive_input_ids, positive_attention_mask)
+            negative_embeddings = model(negative_input_ids, negative_attention_mask)
+            for i in range(len(anchor_embeddings)):
+                similarity_positive = torch.sum(anchor_embeddings[i] * positive_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(positive_embeddings[i]))
+                similarity_negative = torch.sum(anchor_embeddings[i] * negative_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(negative_embeddings[i]))
+                total_correct += int(similarity_positive > similarity_negative)
+    accuracy = total_correct / len(loader.dataset)
     print(f'Test Accuracy: {accuracy}')
 
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
     train_triplets, test_triplets = prepare_data(dataset_path, snippet_folder_path, NUM_NEGATIVES_PER_POSITIVE)
-    tokenizer = Tokenizer(num_words=10000)
-    tokenizer.fit_on_texts([triplet['anchor'] for triplet in train_triplets] + [triplet['positive'] for triplet in train_triplets] + [triplet['negative'] for triplet in train_triplets])
-    train_dataset = Dataset(train_triplets, MAX_SEQUENCE_LENGTH, tokenizer, BATCH_SIZE)
-    test_anchor, test_positive, test_negative = create_dataset(test_triplets, MAX_SEQUENCE_LENGTH, tokenizer)
-    model = create_model(MAX_SEQUENCE_LENGTH, EMBEDDING_SIZE, FULLY_CONNECTED_SIZE, DROPOUT_RATE)
-    train(model, train_dataset, EPOCHS, LEARNING_RATE_VALUE)
-    evaluate(model, test_anchor, test_positive, test_negative, BATCH_SIZE)
+    tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
+    train_dataset = CustomDataset(train_triplets, tokenizer, MAX_SEQUENCE_LENGTH)
+    test_dataset = CustomDataset(test_triplets, tokenizer, MAX_SEQUENCE_LENGTH)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = Model()
+    model.to(device)
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE_VALUE)
+    for epoch in range(EPOCHS):
+        train(model, device, train_loader, optimizer, epoch)
+    evaluate(model, device, test_loader)
 
 if __name__ == "__main__":
     main()
