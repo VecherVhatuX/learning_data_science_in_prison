@@ -80,14 +80,35 @@ def calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
     negative_distance = tf.reduce_mean(tf.square(anchor_embeddings - negative_embeddings))
     return positive_distance + tf.maximum(negative_distance - positive_distance, 0)
 
-def train(model, anchor_padded, positive_padded, negative_padded, epochs, learning_rate_value, batch_size):
+class Dataset:
+    def __init__(self, triplets, max_sequence_length, tokenizer, batch_size):
+        self.triplets = triplets
+        self.max_sequence_length = max_sequence_length
+        self.tokenizer = tokenizer
+        self.batch_size = batch_size
+        self.anchor_padded, self.positive_padded, self.negative_padded = create_dataset(self.triplets, self.max_sequence_length, self.tokenizer)
+        
+    def __len__(self):
+        return len(self.anchor_padded) // self.batch_size
+    
+    def on_epoch_end(self):
+        indices = np.arange(len(self.triplets))
+        np.random.shuffle(indices)
+        self.anchor_padded = self.anchor_padded[indices]
+        self.positive_padded = self.positive_padded[indices]
+        self.negative_padded = self.negative_padded[indices]
+        
+    def __getitem__(self, idx):
+        start_idx = idx * self.batch_size
+        end_idx = (idx + 1) * self.batch_size
+        return self.anchor_padded[start_idx:end_idx], self.positive_padded[start_idx:end_idx], self.negative_padded[start_idx:end_idx]
+
+def train(model, dataset, epochs, learning_rate_value):
     optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate_value)
     for epoch in range(epochs):
         total_loss = 0
-        for i in range(0, len(anchor_padded), batch_size):
-            anchor_batch = anchor_padded[i:i+batch_size]
-            positive_batch = positive_padded[i:i+batch_size]
-            negative_batch = negative_padded[i:i+batch_size]
+        dataset.on_epoch_end()
+        for anchor_batch, positive_batch, negative_batch in dataset:
             with tf.GradientTape() as tape:
                 anchor_embeddings = model(anchor_batch, training=True)
                 positive_embeddings = model(positive_batch, training=True)
@@ -96,7 +117,7 @@ def train(model, anchor_padded, positive_padded, negative_padded, epochs, learni
             gradients = tape.gradient(loss, model.trainable_variables)
             optimizer.apply_gradients(zip(gradients, model.trainable_variables))
             total_loss += loss
-        print(f'Epoch {epoch+1}, Loss: {total_loss / (len(anchor_padded) // batch_size)}')
+        print(f'Epoch {epoch+1}, Loss: {total_loss / len(dataset)}')
 
 def evaluate(model, anchor_padded, positive_padded, negative_padded, batch_size):
     total_correct = 0
@@ -120,10 +141,10 @@ def main():
     train_triplets, test_triplets = prepare_data(dataset_path, snippet_folder_path, NUM_NEGATIVES_PER_POSITIVE)
     tokenizer = Tokenizer(num_words=10000)
     tokenizer.fit_on_texts([triplet['anchor'] for triplet in train_triplets] + [triplet['positive'] for triplet in train_triplets] + [triplet['negative'] for triplet in train_triplets])
-    train_anchor, train_positive, train_negative = create_dataset(train_triplets, MAX_SEQUENCE_LENGTH, tokenizer)
+    train_dataset = Dataset(train_triplets, MAX_SEQUENCE_LENGTH, tokenizer, BATCH_SIZE)
     test_anchor, test_positive, test_negative = create_dataset(test_triplets, MAX_SEQUENCE_LENGTH, tokenizer)
     model = create_model(MAX_SEQUENCE_LENGTH, EMBEDDING_SIZE, FULLY_CONNECTED_SIZE, DROPOUT_RATE)
-    train(model, train_anchor, train_positive, train_negative, EPOCHS, LEARNING_RATE_VALUE, BATCH_SIZE)
+    train(model, train_dataset, EPOCHS, LEARNING_RATE_VALUE)
     evaluate(model, test_anchor, test_positive, test_negative, BATCH_SIZE)
 
 if __name__ == "__main__":
