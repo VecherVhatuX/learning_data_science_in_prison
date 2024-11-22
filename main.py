@@ -7,10 +7,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 
-# Define hyperparameters class to hold model configuration
 @dataclass
 class Hyperparameters:
-    # Model configuration and hyperparameters
     base_model_identifier: str = "t5-base"
     conversation_format_identifier: str = "none"
     low_rank_approximation_alpha: int = 16
@@ -46,18 +44,14 @@ class Hyperparameters:
     resume_checkpoint_path: str = None
     negative_samples_per_positive_sample: int = 5
 
-# Custom dataset class for data loading
 class CustomDataset(Dataset):
-    # Initialize the custom dataset
     def __init__(self, data, conversation_format_identifier):
         self.data = data
         self.conversation_format_identifier = conversation_format_identifier
 
-    # Return the length of the dataset
     def __len__(self):
         return len(self.data)
 
-    # Return the item at the specified index
     def __getitem__(self, idx):
         example = self.data[idx]
         input_ids = torch.tensor([0] + [ord(c) for c in f"{self.conversation_format_identifier} {example['input']}"] + [1], dtype=torch.float32)
@@ -65,7 +59,6 @@ class CustomDataset(Dataset):
         attention_mask = torch.tensor([1] * len(input_ids), dtype=torch.float32)
         return {"input_ids": input_ids, "labels": labels, "attention_mask": attention_mask}
 
-# Define neural network model
 class NeuralNetworkModel(nn.Module):
     def __init__(self):
         super(NeuralNetworkModel, self).__init__()
@@ -83,9 +76,7 @@ class NeuralNetworkModel(nn.Module):
         out = self.fc3(out)
         return out
 
-# Load JSON data from file
 def load_json_data(file_name):
-    # Load JSON data
     try:
         with open(file_name, 'r') as f:
             return json.load(f)
@@ -93,20 +84,14 @@ def load_json_data(file_name):
         print(f"{file_name} not found.")
         return None
 
-# Load hyperparameters from configuration
 def load_hyperparameters(base_model_identifier, conversation_format_identifier, triplet_loss_training_enabled):
-    # Load hyperparameters
     return Hyperparameters(base_model_identifier=base_model_identifier, conversation_format_identifier=conversation_format_identifier, triplet_loss_training_enabled=triplet_loss_training_enabled)
 
-# Create data loader from dataset
 def create_data_loader(data, conversation_format_identifier, batch_size):
-    # Create data loader
     dataset = CustomDataset(data, conversation_format_identifier)
     return DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-# Perform a training step
 def train_step(model, device, optimizer, batch):
-    # Training step
     model.train()
     input_ids = batch["input_ids"].to(device)
     labels = batch["labels"].to(device)
@@ -118,9 +103,7 @@ def train_step(model, device, optimizer, batch):
     optimizer.step()
     return loss.item()
 
-# Train the model
 def train_model(model, device, dataset, hyperparameters):
-    # Train model
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     for epoch in range(hyperparameters.number_of_epochs):
         total_loss = 0
@@ -129,9 +112,7 @@ def train_model(model, device, dataset, hyperparameters):
             total_loss += loss
         print(f"Epoch {epoch+1}, Loss: {total_loss / len(dataset)}")
 
-# Evaluate the model
 def evaluate_model(model, device, dataset):
-    # Evaluate model
     model.eval()
     total_loss = 0
     with torch.no_grad():
@@ -144,18 +125,20 @@ def evaluate_model(model, device, dataset):
             total_loss += loss.item()
     print(f"Test Loss: {total_loss / len(dataset)}")
 
-# Main function
-def main():
+def main(hyperparameters, model, device, training_data, testing_data):
+    train_data_loader = create_data_loader(training_data, hyperparameters.conversation_format_identifier, hyperparameters.training_batch_size)
+    test_data_loader = create_data_loader(testing_data, hyperparameters.conversation_format_identifier, hyperparameters.evaluation_batch_size)
+    train_model(model, device, train_data_loader, hyperparameters)
+    evaluate_model(model, device, test_data_loader)
+
+def run():
     hyperparameters = load_hyperparameters("t5-base", "none", True)
     model = NeuralNetworkModel()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     training_data, testing_data = load_json_data("train.json"), load_json_data("test.json")
     if training_data is not None and testing_data is not None:
-        train_data_loader = create_data_loader(training_data, hyperparameters.conversation_format_identifier, hyperparameters.training_batch_size)
-        test_data_loader = create_data_loader(testing_data, hyperparameters.conversation_format_identifier, hyperparameters.evaluation_batch_size)
-        train_model(model, device, train_data_loader, hyperparameters)
-        evaluate_model(model, device, test_data_loader)
+        main(hyperparameters, model, device, training_data, testing_data)
 
 if __name__ == "__main__":
-    main()
+    run()
