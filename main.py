@@ -54,14 +54,14 @@ class CustomDataset(Dataset):
 
     def __getitem__(self, idx):
         example = self.data[idx]
-        input_ids = torch.tensor([0] + [ord(c) for c in f"{self.conversation_format_identifier} {example['input']}"] + [1], dtype=torch.float32)
-        labels = torch.tensor([0] + [ord(c) for c in f"{self.conversation_format_identifier} {example['output']}"] + [1], dtype=torch.float32)
-        attention_mask = torch.tensor([1] * len(input_ids), dtype=torch.float32)
+        input_ids = torch.tensor([0] + [ord(c) for c in f"{self.conversation_format_identifier} {example['input']}"] + [1], dtype=torch.long)
+        labels = torch.tensor([0] + [ord(c) for c in f"{self.conversation_format_identifier} {example['output']}"] + [1], dtype=torch.long)
+        attention_mask = torch.tensor([1] * len(input_ids), dtype=torch.long)
         return {"input_ids": input_ids, "labels": labels, "attention_mask": attention_mask}
 
 class NeuralNetworkModel(nn.Module):
     def __init__(self):
-        super(NeuralNetworkModel, self).__init__()
+        super().__init__()
         self.fc1 = nn.Linear(128, 128)
         self.relu1 = nn.ReLU()
         self.fc2 = nn.Linear(128, 128)
@@ -97,8 +97,8 @@ def train_step(model, device, optimizer, batch):
     labels = batch["labels"].to(device)
     attention_mask = batch["attention_mask"].to(device)
     optimizer.zero_grad()
-    outputs = model(input_ids)
-    loss = nn.MSELoss()(outputs, labels)
+    outputs = model(input_ids.float())
+    loss = nn.CrossEntropyLoss()(outputs, labels)
     loss.backward()
     optimizer.step()
     return loss.item()
@@ -120,8 +120,8 @@ def evaluate_model(model, device, dataset):
             input_ids = batch["input_ids"].to(device)
             labels = batch["labels"].to(device)
             attention_mask = batch["attention_mask"].to(device)
-            outputs = model(input_ids)
-            loss = nn.MSELoss()(outputs, labels)
+            outputs = model(input_ids.float())
+            loss = nn.CrossEntropyLoss()(outputs, labels)
             total_loss += loss.item()
     print(f"Test Loss: {total_loss / len(dataset)}")
 
