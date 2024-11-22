@@ -76,6 +76,15 @@ class NeuralNetworkModel(nn.Module):
         out = self.fc3(out)
         return out
 
+class T5Model(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.model = torch.hub.load('t5', 't5-base', use_cuda=torch.cuda.is_available())
+
+    def forward(self, input_ids):
+        outputs = self.model(input_ids=input_ids)
+        return outputs.last_hidden_state
+
 def load_json_data(file_name):
     try:
         with open(file_name, 'r') as f:
@@ -97,8 +106,8 @@ def train_step(model, device, optimizer, batch):
     labels = batch["labels"].to(device)
     attention_mask = batch["attention_mask"].to(device)
     optimizer.zero_grad()
-    outputs = model(input_ids.float())
-    loss = nn.CrossEntropyLoss()(outputs, labels)
+    outputs = model(input_ids)
+    loss = nn.CrossEntropyLoss()(outputs.view(-1, outputs.shape[-1]), labels.view(-1))
     loss.backward()
     optimizer.step()
     return loss.item()
@@ -120,8 +129,8 @@ def evaluate_model(model, device, dataset):
             input_ids = batch["input_ids"].to(device)
             labels = batch["labels"].to(device)
             attention_mask = batch["attention_mask"].to(device)
-            outputs = model(input_ids.float())
-            loss = nn.CrossEntropyLoss()(outputs, labels)
+            outputs = model(input_ids)
+            loss = nn.CrossEntropyLoss()(outputs.view(-1, outputs.shape[-1]), labels.view(-1))
             total_loss += loss.item()
     print(f"Test Loss: {total_loss / len(dataset)}")
 
@@ -133,7 +142,7 @@ def main(hyperparameters, model, device, training_data, testing_data):
 
 def run():
     hyperparameters = load_hyperparameters("t5-base", "none", True)
-    model = NeuralNetworkModel()
+    model = T5Model()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     training_data, testing_data = load_json_data("train.json"), load_json_data("test.json")
