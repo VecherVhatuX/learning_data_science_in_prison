@@ -22,7 +22,6 @@ NUM_NEGATIVES_PER_POSITIVE = 1
 class DataLoaderUtil:
     @staticmethod
     def load_data(file_path: str) -> np.ndarray or Dict:
-        """Load data from file."""
         if file_path.endswith('.npy'):
             return np.load(file_path, allow_pickle=True)
         else:
@@ -30,7 +29,6 @@ class DataLoaderUtil:
 
     @staticmethod
     def load_snippets(folder_path: str) -> List[Tuple[str, str]]:
-        """Load snippets from folder."""
         snippet_paths = []
         for folder in os.listdir(folder_path):
             if os.path.isdir(os.path.join(folder_path, folder)):
@@ -39,7 +37,6 @@ class DataLoaderUtil:
 
     @staticmethod
     def separate_snippets(snippets: List[Tuple[str, str]]) -> Tuple[List[Tuple[str, bool]], List[Tuple[str, bool]]]:
-        """Separate bug and non-bug snippets."""
         bug_snippets = []
         non_bug_snippets = []
         for folder_path, snippet_file_path in snippets:
@@ -52,7 +49,6 @@ class DataLoaderUtil:
 
     @staticmethod
     def create_triplets(problem_statement: str, positive_snippets: List[Tuple[str, bool]], negative_snippets: List[Tuple[str, bool]], num_negatives_per_positive: int) -> List[Dict]:
-        """Create triplets."""
         triplets = []
         for positive_doc in positive_snippets:
             for _ in range(min(num_negatives_per_positive, len(negative_snippets))):
@@ -61,7 +57,6 @@ class DataLoaderUtil:
 
     @staticmethod
     def prepare_data(dataset_path: str, snippet_folder_path: str, num_negatives_per_positive: int) -> Tuple[List[Dict], List[Dict]]:
-        """Prepare data."""
         instance_id_map = {item['instance_id']: item['problem_statement'] for item in DataLoaderUtil.load_data(dataset_path)}
         snippets = DataLoaderUtil.load_snippets(snippet_folder_path)
         bug_snippets, non_bug_snippets = DataLoaderUtil.separate_snippets(snippets)
