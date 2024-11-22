@@ -21,12 +21,10 @@ class TripletModel(nn.Module):
         x = nn.BatchNorm(use_running_average=False)(x)
         return x / jnp.linalg.norm(x, axis=1, keepdims=True)
 
-def define_triplet_loss_fn():
-    def loss_fn(anchor_embeddings, positive_embeddings, negative_embeddings):
-        return jnp.mean(jnp.maximum(jnp.linalg.norm(anchor_embeddings - positive_embeddings, axis=1)
-                                    - jnp.linalg.norm(anchor_embeddings[:, jnp.newaxis] - negative_embeddings, axis=2).min(axis=1)
-                                    + 1.0, 0.0))
-    return loss_fn
+def calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
+    return jnp.mean(jnp.maximum(jnp.linalg.norm(anchor_embeddings - positive_embeddings, axis=1)
+                                - jnp.linalg.norm(anchor_embeddings[:, jnp.newaxis] - negative_embeddings, axis=2).min(axis=1)
+                                + 1.0, 0.0))
 
 class Dataset:
     def __init__(self, samples, labels, num_negatives, batch_size, shuffle=True):
@@ -68,7 +66,7 @@ class Trainer:
             anchor_embeddings = self.model.apply(params, batch['anchor_input_ids'])
             positive_embeddings = self.model.apply(params, batch['positive_input_ids'])
             negative_embeddings = self.model.apply(params, batch['negative_input_ids'])
-            return define_triplet_loss_fn()(anchor_embeddings, positive_embeddings, negative_embeddings)
+            return calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
 
         grads = jax.grad(loss_fn_step, has_aux=False)(self.state.params, batch)
         self.state = self.state.apply_gradients(grads=grads)
@@ -83,7 +81,7 @@ class Trainer:
             for i, batch in enumerate(dataloader):
                 batch = {k: jax.device_put(v.numpy()) for k, v in batch.items()}
                 self.train_step(batch)
-                total_loss += define_triplet_loss_fn()(self.model.apply(self.state.params, batch['anchor_input_ids']), self.model.apply(self.state.params, batch['positive_input_ids']), self.model.apply(self.state.params, batch['negative_input_ids']))
+                total_loss += calculate_triplet_loss(self.model.apply(self.state.params, batch['anchor_input_ids']), self.model.apply(self.state.params, batch['positive_input_ids']), self.model.apply(self.state.params, batch['negative_input_ids']))
 
             print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
@@ -95,7 +93,7 @@ class Trainer:
 
         for i, batch in enumerate(dataloader):
             batch = {k: jax.device_put(v.numpy()) for k, v in batch.items()}
-            total_loss += define_triplet_loss_fn()(self.model.apply(self.state.params, batch['anchor_input_ids']), self.model.apply(self.state.params, batch['positive_input_ids']), self.model.apply(self.state.params, batch['negative_input_ids']))
+            total_loss += calculate_triplet_loss(self.model.apply(self.state.params, batch['anchor_input_ids']), self.model.apply(self.state.params, batch['positive_input_ids']), self.model.apply(self.state.params, batch['negative_input_ids']))
 
         print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
@@ -112,11 +110,12 @@ class Trainer:
 
         return np.array(predictions)
 
-def save_model(params, path):
-    jax2tf.convert(params, 'triplet_model')
+    def save_model(self, path):
+        jax2tf.convert(self.state.params, 'triplet_model')
 
-def load_model(path):
-    return jax2tf.checkpoint.load(path, target='')
+    @staticmethod
+    def load_model(path):
+        return jax2tf.checkpoint.load(path, target='')
 
 def calculate_distance(embedding1, embedding2):
     return jnp.linalg.norm(embedding1 - embedding2, axis=1)
@@ -189,8 +188,8 @@ def main():
     output = trainer.predict(input_ids, batch_size=1)
     print(output)
 
-    save_model(trainer.state.params, "triplet_model")
-    loaded_params = load_model("triplet_model")
+    trainer.save_model("triplet_model")
+    loaded_params = Trainer.load_model("triplet_model")
 
     trainer.evaluate(dataset)
 
