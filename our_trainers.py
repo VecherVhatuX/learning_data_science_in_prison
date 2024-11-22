@@ -5,19 +5,21 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import torch.nn.functional as F
 
-def create_triplet_model(num_embeddings, features):
-    return nn.Sequential(
-        nn.Embedding(num_embeddings, features),
-        lambda x: x.transpose(1, 2),
-        nn.AvgPool1d(kernel_size=10),
-        lambda x: x.squeeze(2),
-        nn.Linear(features, features),
-        nn.BatchNorm1d(features),
-        lambda x: F.normalize(x, p=2, dim=1)
-    )
+class TripletModel(nn.Module):
+    def __init__(self, num_embeddings, features):
+        super(TripletModel, self).__init__()
+        self.model = nn.Sequential(
+            nn.Embedding(num_embeddings, features),
+            lambda x: x.transpose(1, 2),
+            nn.AvgPool1d(kernel_size=10),
+            lambda x: x.squeeze(2),
+            nn.Linear(features, features),
+            nn.BatchNorm1d(features),
+            lambda x: F.normalize(x, p=2, dim=1)
+        )
 
-def calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
-    return torch.mean(torch.clamp(torch.norm(anchor_embeddings - positive_embeddings, p=2, dim=1) - torch.norm(anchor_embeddings.unsqueeze(1) - negative_embeddings, p=2, dim=2).min(dim=1)[0] + 1.0, min=0.0))
+    def forward(self, x):
+        return self.model(x)
 
 class Dataset(Dataset):
     def __init__(self, samples, labels, num_negatives, batch_size, shuffle=True):
@@ -26,15 +28,15 @@ class Dataset(Dataset):
         self.num_negatives = num_negatives
         self.batch_size = batch_size
         self.shuffle = shuffle
+        self.indices = np.arange(len(self.samples))
 
     def __len__(self):
         return len(self.samples) // self.batch_size
 
     def __getitem__(self, index):
-        indices = np.arange(len(self.samples))
         if self.shuffle:
-            np.random.shuffle(indices)
-        batch_indices = indices[index*self.batch_size:(index+1)*self.batch_size]
+            np.random.shuffle(self.indices)
+        batch_indices = self.indices[index*self.batch_size:(index+1)*self.batch_size]
         anchor_idx = np.random.choice(batch_indices, size=self.batch_size)
         anchor_label = self.labels[anchor_idx]
 
@@ -46,6 +48,9 @@ class Dataset(Dataset):
             'positive_input_ids': torch.tensor([self.samples[i] for i in positive_idx], dtype=torch.long),
             'negative_input_ids': torch.tensor([self.samples[i] for i in negative_idx], dtype=torch.long)
         }
+
+def calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
+    return torch.mean(torch.clamp(torch.norm(anchor_embeddings - positive_embeddings, p=2, dim=1) - torch.norm(anchor_embeddings.unsqueeze(1) - negative_embeddings, p=2, dim=2).min(dim=1)[0] + 1.0, min=0.0))
 
 def train_step(model, batch, optimizer):
     optimizer.zero_grad()
@@ -60,7 +65,7 @@ def train_step(model, batch, optimizer):
 def train(model, dataset, epochs, batch_size, optimizer):
     for epoch in range(epochs):
         total_loss = 0.0
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
         for i, batch in enumerate(dataloader):
             total_loss += train_step(model, batch, optimizer).item()
         print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
@@ -154,7 +159,7 @@ def main():
     epochs = 10
     learning_rate = 1e-4
 
-    model = create_triplet_model(num_embeddings=101, features=10)
+    model = TripletModel(num_embeddings=101, features=10)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     dataset = Dataset(samples, labels, num_negatives, batch_size)
     train(model, dataset, epochs, batch_size, optimizer)
