@@ -62,7 +62,7 @@ def train(model, dataset, epochs, batch_size, optimizer):
         total_loss = 0.0
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
         for i, batch in enumerate(dataloader):
-            total_loss += train_step(model, batch, optimizer)
+            total_loss += train_step(model, batch, optimizer).item()
         print(f'Epoch: {epoch+1}, Loss: {total_loss/(i+1):.3f}')
 
 def evaluate(model, dataset, batch_size):
@@ -82,7 +82,7 @@ def predict(model, input_ids, batch_size):
     with torch.no_grad():
         for batch in dataloader:
             output = model(batch)
-            predictions.extend(output.numpy())
+            predictions.extend(output.cpu().numpy())
     return np.array(predictions)
 
 def save_model(model, path):
@@ -159,8 +159,8 @@ def main():
     dataset = Dataset(samples, labels, num_negatives, batch_size)
     train(model, dataset, epochs, batch_size, optimizer)
 
-    input_ids = np.array([1, 2, 3, 4, 5], dtype=np.int32).reshape((1, 10))
-    output = predict(model, torch.tensor(input_ids, dtype=torch.long), batch_size=1)
+    input_ids = torch.tensor(np.array([1, 2, 3, 4, 5], dtype=np.int32).reshape((1, 10)), dtype=torch.long)
+    output = predict(model, input_ids, batch_size=1)
     print(output)
 
     save_model(model, "triplet_model.pth")
