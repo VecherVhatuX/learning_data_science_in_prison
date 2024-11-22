@@ -44,37 +44,30 @@ class Hyperparameters:
     resume_checkpoint_path: str = None
     negative_samples_per_positive_sample: int = 5
 
-class DataLoaderHelper:
-    def __init__(self, hyperparameters):
-        self.hyperparameters = hyperparameters
+def load_json_data(file_name):
+    try:
+        with open(file_name, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print(f"{file_name} not found.")
+        return None
 
-    def load_dataset(self):
-        return self._load_json_data("train.json"), self._load_json_data("test.json")
-
-    def _load_json_data(self, file_name):
-        try:
-            with open(file_name, 'r') as f:
-                return json.load(f)
-        except FileNotFoundError:
-            print(f"{file_name} not found.")
-            return None
-
-    def preprocess_example(self, example):
-        input_ids = torch.tensor([0] + [ord(c) for c in f"{self.hyperparameters.conversation_format_identifier} {example['input']}"] + [1], dtype=torch.float32)
-        labels = torch.tensor([0] + [ord(c) for c in f"{self.hyperparameters.conversation_format_identifier} {example['output']}"] + [1], dtype=torch.float32)
-        attention_mask = torch.tensor([1] * len(input_ids), dtype=torch.float32)
-        return input_ids, labels, attention_mask
+def preprocess_example(example, conversation_format_identifier):
+    input_ids = torch.tensor([0] + [ord(c) for c in f"{conversation_format_identifier} {example['input']}"] + [1], dtype=torch.float32)
+    labels = torch.tensor([0] + [ord(c) for c in f"{conversation_format_identifier} {example['output']}"] + [1], dtype=torch.float32)
+    attention_mask = torch.tensor([1] * len(input_ids), dtype=torch.float32)
+    return input_ids, labels, attention_mask
 
 class CustomDataset(Dataset):
-    def __init__(self, data, data_loader_helper):
+    def __init__(self, data, conversation_format_identifier):
         self.data = data
-        self.data_loader_helper = data_loader_helper
+        self.conversation_format_identifier = conversation_format_identifier
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
-        return self.data_loader_helper.preprocess_example(self.data[idx])
+        return preprocess_example(self.data[idx], self.conversation_format_identifier)
 
 class NeuralNetworkModel(nn.Module):
     def __init__(self):
@@ -90,42 +83,37 @@ class NeuralNetworkModel(nn.Module):
         x = self.fc3(x)
         return x
 
-class ModelTrainer:
-    def __init__(self, hyperparameters, model):
-        self.hyperparameters = hyperparameters
-        self.model = model
-        self.loss_function = nn.MSELoss()
-        self.optimizer = optim.Adam(self.model.parameters(), lr=0.001)
-
-    def train(self, dataset, device):
-        self.model.to(device)
-        data_loader = DataLoader(dataset, batch_size=self.hyperparameters.training_batch_size, shuffle=True)
-        for epoch in range(self.hyperparameters.number_of_epochs):
-            total_loss = 0
-            for i, (batch_inputs, batch_labels, _) in enumerate(data_loader):
-                batch_inputs, batch_labels = batch_inputs.to(device), batch_labels.to(device)
-                self.optimizer.zero_grad()
-                outputs = self.model(batch_inputs)
-                loss = self.loss_function(batch_labels, outputs)
-                loss.backward()
-                self.optimizer.step()
-                total_loss += loss.item()
-            print(f"Epoch {epoch+1}, Loss: {total_loss / (i+1)}")
-        torch.save(self.model.state_dict(), os.path.join(self.hyperparameters.output_directory_path, "final_model.pth"))
-
-    def evaluate(self, dataset, device):
-        self.model.to(device)
-        self.model.eval()
-        data_loader = DataLoader(dataset, batch_size=self.hyperparameters.evaluation_batch_size, shuffle=False)
+def train_model(model, dataset, device, hyperparameters):
+    model.to(device)
+    data_loader = DataLoader(dataset, batch_size=hyperparameters.training_batch_size, shuffle=True)
+    loss_function = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    for epoch in range(hyperparameters.number_of_epochs):
         total_loss = 0
-        with torch.no_grad():
-            for batch_inputs, batch_labels, _ in data_loader:
-                batch_inputs, batch_labels = batch_inputs.to(device), batch_labels.to(device)
-                outputs = self.model(batch_inputs)
-                loss = self.loss_function(batch_labels, outputs)
-                total_loss += loss.item()
-        print(f"Test Loss: {total_loss / len(list(data_loader))}")
-        self.model.train()
+        for i, (batch_inputs, batch_labels, _) in enumerate(data_loader):
+            batch_inputs, batch_labels = batch_inputs.to(device), batch_labels.to(device)
+            optimizer.zero_grad()
+            outputs = model(batch_inputs)
+            loss = loss_function(batch_labels, outputs)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+        print(f"Epoch {epoch+1}, Loss: {total_loss / (i+1)}")
+    torch.save(model.state_dict(), os.path.join(hyperparameters.output_directory_path, "final_model.pth"))
+
+def evaluate_model(model, dataset, device, hyperparameters):
+    model.to(device)
+    model.eval()
+    data_loader = DataLoader(dataset, batch_size=hyperparameters.evaluation_batch_size, shuffle=False)
+    total_loss = 0
+    with torch.no_grad():
+        for batch_inputs, batch_labels, _ in data_loader:
+            batch_inputs, batch_labels = batch_inputs.to(device), batch_labels.to(device)
+            outputs = model(batch_inputs)
+            loss = nn.MSELoss()(batch_labels, outputs)
+            total_loss += loss.item()
+    print(f"Test Loss: {total_loss / len(list(data_loader))}")
+    model.train()
 
 def load_hyperparameters(base_model_identifier, conversation_format_identifier, triplet_loss_training_enabled):
     return Hyperparameters(base_model_identifier=base_model_identifier, conversation_format_identifier=conversation_format_identifier, triplet_loss_training_enabled=triplet_loss_training_enabled)
@@ -133,15 +121,13 @@ def load_hyperparameters(base_model_identifier, conversation_format_identifier, 
 def main():
     hyperparameters = load_hyperparameters("t5-base", "none", True)
     model = NeuralNetworkModel()
-    data_loader_helper = DataLoaderHelper(hyperparameters)
-    training_data, testing_data = data_loader_helper.load_dataset()
+    training_data, testing_data = load_json_data("train.json"), load_json_data("test.json")
     if training_data is not None:
-        training_dataset = CustomDataset(training_data, data_loader_helper)
-        testing_dataset = CustomDataset(testing_data, data_loader_helper)
+        training_dataset = CustomDataset(training_data, hyperparameters.conversation_format_identifier)
+        testing_dataset = CustomDataset(testing_data, hyperparameters.conversation_format_identifier)
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model_trainer = ModelTrainer(hyperparameters, model)
-        model_trainer.train(training_dataset, device)
-        model_trainer.evaluate(testing_dataset, device)
+        train_model(model, training_dataset, device, hyperparameters)
+        evaluate_model(model, testing_dataset, device, hyperparameters)
 
 if __name__ == "__main__":
     main()
