@@ -19,120 +19,61 @@ EPOCHS = 5
 BATCH_SIZE = 32
 NUM_NEGATIVES_PER_POSITIVE = 1
 
-def load_data(file_path: str) -> np.ndarray or dict:
-    if file_path.endswith('.npy'):
-        return np.load(file_path, allow_pickle=True)
-    else:
-        return json.load(open(file_path, 'r', encoding='utf-8'))
+def load_data(file_path):
+    return np.load(file_path, allow_pickle=True) if file_path.endswith('.npy') else json.load(open(file_path, 'r', encoding='utf-8'))
 
-def load_snippets(folder_path: str) -> list:
+def load_snippets(folder_path):
     return [(os.path.join(folder_path, folder), os.path.join(folder_path, folder, 'snippet.json')) for folder in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, folder))]
 
-def separate_snippets(snippets: list) -> tuple:
-    bug_snippets = []
-    non_bug_snippets = []
-    for folder_path, snippet_file_path in snippets:
-        snippet_data = load_data(snippet_file_path)
-        if snippet_data.get('is_bug', False):
-            bug_snippets.append((snippet_data['snippet'], True))
-        else:
-            non_bug_snippets.append((snippet_data['snippet'], False))
-    return bug_snippets, non_bug_snippets
+def separate_snippets(snippets):
+    return ([snippet_data['snippet'] for _, snippet_file_path in snippets for snippet_data in [load_data(snippet_file_path)] if snippet_data.get('is_bug', False)], 
+            [snippet_data['snippet'] for _, snippet_file_path in snippets for snippet_data in [load_data(snippet_file_path)] if not snippet_data.get('is_bug', False)])
 
-def create_triplets(problem_statement: str, positive_snippets: list, negative_snippets: list, num_negatives_per_positive: int) -> list:
-    return [{'anchor': problem_statement, 'positive': positive_doc[0], 'negative': random.choice(negative_snippets)[0]} for positive_doc in positive_snippets for _ in range(min(num_negatives_per_positive, len(negative_snippets)))]
+def create_triplets(instance_id_map, snippets, num_negatives_per_positive):
+    return [{'anchor': instance_id_map[os.path.basename(folder_path)], 'positive': positive_doc, 'negative': random.choice(separate_snippets(snippets)[1])} 
+            for folder_path, _ in snippets 
+            for positive_doc in separate_snippets(snippets)[0] 
+            for _ in range(min(num_negatives_per_positive, len(separate_snippets(snippets)[1])))]
 
-def prepare_data(dataset_path: str, snippet_folder_path: str, num_negatives_per_positive: int) -> tuple:
+def prepare_data(dataset_path, snippet_folder_path, num_negatives_per_positive):
     instance_id_map = {item['instance_id']: item['problem_statement'] for item in load_data(dataset_path)}
     snippets = load_snippets(snippet_folder_path)
-    bug_snippets, non_bug_snippets = separate_snippets(snippets)
-    triplets = []
-    for folder_path, _ in snippets:
-        problem_statement = instance_id_map.get(os.path.basename(folder_path))
-        triplets.extend(create_triplets(problem_statement, bug_snippets, non_bug_snippets, num_negatives_per_positive))
-    train_size = int(len(triplets)*0.8)
-    return triplets[:train_size], triplets[train_size:]
+    return tuple(np.array_split(np.array(create_triplets(instance_id_map, snippets, num_negatives_per_positive)), 2))
+
+def tokenize_triplets(triplets, tokenizer, max_sequence_length):
+    return [{'anchor_input_ids': tokenizer.encode_plus(triplet['anchor'], max_length=max_sequence_length, padding='max_length', truncation=True, return_attention_mask=True, return_tensors='pt')['input_ids'].flatten(),
+             'anchor_attention_mask': tokenizer.encode_plus(triplet['anchor'], max_length=max_sequence_length, padding='max_length', truncation=True, return_attention_mask=True, return_tensors='pt')['attention_mask'].flatten(),
+             'positive_input_ids': tokenizer.encode_plus(triplet['positive'], max_length=max_sequence_length, padding='max_length', truncation=True, return_attention_mask=True, return_tensors='pt')['input_ids'].flatten(),
+             'positive_attention_mask': tokenizer.encode_plus(triplet['positive'], max_length=max_sequence_length, padding='max_length', truncation=True, return_attention_mask=True, return_tensors='pt')['attention_mask'].flatten(),
+             'negative_input_ids': tokenizer.encode_plus(triplet['negative'], max_length=max_sequence_length, padding='max_length', truncation=True, return_attention_mask=True, return_tensors='pt')['input_ids'].flatten(),
+             'negative_attention_mask': tokenizer.encode_plus(triplet['negative'], max_length=max_sequence_length, padding='max_length', truncation=True, return_attention_mask=True, return_tensors='pt')['attention_mask'].flatten()} 
+            for triplet in triplets]
 
 class CustomDataset(Dataset):
     def __init__(self, triplets, tokenizer, max_sequence_length):
-        self.triplets = triplets
         self.tokenizer = tokenizer
         self.max_sequence_length = max_sequence_length
-        self.anchor_inputs = []
-        self.positive_inputs = []
-        self.negative_inputs = []
-        for triplet in self.triplets:
-            anchor_inputs = self.tokenizer.encode_plus(
-                triplet['anchor'],
-                max_length=self.max_sequence_length,
-                padding='max_length',
-                truncation=True,
-                return_attention_mask=True,
-                return_tensors='pt'
-            )
-            positive_inputs = self.tokenizer.encode_plus(
-                triplet['positive'],
-                max_length=self.max_sequence_length,
-                padding='max_length',
-                truncation=True,
-                return_attention_mask=True,
-                return_tensors='pt'
-            )
-            negative_inputs = self.tokenizer.encode_plus(
-                triplet['negative'],
-                max_length=self.max_sequence_length,
-                padding='max_length',
-                truncation=True,
-                return_attention_mask=True,
-                return_tensors='pt'
-            )
-            self.anchor_inputs.append({
-                'input_ids': anchor_inputs['input_ids'].flatten(),
-                'attention_mask': anchor_inputs['attention_mask'].flatten()
-            })
-            self.positive_inputs.append({
-                'input_ids': positive_inputs['input_ids'].flatten(),
-                'attention_mask': positive_inputs['attention_mask'].flatten()
-            })
-            self.negative_inputs.append({
-                'input_ids': negative_inputs['input_ids'].flatten(),
-                'attention_mask': negative_inputs['attention_mask'].flatten()
-            })
+        self.triplets = tokenize_triplets(triplets, tokenizer, max_sequence_length)
 
     def __len__(self):
         return len(self.triplets)
 
     def __getitem__(self, idx):
-        return {
-            'anchor_input_ids': self.anchor_inputs[idx]['input_ids'],
-            'anchor_attention_mask': self.anchor_inputs[idx]['attention_mask'],
-            'positive_input_ids': self.positive_inputs[idx]['input_ids'],
-            'positive_attention_mask': self.positive_inputs[idx]['attention_mask'],
-            'negative_input_ids': self.negative_inputs[idx]['input_ids'],
-            'negative_attention_mask': self.negative_inputs[idx]['attention_mask']
-        }
+        return self.triplets[idx]
 
-class Model(nn.Module):
-    def __init__(self):
-        super(Model, self).__init__()
-        self.bert = AutoModel.from_pretrained('bert-base-uncased')
-        self.dropout = nn.Dropout(DROPOUT_RATE)
-        self.fc = nn.Linear(self.bert.config.hidden_size, FULLY_CONNECTED_SIZE)
-        self.fc2 = nn.Linear(FULLY_CONNECTED_SIZE, EMBEDDING_SIZE)
-
-    def forward(self, input_ids, attention_mask):
-        outputs = self.bert(input_ids, attention_mask=attention_mask)
-        outputs = self.dropout(outputs.pooler_output)
-        outputs = torch.relu(self.fc(outputs))
-        outputs = self.fc2(outputs)
-        return outputs
+def model():
+    return nn.Sequential(
+        AutoModel.from_pretrained('bert-base-uncased'),
+        nn.Dropout(DROPOUT_RATE),
+        nn.Linear(AutoModel.from_pretrained('bert-base-uncased').config.hidden_size, FULLY_CONNECTED_SIZE),
+        nn.ReLU(),
+        nn.Linear(FULLY_CONNECTED_SIZE, EMBEDDING_SIZE)
+    )
 
 def calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
-    positive_distance = torch.mean((anchor_embeddings - positive_embeddings) ** 2)
-    negative_distance = torch.mean((anchor_embeddings - negative_embeddings) ** 2)
-    return positive_distance + torch.clamp(negative_distance - positive_distance, min=0)
+    return torch.mean((anchor_embeddings - positive_embeddings) ** 2) + torch.clamp(torch.mean((anchor_embeddings - negative_embeddings) ** 2) - torch.mean((anchor_embeddings - positive_embeddings) ** 2), min=0)
 
-def train(model, device, loader, optimizer, epoch):
+def train(model, device, loader, optimizer):
     model.train()
     total_loss = 0
     for batch in loader:
@@ -143,14 +84,14 @@ def train(model, device, loader, optimizer, epoch):
         negative_input_ids = batch['negative_input_ids'].to(device)
         negative_attention_mask = batch['negative_attention_mask'].to(device)
         optimizer.zero_grad()
-        anchor_embeddings = model(anchor_input_ids, anchor_attention_mask)
-        positive_embeddings = model(positive_input_ids, positive_attention_mask)
-        negative_embeddings = model(negative_input_ids, negative_attention_mask)
+        anchor_embeddings = model((anchor_input_ids, anchor_attention_mask))
+        positive_embeddings = model((positive_input_ids, positive_attention_mask))
+        negative_embeddings = model((negative_input_ids, negative_attention_mask))
         loss = calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
-    print(f'Epoch {epoch+1}, Loss: {total_loss / len(loader)}')
+    return total_loss / len(loader)
 
 def evaluate(model, device, loader):
     model.eval()
@@ -163,15 +104,14 @@ def evaluate(model, device, loader):
             positive_attention_mask = batch['positive_attention_mask'].to(device)
             negative_input_ids = batch['negative_input_ids'].to(device)
             negative_attention_mask = batch['negative_attention_mask'].to(device)
-            anchor_embeddings = model(anchor_input_ids, anchor_attention_mask)
-            positive_embeddings = model(positive_input_ids, positive_attention_mask)
-            negative_embeddings = model(negative_input_ids, negative_attention_mask)
+            anchor_embeddings = model((anchor_input_ids, anchor_attention_mask))
+            positive_embeddings = model((positive_input_ids, positive_attention_mask))
+            negative_embeddings = model((negative_input_ids, negative_attention_mask))
             for i in range(len(anchor_embeddings)):
                 similarity_positive = torch.sum(anchor_embeddings[i] * positive_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(positive_embeddings[i]))
                 similarity_negative = torch.sum(anchor_embeddings[i] * negative_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(negative_embeddings[i]))
                 total_correct += int(similarity_positive > similarity_negative)
-    accuracy = total_correct / len(loader.dataset)
-    print(f'Test Accuracy: {accuracy}')
+    return total_correct / len(loader.dataset)
 
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
@@ -183,12 +123,13 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = Model()
+    model = model()
     model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE_VALUE)
     for epoch in range(EPOCHS):
-        train(model, device, train_loader, optimizer, epoch)
-    evaluate(model, device, test_loader)
+        loss = train(model, device, train_loader, optimizer)
+        print(f'Epoch {epoch+1}, Loss: {loss}')
+    print(f'Test Accuracy: {evaluate(model, device, test_loader)}')
 
 if __name__ == "__main__":
     main()
