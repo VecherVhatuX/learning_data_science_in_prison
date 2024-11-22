@@ -5,7 +5,7 @@ from typing import List
 import jax
 import jax.numpy as jnp
 from jax.experimental import stax
-from jax.experimental.stax import Dense, Relu, FanOut, FanInConcat
+from jax.experimental.stax import Dense, Relu
 import optax
 
 @dataclass
@@ -58,16 +58,17 @@ class CustomDataset:
         input_ids = jnp.array([0] + [ord(c) for c in f"{self.conversation_format_identifier} {example['input']}"] + [1], dtype=jnp.float32)
         labels = jnp.array([0] + [ord(c) for c in f"{self.conversation_format_identifier} {example['output']}"] + [1], dtype=jnp.float32)
         attention_mask = jnp.array([1] * len(input_ids), dtype=jnp.float32)
-        return input_ids, labels, attention_mask
+        return {"input_ids": input_ids, "labels": labels, "attention_mask": attention_mask}
 
 def neural_network_model():
-    return stax.serial(
+    init_fn, apply_fn = stax.serial(
         Dense(128, W_init=jax.nn.initializers.normal(1.0)),
         Relu(),
         Dense(128, W_init=jax.nn.initializers.normal(1.0)),
         Relu(),
         Dense(1000, W_init=jax.nn.initializers.normal(1.0))
     )
+    return init_fn, apply_fn
 
 def load_json_data(file_name):
     try:
@@ -82,44 +83,52 @@ def load_hyperparameters(base_model_identifier, conversation_format_identifier, 
 
 def create_data_loader(data, conversation_format_identifier, batch_size):
     dataset = CustomDataset(data, conversation_format_identifier)
-    data_loader = jax.tree_util.tree_leaves(dataset)
-    data_loader = jax.tree_util.tree_map(lambda x: x.reshape(-1, batch_size, x.shape[-1]), data_loader)
-    data_loader = jax.tree_util.tree_map(lambda x: x.swapaxes(0, 1), data_loader)
-    return zip(*data_loader)
+    data_loader = []
+    for i in range(0, len(dataset), batch_size):
+        batch = []
+        for j in range(batch_size):
+            if i + j < len(dataset):
+                batch.append(dataset[i + j])
+            else:
+                break
+        if batch:
+            input_ids = jnp.stack([example["input_ids"] for example in batch])
+            labels = jnp.stack([example["labels"] for example in batch])
+            attention_mask = jnp.stack([example["attention_mask"] for example in batch])
+            data_loader.append((input_ids, labels, attention_mask))
+    return data_loader
 
-def train_step(model, params, opt_state, batch):
-    grads = jax.grad(lambda params: jnp.mean((model(params, batch[0]) - batch[1]) ** 2))(params)
+def train_step(params, opt_state, batch):
+    grads = jax.grad(lambda params: jnp.mean((apply_fn(params, batch[0]) - batch[1]) ** 2))(params)
     updates, opt_state = optax.adam(learning_rate=0.001).update(grads, opt_state)
     params = optax.apply_updates(params, updates)
     return params, opt_state
 
-def train_model(model, dataset, hyperparameters):
-    init_fn, apply_fn = model
+def train_model(init_fn, apply_fn, dataset, hyperparameters):
     rng = jax.random.PRNGKey(hyperparameters.random_seed_value)
     params = init_fn(rng, (-1, 128))
     opt_state = optax.adam(learning_rate=0.001).init(params)
     for epoch in range(hyperparameters.number_of_epochs):
         for batch in dataset:
-            params, opt_state = train_step(apply_fn, params, opt_state, batch)
+            params, opt_state = train_step(params, opt_state, batch)
         print(f"Epoch {epoch+1}, Loss: {jax.grad(lambda params: jnp.mean((apply_fn(params, batch[0]) - batch[1]) ** 2))(params)}")
 
-def evaluate_model(model, dataset):
-    init_fn, apply_fn = model
+def evaluate_model(init_fn, apply_fn, dataset):
     params = jnp.load(os.path.join(Hyperparameters().output_directory_path, "final_model.npy"))
     total_loss = 0
     for batch in dataset:
         total_loss += jnp.mean((apply_fn(params, batch[0]) - batch[1]) ** 2)
-    print(f"Test Loss: {total_loss / len(list(dataset))}")
+    print(f"Test Loss: {total_loss / len(dataset)}")
 
 def main():
     hyperparameters = load_hyperparameters("t5-base", "none", True)
-    model = neural_network_model()
+    init_fn, apply_fn = neural_network_model()
     training_data, testing_data = load_json_data("train.json"), load_json_data("test.json")
     if training_data is not None and testing_data is not None:
         train_data_loader = create_data_loader(training_data, hyperparameters.conversation_format_identifier, hyperparameters.training_batch_size)
         test_data_loader = create_data_loader(testing_data, hyperparameters.conversation_format_identifier, hyperparameters.evaluation_batch_size)
-        train_model(model, train_data_loader, hyperparameters)
-        evaluate_model(model, test_data_loader)
+        train_model(init_fn, apply_fn, train_data_loader, hyperparameters)
+        evaluate_model(init_fn, apply_fn, test_data_loader)
 
 if __name__ == "__main__":
     main()
