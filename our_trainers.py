@@ -177,7 +177,7 @@ def calculate_knn_f1(embeddings, labels, k=5):
     return 2 * (precision * recall) / (precision + recall)
 
 
-def main():
+if __name__ == "__main__":
     np.random.seed(42)
     torch.manual_seed(42)
 
@@ -228,7 +228,3 @@ def main():
     print("KNN Recall:", calculate_knn_recall(torch.tensor(all_embeddings, dtype=torch.float), torch.tensor(labels, dtype=torch.long), k=5))
 
     print("KNN F1-score:", calculate_knn_f1(torch.tensor(all_embeddings, dtype=torch.float), torch.tensor(labels, dtype=torch.long), k=5))
-
-
-if __name__ == "__main__":
-    main()
