@@ -6,20 +6,22 @@ import numpy as np
 import torch.nn.functional as F
 
 class TripletModel(nn.Module):
-    def __init__(self, num_embeddings, features):
+    def __init__(self, embedding_dim, num_features):
         super(TripletModel, self).__init__()
-        self.model = nn.Sequential(
-            nn.Embedding(num_embeddings, features),
-            lambda x: x.transpose(1, 2),
-            nn.AvgPool1d(kernel_size=10),
-            lambda x: x.squeeze(2),
-            nn.Linear(features, features),
-            nn.BatchNorm1d(features),
-            lambda x: F.normalize(x, p=2, dim=1)
-        )
+        self.embedding = nn.Embedding(embedding_dim, num_features)
+        self.avg_pool = nn.AvgPool1d(kernel_size=10)
+        self.linear = nn.Linear(num_features, num_features)
+        self.batch_norm = nn.BatchNorm1d(num_features)
 
     def forward(self, x):
-        return self.model(x)
+        x = self.embedding(x)
+        x = x.transpose(1, 2)
+        x = self.avg_pool(x)
+        x = x.squeeze(2)
+        x = self.linear(x)
+        x = self.batch_norm(x)
+        x = F.normalize(x, p=2, dim=1)
+        return x
 
 
 class TripletDataset(Dataset):
@@ -43,9 +45,9 @@ class TripletDataset(Dataset):
         positive_idx = np.array([np.random.choice(np.where(self.labels == label)[0], size=1)[0] for label in anchor_label])
         negative_idx = np.array([np.random.choice(np.where(self.labels != label)[0], size=self.num_negatives, replace=False) for label in anchor_label])
         return {
-            'anchor_input_ids': torch.tensor([self.samples[i] for i in anchor_idx], dtype=torch.long),
-            'positive_input_ids': torch.tensor([self.samples[i] for i in positive_idx], dtype=torch.long),
-            'negative_input_ids': torch.tensor([self.samples[i] for i in negative_idx], dtype=torch.long)
+            'anchor': torch.tensor([self.samples[i] for i in anchor_idx], dtype=torch.long),
+            'positive': torch.tensor([self.samples[i] for i in positive_idx], dtype=torch.long),
+            'negative': torch.tensor([self.samples[i] for i in negative_idx], dtype=torch.long)
         }
 
 
@@ -66,9 +68,9 @@ def calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embe
 
 def train_step(model, batch, optimizer):
     optimizer.zero_grad()
-    anchor_embeddings = model(batch['anchor_input_ids'])
-    positive_embeddings = model(batch['positive_input_ids'])
-    negative_embeddings = model(batch['negative_input_ids'])
+    anchor_embeddings = model(batch['anchor'])
+    positive_embeddings = model(batch['positive'])
+    negative_embeddings = model(batch['negative'])
     loss = calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
     loss.backward()
     optimizer.step()
@@ -89,9 +91,9 @@ def evaluate(model, dataset, batch_size):
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     with torch.no_grad():
         for i, batch in enumerate(dataloader):
-            anchor_embeddings = model(batch['anchor_input_ids'])
-            positive_embeddings = model(batch['positive_input_ids'])
-            negative_embeddings = model(batch['negative_input_ids'])
+            anchor_embeddings = model(batch['anchor'])
+            positive_embeddings = model(batch['positive'])
+            negative_embeddings = model(batch['negative'])
             total_loss += calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
     print(f'Validation Loss: {total_loss / (i+1):.3f}')
 
