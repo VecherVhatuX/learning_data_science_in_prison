@@ -5,6 +5,7 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import torch.nn.functional as F
 
+# Model
 class TripletModel(nn.Module):
     def __init__(self, embedding_dim, num_features):
         super().__init__()
@@ -23,6 +24,7 @@ class TripletModel(nn.Module):
         x = F.normalize(x, p=2, dim=1)
         return x
 
+# Dataset
 class TripletDataset(Dataset):
     def __init__(self, samples, labels, num_negatives, batch_size, shuffle=True):
         self.samples = samples
@@ -62,9 +64,7 @@ class InputDataset(Dataset):
     def __getitem__(self, index):
         return self.input_ids[index]
 
-def calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
-    return torch.mean(torch.clamp(torch.norm(anchor_embeddings - positive_embeddings, p=2, dim=1) - torch.norm(anchor_embeddings.unsqueeze(1) - negative_embeddings, p=2, dim=2).min(dim=1)[0] + 1.0, min=0.0))
-
+# Training
 class Trainer:
     def __init__(self, model, optimizer):
         self.model = model
@@ -118,25 +118,35 @@ class Trainer:
     def load_model(self, path):
         self.model.load_state_dict(torch.load(path))
 
+# Loss
+def calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
+    return torch.mean(torch.clamp(torch.norm(anchor_embeddings - positive_embeddings, p=2, dim=1) - torch.norm(anchor_embeddings.unsqueeze(1) - negative_embeddings, p=2, dim=2).min(dim=1)[0] + 1.0, min=0.0))
+
+# Distance
 def calculate_distance(embedding1, embedding2):
     return torch.norm(embedding1 - embedding2, p=2, dim=1)
 
+# Similarity
 def calculate_similarity(embedding1, embedding2):
     return torch.sum(embedding1 * embedding2, dim=1) / (torch.norm(embedding1, p=2, dim=1) * torch.norm(embedding2, p=2, dim=1))
 
+# Cosine Distance
 def calculate_cosine_distance(embedding1, embedding2):
     return 1 - calculate_similarity(embedding1, embedding2)
 
+# Nearest Neighbors
 def get_nearest_neighbors(embeddings, target_embedding, k=5):
     distances = calculate_distance(embeddings, target_embedding)
     _, indices = torch.topk(-distances, k)
     return indices
 
+# Similar Embeddings
 def get_similar_embeddings(embeddings, target_embedding, k=5):
     similarities = calculate_similarity(embeddings, target_embedding)
     _, indices = torch.topk(similarities, k)
     return indices
 
+# KNN Accuracy
 def calculate_knn_accuracy(embeddings, labels, k=5):
     correct = 0
     for i in range(len(embeddings)):
@@ -147,6 +157,7 @@ def calculate_knn_accuracy(embeddings, labels, k=5):
             correct += 1
     return correct / len(embeddings)
 
+# KNN Precision
 def calculate_knn_precision(embeddings, labels, k=5):
     precision = 0
     for i in range(len(embeddings)):
@@ -156,6 +167,7 @@ def calculate_knn_precision(embeddings, labels, k=5):
         precision += len(torch.where(nearest_labels == labels[i])[0]) / k
     return precision / len(embeddings)
 
+# KNN Recall
 def calculate_knn_recall(embeddings, labels, k=5):
     recall = 0
     for i in range(len(embeddings)):
@@ -165,11 +177,13 @@ def calculate_knn_recall(embeddings, labels, k=5):
         recall += len(torch.where(nearest_labels == labels[i])[0]) / len(torch.where(labels == labels[i])[0])
     return recall / len(embeddings)
 
+# KNN F1-score
 def calculate_knn_f1(embeddings, labels, k=5):
     precision = calculate_knn_precision(embeddings, labels, k)
     recall = calculate_knn_recall(embeddings, labels, k)
     return 2 * (precision * recall) / (precision + recall)
 
+# Main
 if __name__ == "__main__":
     np.random.seed(42)
     torch.manual_seed(42)
