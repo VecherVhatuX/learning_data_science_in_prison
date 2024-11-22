@@ -7,22 +7,36 @@ import random
 import json
 import os
 from transformers import BertTokenizer
+from typing import List, Tuple, Dict
+
+# Constants
+MAX_SEQUENCE_LENGTH = 512
+EMBEDDING_SIZE = 128
+FULLY_CONNECTED_SIZE = 64
+DROPOUT_RATE = 0.2
+LEARNING_RATE_VALUE = 1e-5
+EPOCHS = 5
+BATCH_SIZE = 32
+NUM_NEGATIVES_PER_POSITIVE = 1
 
 # Data loading functions
-def load_data(file_path):
+def load_data(file_path: str) -> np.ndarray or Dict:
+    """Load data from file."""
     if file_path.endswith('.npy'):
         return np.load(file_path, allow_pickle=True)
     else:
         return json.load(open(file_path, 'r', encoding='utf-8'))
 
-def load_snippets(folder_path):
+def load_snippets(folder_path: str) -> List[Tuple[str, str]]:
+    """Load snippets from folder."""
     snippet_paths = []
     for folder in os.listdir(folder_path):
         if os.path.isdir(os.path.join(folder_path, folder)):
             snippet_paths.append((os.path.join(folder_path, folder), os.path.join(folder_path, folder, 'snippet.json')))
     return snippet_paths
 
-def separate_snippets(snippets):
+def separate_snippets(snippets: List[Tuple[str, str]]) -> Tuple[List[Tuple[str, bool]], List[Tuple[str, bool]]]:
+    """Separate bug and non-bug snippets."""
     bug_snippets = []
     non_bug_snippets = []
     for folder_path, snippet_file_path in snippets:
@@ -33,7 +47,8 @@ def separate_snippets(snippets):
             non_bug_snippets.append((snippet_data['snippet'], False))
     return bug_snippets, non_bug_snippets
 
-def create_triplets(problem_statement, positive_snippets, negative_snippets, num_negatives_per_positive):
+def create_triplets(problem_statement: str, positive_snippets: List[Tuple[str, bool]], negative_snippets: List[Tuple[str, bool]], num_negatives_per_positive: int) -> List[Dict]:
+    """Create triplets."""
     triplets = []
     for positive_doc in positive_snippets:
         for _ in range(min(num_negatives_per_positive, len(negative_snippets))):
@@ -41,7 +56,8 @@ def create_triplets(problem_statement, positive_snippets, negative_snippets, num
     return triplets
 
 # Data preparation function
-def prepare_data(dataset_path, snippet_folder_path, num_negatives_per_positive):
+def prepare_data(dataset_path: str, snippet_folder_path: str, num_negatives_per_positive: int) -> Tuple[List[Dict], List[Dict]]:
+    """Prepare data."""
     instance_id_map = {item['instance_id']: item['problem_statement'] for item in load_data(dataset_path)}
     snippets = load_snippets(snippet_folder_path)
     bug_snippets, non_bug_snippets = separate_snippets(snippets)
@@ -53,7 +69,7 @@ def prepare_data(dataset_path, snippet_folder_path, num_negatives_per_positive):
 
 # Dataset class
 class CustomDataset(Dataset):
-    def __init__(self, triplets, max_sequence_length, tokenizer):
+    def __init__(self, triplets: List[Dict], max_sequence_length: int, tokenizer: BertTokenizer):
         self.triplets = triplets
         self.max_sequence_length = max_sequence_length
         self.tokenizer = tokenizer
@@ -61,7 +77,7 @@ class CustomDataset(Dataset):
     def __len__(self):
         return len(self.triplets)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> Dict:
         anchor = self.tokenizer.encode_plus(
             self.triplets[idx]['anchor'],
             max_length=self.max_sequence_length,
@@ -97,14 +113,14 @@ class CustomDataset(Dataset):
 
 # Model class
 class Model(nn.Module):
-    def __init__(self, embedding_size, fully_connected_size, dropout_rate):
+    def __init__(self, embedding_size: int, fully_connected_size: int, dropout_rate: float):
         super(Model, self).__init__()
         self.model = torch.hub.load('huggingface/pytorch-transformers', 'model', 'bert-base-uncased')
         self.dropout = nn.Dropout(dropout_rate)
         self.fc1 = nn.Linear(768, fully_connected_size)
         self.fc2 = nn.Linear(fully_connected_size, embedding_size)
 
-    def forward(self, x, attention_mask):
+    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         outputs = self.model(x, attention_mask=attention_mask)
         outputs = outputs.pooler_output
         outputs = self.dropout(outputs)
@@ -113,13 +129,13 @@ class Model(nn.Module):
         return outputs
 
 # Loss calculation function
-def calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
+def calculate_loss(anchor_embeddings: torch.Tensor, positive_embeddings: torch.Tensor, negative_embeddings: torch.Tensor) -> torch.Tensor:
     positive_distance = torch.mean(torch.pow(anchor_embeddings - positive_embeddings, 2))
     negative_distance = torch.mean(torch.pow(anchor_embeddings - negative_embeddings, 2))
     return positive_distance + torch.max(negative_distance - positive_distance, torch.tensor(0.0))
 
 # Training function
-def train(model, device, dataset, epochs, learning_rate_value, batch_size, optimizer):
+def train(model: Model, device: torch.device, dataset: CustomDataset, epochs: int, learning_rate_value: float, batch_size: int, optimizer: optim.Optimizer):
     for epoch in range(epochs):
         total_loss = 0
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
@@ -141,7 +157,7 @@ def train(model, device, dataset, epochs, learning_rate_value, batch_size, optim
         print(f'Epoch {epoch+1}, Loss: {total_loss / len(dataloader)}')
 
 # Evaluation function
-def evaluate(model, device, dataset, batch_size):
+def evaluate(model: Model, device: torch.device, dataset: CustomDataset, batch_size: int):
     total_correct = 0
     with torch.no_grad():
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
@@ -163,35 +179,28 @@ def evaluate(model, device, dataset, batch_size):
     print(f'Test Accuracy: {accuracy}')
 
 # Model creation function
-def create_model(embedding_size, fully_connected_size, dropout_rate, device):
+def create_model(embedding_size: int, fully_connected_size: int, dropout_rate: float, device: torch.device) -> Model:
     model = Model(embedding_size, fully_connected_size, dropout_rate)
     model.to(device)
     return model
 
 # Optimizer creation function
-def create_optimizer(model, learning_rate_value):
+def create_optimizer(model: Model, learning_rate_value: float) -> optim.Optimizer:
     return optim.Adam(model.parameters(), lr=learning_rate_value)
 
 # Main function
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
-    num_negatives_per_positive = 1
-    fully_connected_size = 64
-    dropout_rate = 0.2
-    max_sequence_length = 512
-    learning_rate_value = 1e-5
-    epochs = 5
-    batch_size = 32
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    train_triplets, test_triplets = prepare_data(dataset_path, snippet_folder_path, num_negatives_per_positive)
+    train_triplets, test_triplets = prepare_data(dataset_path, snippet_folder_path, NUM_NEGATIVES_PER_POSITIVE)
     tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-    train_dataset = CustomDataset(train_triplets, max_sequence_length, tokenizer)
-    test_dataset = CustomDataset(test_triplets, max_sequence_length, tokenizer)
-    model = create_model(128, fully_connected_size, dropout_rate, device)
-    optimizer = create_optimizer(model, learning_rate_value)
-    train(model, device, train_dataset, epochs, learning_rate_value, batch_size, optimizer)
-    evaluate(model, device, test_dataset, batch_size)
+    train_dataset = CustomDataset(train_triplets, MAX_SEQUENCE_LENGTH, tokenizer)
+    test_dataset = CustomDataset(test_triplets, MAX_SEQUENCE_LENGTH, tokenizer)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = create_model(EMBEDDING_SIZE, FULLY_CONNECTED_SIZE, DROPOUT_RATE, device)
+    optimizer = create_optimizer(model, LEARNING_RATE_VALUE)
+    train(model, device, train_dataset, EPOCHS, LEARNING_RATE_VALUE, BATCH_SIZE, optimizer)
+    evaluate(model, device, test_dataset, BATCH_SIZE)
 
 if __name__ == "__main__":
     main()
