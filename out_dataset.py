@@ -12,6 +12,7 @@ from transformers import AutoModel, AutoTokenizer
 class DataUtil:
     @staticmethod
     def load_data(file_path: str) -> dict or np.ndarray:
+        """Loads data from a file."""
         if file_path.endswith('.npy'):
             return np.load(file_path, allow_pickle=True)
         else:
@@ -19,11 +20,13 @@ class DataUtil:
 
     @staticmethod
     def load_snippets(snippet_folder_path: str) -> list:
+        """Loads snippets from a folder."""
         return [(os.path.join(snippet_folder_path, folder), os.path.join(snippet_folder_path, folder, 'snippet.json')) 
                 for folder in os.listdir(snippet_folder_path) if os.path.isdir(os.path.join(snippet_folder_path, folder))]
 
     @staticmethod
     def separate_snippets(snippets: list) -> tuple:
+        """Separates bug and non-bug snippets."""
         bug_snippets = [snippet_data['snippet'] for _, snippet_file_path in snippets 
                         for snippet_data in [DataUtil.load_data(snippet_file_path)] if snippet_data.get('is_bug', False)]
         non_bug_snippets = [snippet_data['snippet'] for _, snippet_file_path in snippets 
@@ -32,6 +35,7 @@ class DataUtil:
 
     @staticmethod
     def create_triplets(num_negatives_per_positive: int, instance_id_map: dict, snippets: list) -> list:
+        """Creates triplets for training."""
         bug_snippets, non_bug_snippets = DataUtil.separate_snippets(snippets)
         return [{'anchor': instance_id_map[os.path.basename(folder_path)], 'positive': positive_doc, 'negative': random.choice(non_bug_snippets)} 
                 for folder_path, _ in snippets 
@@ -40,14 +44,17 @@ class DataUtil:
 
 class BugTripletDataset(Dataset):
     def __init__(self, triplets: list, max_sequence_length: int):
+        """Initializes the dataset."""
         self.triplets = triplets
         self.max_sequence_length = max_sequence_length
         self.tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
 
     def __len__(self):
+        """Returns the number of triplets."""
         return len(self.triplets)
 
     def __getitem__(self, idx: int) -> torch.Tensor:
+        """Returns a triplet."""
         anchor = self.triplets[idx]['anchor']
         positive = self.triplets[idx]['positive']
         negative = self.triplets[idx]['negative']
@@ -59,10 +66,12 @@ class BugTripletDataset(Dataset):
         return torch.cat([anchor_sequence, positive_sequence, negative_sequence], dim=0)
 
     def shuffle(self) -> None:
+        """Shuffles the triplets."""
         random.shuffle(self.triplets)
 
 class BugTripletModel(nn.Module):
     def __init__(self, embedding_size: int, fully_connected_size: int, dropout_rate: float):
+        """Initializes the model."""
         super(BugTripletModel, self).__init__()
         self.model = nn.Sequential(
             AutoModel.from_pretrained('bert-base-uncased'),
@@ -73,16 +82,19 @@ class BugTripletModel(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Returns the embedding."""
         outputs = self.model(x)
         return outputs.last_hidden_state[:, 0, :]
 
 class Trainer:
     @staticmethod
     def calculate_loss(anchor_embeddings: torch.Tensor, positive_embeddings: torch.Tensor, negative_embeddings: torch.Tensor, device: torch.device) -> torch.Tensor:
+        """Calculates the loss."""
         return torch.mean((anchor_embeddings - positive_embeddings) ** 2) + torch.max(torch.mean((anchor_embeddings - negative_embeddings) ** 2) - torch.mean((anchor_embeddings - positive_embeddings) ** 2), torch.tensor(0.0).to(device))
 
     @staticmethod
     def train(model: BugTripletModel, dataset: BugTripletDataset, learning_rate_value: float, epochs: int, batch_size: int, device: torch.device) -> float:
+        """Trains the model."""
         optimizer = optim.Adam(model.parameters(), lr=learning_rate_value)
         model.train()
         total_loss = 0
@@ -104,6 +116,7 @@ class Trainer:
 
     @staticmethod
     def evaluate(model: BugTripletModel, dataset: BugTripletDataset, batch_size: int, device: torch.device) -> float:
+        """Evaluates the model."""
         model.eval()
         total_correct = 0
         with torch.no_grad():
