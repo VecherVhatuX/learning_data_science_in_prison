@@ -8,50 +8,36 @@ import torch.nn.functional as F
 class TripletNetwork(nn.Module):
     def __init__(self, embedding_dim, num_features):
         super(TripletNetwork, self).__init__()
-        # Define the neural network architecture for the triplet network
         self._net = nn.Sequential(
-            # Embed the input data into a higher dimensional space
             nn.Embedding(embedding_dim, num_features),
-            # Transpose the input data for the next layer
             nn.Transpose(1, 2),
-            # Apply average pooling to the input data
             nn.AvgPool1d(kernel_size=10),
-            # Flatten the input data
             nn.Flatten(),
-            # Apply a fully connected linear layer
             nn.Linear(num_features, num_features),
-            # Normalize the input data
             nn.BatchNorm1d(num_features),
-            # Apply the L2 normalization
             nn.Lambda(lambda x: F.normalize(x, p=2, dim=1))
         )
 
     def forward(self, x):
-        # Define the forward pass of the neural network
         return self._net(x)
 
 class TripletData(Dataset):
     def __init__(self, samples, labels, num_negatives, batch_size, shuffle=True):
-        # Initialize the dataset for the triplet network
         self.samples = samples
         self.labels = labels
         self.num_negatives = num_negatives
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.indices = np.arange(len(self.samples))
-        self.on_epoch_end()
 
     def on_epoch_end(self):
-        # Shuffle the indices at the end of each epoch
         if self.shuffle:
             np.random.shuffle(self.indices)
 
     def __len__(self):
-        # Return the number of batches in the dataset
         return len(self.samples) // self.batch_size
 
     def __getitem__(self, index):
-        # Return a batch of data for the triplet network
         batch_indices = self.indices[index * self.batch_size:(index + 1) * self.batch_size]
         anchor_idx = np.random.choice(batch_indices, size=self.batch_size)
         anchor_label = self.labels[anchor_idx]
@@ -65,29 +51,23 @@ class TripletData(Dataset):
 
 class InputData(Dataset):
     def __init__(self, input_ids):
-        # Initialize the dataset for the input data
         self.input_ids = input_ids
 
     def __len__(self):
-        # Return the number of input data points
         return len(self.input_ids)
 
     def __getitem__(self, index):
-        # Return a single input data point
         return self.input_ids[index]
 
 class TripletTrainer:
     def __init__(self, model, optimizer):
-        # Initialize the trainer for the triplet network
         self.model = model
         self.optimizer = optimizer
 
     def calculate_triplet_loss(self, anchor_embeddings, positive_embeddings, negative_embeddings):
-        # Calculate the triplet loss for the given embeddings
         return torch.mean(torch.clamp(torch.norm(anchor_embeddings - positive_embeddings, p=2, dim=1) - torch.norm(anchor_embeddings.unsqueeze(1) - negative_embeddings, p=2, dim=2).min(dim=1)[0] + 1.0, min=0.0))
 
     def train_step(self, batch):
-        # Perform a single training step for the triplet network
         self.optimizer.zero_grad()
         anchor_embeddings = self.model(batch['anchor'])
         positive_embeddings = self.model(batch['positive'])
@@ -98,7 +78,6 @@ class TripletTrainer:
         return loss
 
     def train(self, dataset, epochs, batch_size):
-        # Train the triplet network for the given number of epochs
         for epoch in range(epochs):
             total_loss = 0.0
             dataset.on_epoch_end()
@@ -108,7 +87,6 @@ class TripletTrainer:
             print(f'Epoch: {epoch + 1}, Loss: {total_loss / (i + 1):.3f}')
 
     def evaluate(self, dataset, batch_size):
-        # Evaluate the triplet network on the given dataset
         total_loss = 0.0
         data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
         with torch.no_grad():
@@ -120,7 +98,6 @@ class TripletTrainer:
         print(f'Validation Loss: {total_loss / (i + 1):.3f}')
 
     def predict(self, dataset, batch_size):
-        # Make predictions on the given dataset
         predictions = []
         data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
         with torch.no_grad():
@@ -133,39 +110,31 @@ class TripletTrainer:
         return np.array(predictions)
 
     def save_model(self, path):
-        # Save the model to the given path
         torch.save(self.model.state_dict(), path)
 
     def load_model(self, path):
-        # Load the model from the given path
         self.model.load_state_dict(torch.load(path))
 
     def calculate_distance(self, embedding1, embedding2):
-        # Calculate the Euclidean distance between the given embeddings
         return torch.norm(embedding1 - embedding2, p=2, dim=1)
 
     def calculate_similarity(self, embedding1, embedding2):
-        # Calculate the cosine similarity between the given embeddings
         return torch.sum(embedding1 * embedding2, dim=1) / (torch.norm(embedding1, p=2, dim=1) * torch.norm(embedding2, p=2, dim=1))
 
     def calculate_cosine_distance(self, embedding1, embedding2):
-        # Calculate the cosine distance between the given embeddings
         return 1 - self.calculate_similarity(embedding1, embedding2)
 
     def get_nearest_neighbors(self, embeddings, target_embedding, k=5):
-        # Get the k nearest neighbors for the given target embedding
         distances = self.calculate_distance(embeddings, target_embedding)
         _, indices = torch.topk(-distances, k)
         return indices
 
     def get_similar_embeddings(self, embeddings, target_embedding, k=5):
-        # Get the k most similar embeddings for the given target embedding
         similarities = self.calculate_similarity(embeddings, target_embedding)
         _, indices = torch.topk(similarities, k)
         return indices
 
     def calculate_knn_accuracy(self, embeddings, labels, k=5):
-        # Calculate the k-NN accuracy for the given embeddings and labels
         correct = 0
         for i in range(len(embeddings)):
             distances = self.calculate_distance(embeddings, embeddings[i])
@@ -176,7 +145,6 @@ class TripletTrainer:
         return correct / len(embeddings)
 
     def calculate_knn_precision(self, embeddings, labels, k=5):
-        # Calculate the k-NN precision for the given embeddings and labels
         precision = 0
         for i in range(len(embeddings)):
             distances = self.calculate_distance(embeddings, embeddings[i])
@@ -186,7 +154,6 @@ class TripletTrainer:
         return precision / len(embeddings)
 
     def calculate_knn_recall(self, embeddings, labels, k=5):
-        # Calculate the k-NN recall for the given embeddings and labels
         recall = 0
         for i in range(len(embeddings)):
             distances = self.calculate_distance(embeddings, embeddings[i])
@@ -196,7 +163,6 @@ class TripletTrainer:
         return recall / len(embeddings)
 
     def calculate_knn_f1(self, embeddings, labels, k=5):
-        # Calculate the k-NN F1-score for the given embeddings and labels
         precision = self.calculate_knn_precision(embeddings, labels, k)
         recall = self.calculate_knn_recall(embeddings, labels, k)
         return 2 * (precision * recall) / (precision + recall)
