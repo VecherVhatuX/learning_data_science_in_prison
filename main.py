@@ -59,7 +59,6 @@ class TripletDataset(Dataset):
         labels = torch.tensor([0] + [ord(c) for c in f"{self.conversation_format_identifier} {example['output']}"] + [1], dtype=torch.long)
         attention_mask = torch.tensor([1] * len(input_ids), dtype=torch.long)
 
-        # Sample negative examples
         negative_examples = []
         for _ in range(self.negative_samples_per_positive_sample):
             negative_idx = torch.randint(0, len(self.data), (1,)).item()
@@ -102,65 +101,6 @@ class T5Model(nn.Module):
         outputs = self.model(input_ids=input_ids)
         return outputs.last_hidden_state
 
-class DataLoaderFactory:
-    @staticmethod
-    def create_data_loader(data, conversation_format_identifier, batch_size, negative_samples_per_positive_sample):
-        dataset = TripletDataset(data, conversation_format_identifier, negative_samples_per_positive_sample)
-        return DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
-class DataUtil:
-    @staticmethod
-    def load_json_data(file_name):
-        try:
-            with open(file_name, 'r') as f:
-                return json.load(f)
-        except FileNotFoundError:
-            print(f"{file_name} not found.")
-            return None
-
-class HyperparameterUtil:
-    @staticmethod
-    def load_hyperparameters(base_model_identifier, conversation_format_identifier, triplet_loss_training_enabled):
-        return Hyperparameters(base_model_identifier=base_model_identifier, conversation_format_identifier=conversation_format_identifier, triplet_loss_training_enabled=triplet_loss_training_enabled)
-
-class ModelUtil:
-    @staticmethod
-    def train_step(model, optimizer, batch):
-        model.train()
-        input_ids = batch["input_ids"]
-        labels = batch["labels"]
-        attention_mask = batch["attention_mask"]
-        optimizer.zero_grad()
-        outputs = model(input_ids)
-        loss = nn.CrossEntropyLoss()(outputs.view(-1, outputs.shape[-1]), labels.view(-1))
-        loss.backward()
-        optimizer.step()
-        return loss.item()
-
-    @staticmethod
-    def train_model(model, dataset, hyperparameters):
-        optimizer = optim.Adam(model.parameters(), lr=0.001)
-        for epoch in range(hyperparameters.number_of_epochs):
-            total_loss = 0
-            for batch in dataset:
-                loss = ModelUtil.train_step(model, optimizer, batch)
-                total_loss += loss
-            print(f"Epoch {epoch+1}, Loss: {total_loss / len(dataset)}")
-
-    @staticmethod
-    def evaluate_model(model, dataset):
-        model.eval()
-        total_loss = 0
-        with torch.no_grad():
-            for batch in dataset:
-                input_ids = batch["input_ids"]
-                labels = batch["labels"]
-                attention_mask = batch["attention_mask"]
-                outputs = model(input_ids)
-                loss = nn.CrossEntropyLoss()(outputs.view(-1, outputs.shape[-1]), labels.view(-1))
-                total_loss += loss.item()
-        print(f"Test Loss: {total_loss / len(dataset)}")
-
 class TripletLoss(nn.Module):
     def __init__(self, margin=2.0):
         super(TripletLoss, self).__init__()
@@ -172,43 +112,74 @@ class TripletLoss(nn.Module):
         losses = torch.relu(distance_positive - distance_negative + self.margin)
         return losses.mean()
 
-class TripletModelUtil:
-    @staticmethod
-    def train_step(model, triplet_loss, optimizer, batch):
-        model.train()
+class ModelTrainer:
+    def __init__(self, model, hyperparameters):
+        self.model = model
+        self.hyperparameters = hyperparameters
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)
+
+    def train_step(self, batch):
+        self.model.train()
         anchor_input_ids = batch["input_ids"]
         positive_input_ids = batch["labels"]
         negative_input_ids = batch["negative_examples"][0]["input_ids"]
-        anchor_outputs = model(anchor_input_ids)
-        positive_outputs = model(positive_input_ids)
-        negative_outputs = model(negative_input_ids)
+        anchor_input_ids, positive_input_ids, negative_input_ids = anchor_input_ids.to(self.device), positive_input_ids.to(self.device), negative_input_ids.to(self.device)
+        anchor_outputs = self.model(anchor_input_ids)
+        positive_outputs = self.model(positive_input_ids)
+        negative_outputs = self.model(negative_input_ids)
+        triplet_loss = TripletLoss()
         loss = triplet_loss(anchor_outputs, positive_outputs, negative_outputs)
+        optimizer = optim.Adam(self.model.parameters(), lr=0.001)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
         return loss.item()
 
-    @staticmethod
-    def train_model(model, triplet_loss, dataset, hyperparameters):
-        optimizer = optim.Adam(model.parameters(), lr=0.001)
-        for epoch in range(hyperparameters.number_of_epochs):
+    def train(self, dataset):
+        for epoch in range(self.hyperparameters.number_of_epochs):
             total_loss = 0
             for batch in dataset:
-                loss = TripletModelUtil.train_step(model, triplet_loss, optimizer, batch)
+                loss = self.train_step(batch)
                 total_loss += loss
             print(f"Epoch {epoch+1}, Loss: {total_loss / len(dataset)}")
 
-class Main:
-    def run(self):
-        hyperparameters = HyperparameterUtil.load_hyperparameters("t5-base", "none", True)
-        model = T5Model()
-        triplet_loss = TripletLoss()
-        training_data, testing_data = DataUtil.load_json_data("train.json"), DataUtil.load_json_data("test.json")
-        if training_data is not None and testing_data is not None:
-            train_data_loader = DataLoaderFactory.create_data_loader(training_data, hyperparameters.conversation_format_identifier, hyperparameters.training_batch_size, hyperparameters.negative_samples_per_positive_sample)
-            test_data_loader = DataLoaderFactory.create_data_loader(testing_data, hyperparameters.conversation_format_identifier, hyperparameters.evaluation_batch_size, hyperparameters.negative_samples_per_positive_sample)
-            TripletModelUtil.train_model(model, triplet_loss, train_data_loader, hyperparameters)
-            ModelUtil.evaluate_model(model, test_data_loader)
+    def evaluate(self, dataset):
+        self.model.eval()
+        total_loss = 0
+        with torch.no_grad():
+            for batch in dataset:
+                input_ids = batch["input_ids"]
+                labels = batch["labels"]
+                attention_mask = batch["attention_mask"]
+                input_ids, labels, attention_mask = input_ids.to(self.device), labels.to(self.device), attention_mask.to(self.device)
+                outputs = self.model(input_ids)
+                loss = nn.CrossEntropyLoss()(outputs.view(-1, outputs.shape[-1]), labels.view(-1))
+                total_loss += loss.item()
+        print(f"Test Loss: {total_loss / len(dataset)}")
+
+def load_data(file_name):
+    try:
+        with open(file_name, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print(f"{file_name} not found.")
+        return None
+
+def create_data_loader(data, conversation_format_identifier, batch_size, negative_samples_per_positive_sample):
+    dataset = TripletDataset(data, conversation_format_identifier, negative_samples_per_positive_sample)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+def main():
+    hyperparameters = Hyperparameters(base_model_identifier="t5-base", conversation_format_identifier="none", triplet_loss_training_enabled=True)
+    model = T5Model()
+    training_data, testing_data = load_data("train.json"), load_data("test.json")
+    if training_data is not None and testing_data is not None:
+        train_data_loader = create_data_loader(training_data, hyperparameters.conversation_format_identifier, hyperparameters.training_batch_size, hyperparameters.negative_samples_per_positive_sample)
+        test_data_loader = create_data_loader(testing_data, hyperparameters.conversation_format_identifier, hyperparameters.evaluation_batch_size, hyperparameters.negative_samples_per_positive_sample)
+        trainer = ModelTrainer(model, hyperparameters)
+        trainer.train(train_data_loader)
+        trainer.evaluate(test_data_loader)
 
 if __name__ == "__main__":
-    Main().run()
+    main()
