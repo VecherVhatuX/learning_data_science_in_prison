@@ -19,7 +19,10 @@ BATCH_SIZE = 32
 NUM_NEGATIVES_PER_POSITIVE = 1
 
 def load_data(file_path):
-    return np.load(file_path, allow_pickle=True) if file_path.endswith('.npy') else json.load(open(file_path, 'r', encoding='utf-8'))
+    if file_path.endswith('.npy'):
+        return np.load(file_path, allow_pickle=True)
+    else:
+        return json.load(open(file_path, 'r', encoding='utf-8'))
 
 def load_snippets(snippet_folder_path):
     return [(os.path.join(snippet_folder_path, folder), os.path.join(snippet_folder_path, folder, 'snippet.json')) 
@@ -47,9 +50,8 @@ def prepare_data(dataset_path, snippet_folder_path, num_negatives_per_positive):
 
 def tokenize_triplets(triplets, max_sequence_length):
     tokenizer = Tokenizer()
-    tokenizer.fit_on_texts([triplet['anchor'] for triplet in triplets] + 
-                            [triplet['positive'] for triplet in triplets] + 
-                            [triplet['negative'] for triplet in triplets])
+    all_texts = [triplet['anchor'] for triplet in triplets] + [triplet['positive'] for triplet in triplets] + [triplet['negative'] for triplet in triplets]
+    tokenizer.fit_on_texts(all_texts)
     anchor_sequences = tokenizer.texts_to_sequences([triplet['anchor'] for triplet in triplets])
     positive_sequences = tokenizer.texts_to_sequences([triplet['positive'] for triplet in triplets])
     negative_sequences = tokenizer.texts_to_sequences([triplet['negative'] for triplet in triplets])
@@ -59,12 +61,13 @@ def tokenize_triplets(triplets, max_sequence_length):
     return np.stack((anchor_padded, positive_padded, negative_padded), axis=1)
 
 def create_model(embedding_size, max_sequence_length, fully_connected_size, dropout_rate):
-    return tf.keras.Sequential([
+    model = tf.keras.Sequential([
         layers.Embedding(input_dim=10000, output_dim=embedding_size, input_length=max_sequence_length),
         layers.Bidirectional(layers.LSTM(fully_connected_size, dropout=dropout_rate)),
         layers.Dense(fully_connected_size, activation='relu'),
         layers.Dense(embedding_size)
     ])
+    return model
 
 def calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
     return tf.reduce_mean((anchor_embeddings - positive_embeddings) ** 2) + tf.keras.backend.maximum(tf.reduce_mean((anchor_embeddings - negative_embeddings) ** 2) - tf.reduce_mean((anchor_embeddings - positive_embeddings) ** 2), 0)
