@@ -8,9 +8,6 @@ from tensorflow.keras.preprocessing.sequence import pad_sequences
 import numpy as np
 
 class EmbeddingModel(Model):
-    """
-    Custom Embedding Model for generating dense vector representations.
-    """
     def __init__(self, embedding_dim, num_features):
         super(EmbeddingModel, self).__init__()
         self.embedding_layer = Embedding(embedding_dim, num_features, input_length=10)
@@ -32,9 +29,6 @@ class EmbeddingModel(Model):
         return x
 
 class TripletLoss(Loss):
-    """
-    Custom Triplet Loss function for training the model.
-    """
     def __init__(self):
         super(TripletLoss, self).__init__()
 
@@ -42,9 +36,6 @@ class TripletLoss(Loss):
         return K.mean(K.maximum(K.sqrt(K.sum(K.square(anchor_embeddings - positive_embeddings), axis=-1)) - K.min(K.sqrt(K.sum(K.square(K.expand_dims(anchor_embeddings, axis=1) - negative_embeddings), axis=-1)), axis=1) + 1.0, 0.0))
 
 class InputDataset:
-    """
-    Custom Dataset class for input data.
-    """
     def __init__(self, input_ids):
         self.input_ids = input_ids
 
@@ -55,9 +46,6 @@ class InputDataset:
         return self.input_ids[index]
 
 class TripletDataset:
-    """
-    Custom Dataset class for generating triplet data.
-    """
     def __init__(self, samples, labels, num_negatives, batch_size, shuffle=True):
         self.samples = samples
         self.labels = labels
@@ -65,6 +53,7 @@ class TripletDataset:
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.indices = np.arange(len(self.samples))
+        self.on_epoch_end()
 
     def on_epoch_end(self):
         if self.shuffle:
@@ -86,53 +75,29 @@ class TripletDataset:
         }
 
 def save_model(model, path):
-    """
-    Saves the model to a file.
-    """
     model.save(path)
 
 def load_model(model, path):
-    """
-    Loads the model from a file.
-    """
     model.load_weights(path)
 
 def calculate_distance(embedding1, embedding2):
-    """
-    Calculates the Euclidean distance between two embeddings.
-    """
     return K.sqrt(K.sum(K.square(embedding1 - embedding2), axis=-1))
 
 def calculate_similarity(embedding1, embedding2):
-    """
-    Calculates the cosine similarity between two embeddings.
-    """
     return K.sum(embedding1 * embedding2, axis=-1) / (K.sqrt(K.sum(K.square(embedding1), axis=-1)) * K.sqrt(K.sum(K.square(embedding2), axis=-1)))
 
 def calculate_cosine_distance(embedding1, embedding2):
-    """
-    Calculates the cosine distance between two embeddings.
-    """
     return 1 - calculate_similarity(embedding1, embedding2)
 
 def get_nearest_neighbors(embeddings, target_embedding, k=5):
-    """
-    Retrieves the k nearest neighbors to a target embedding.
-    """
     distances = calculate_distance(embeddings, target_embedding)
     return np.argsort(distances)[:k]
 
 def get_similar_embeddings(embeddings, target_embedding, k=5):
-    """
-    Retrieves the k most similar embeddings to a target embedding.
-    """
     similarities = calculate_similarity(embeddings, target_embedding)
     return np.argsort(-similarities)[:k]
 
 def calculate_knn_accuracy(embeddings, labels, k=5):
-    """
-    Calculates the accuracy of a k-nearest neighbors classifier.
-    """
     correct = 0
     for i in range(len(embeddings)):
         distances = calculate_distance(embeddings, embeddings[i])
@@ -142,9 +107,6 @@ def calculate_knn_accuracy(embeddings, labels, k=5):
     return correct / len(embeddings)
 
 def calculate_knn_precision(embeddings, labels, k=5):
-    """
-    Calculates the precision of a k-nearest neighbors classifier.
-    """
     precision = 0
     for i in range(len(embeddings)):
         distances = calculate_distance(embeddings, embeddings[i])
@@ -153,9 +115,6 @@ def calculate_knn_precision(embeddings, labels, k=5):
     return precision / len(embeddings)
 
 def calculate_knn_recall(embeddings, labels, k=5):
-    """
-    Calculates the recall of a k-nearest neighbors classifier.
-    """
     recall = 0
     for i in range(len(embeddings)):
         distances = calculate_distance(embeddings, embeddings[i])
@@ -164,9 +123,6 @@ def calculate_knn_recall(embeddings, labels, k=5):
     return recall / len(embeddings)
 
 def calculate_knn_f1(embeddings, labels, k=5):
-    """
-    Calculates the F1-score of a k-nearest neighbors classifier.
-    """
     precision = calculate_knn_precision(embeddings, labels, k)
     recall = calculate_knn_recall(embeddings, labels, k)
     return 2 * (precision * recall) / (precision + recall)
