@@ -46,32 +46,14 @@ class Hyperparameters:
 
 class TripletDataset:
     def __init__(self, data, conversation_format, negative_samples):
-        """
-        Initialize the triplet dataset.
-
-        Args:
-            data (list): List of input/output pairs.
-            conversation_format (str): Format of the conversation.
-            negative_samples (int): Number of negative samples.
-        """
         self.data = data
         self.conversation_format = conversation_format
         self.negative_samples = negative_samples
 
     def __len__(self):
-        """Return the length of the dataset."""
         return len(self.data)
 
     def __getitem__(self, idx):
-        """
-        Get a batch of data.
-
-        Args:
-            idx (int): Index of the batch.
-
-        Returns:
-            dict: Dictionary containing input IDs, labels, attention mask, and negative examples.
-        """
         example = self.data[idx]
         input_ids = np.array([0] + [ord(c) for c in f"{self.conversation_format} {example['input']}"] + [1], dtype=np.int32)
         labels = np.array([0] + [ord(c) for c in f"{self.conversation_format} {example['output']}"] + [1], dtype=np.int32)
@@ -92,12 +74,6 @@ class TripletDataset:
 
 class T5Model(models.Model):
     def __init__(self):
-        """
-        Initialize the T5 model.
-
-        Note:
-            This model is actually a MobileNetV2 model, not a T5 model.
-        """
         super(T5Model, self).__init__()
         self.model = tf.keras.applications.MobileNetV2(weights='imagenet', include_top=False, input_shape=(224, 224, 3))
         self.fc1 = layers.Dense(128, activation='relu')
@@ -105,15 +81,6 @@ class T5Model(models.Model):
         self.fc3 = layers.Dense(1000)
 
     def call(self, x):
-        """
-        Call the model.
-
-        Args:
-            x (tensor): Input tensor.
-
-        Returns:
-            tensor: Output tensor.
-        """
         x = self.model(x)
         x = layers.Flatten()(x)
         x = self.fc1(x)
@@ -121,29 +88,18 @@ class T5Model(models.Model):
         x = self.fc3(x)
         return x
 
+    def build(self, input_shape):
+        self.model.build(input_shape)
+        self.fc1.build(input_shape)
+        self.fc2.build(input_shape)
+        self.fc3.build(input_shape)
+
 class TripletLoss(tf.keras.losses.Loss):
     def __init__(self, margin=2.0):
-        """
-        Initialize the triplet loss.
-
-        Args:
-            margin (float): Margin value.
-        """
         super(TripletLoss, self).__init__()
         self.margin = margin
 
     def call(self, anchor, positive, negative):
-        """
-        Calculate the triplet loss.
-
-        Args:
-            anchor (tensor): Anchor tensor.
-            positive (tensor): Positive tensor.
-            negative (tensor): Negative tensor.
-
-        Returns:
-            tensor: Triplet loss tensor.
-        """
         distance_positive = tf.reduce_sum(tf.square(anchor - positive), axis=1)
         distance_negative = tf.reduce_sum(tf.square(anchor - negative), axis=1)
         losses = tf.maximum(distance_positive - distance_negative + self.margin, 0)
@@ -151,27 +107,11 @@ class TripletLoss(tf.keras.losses.Loss):
 
 class ModelTrainer:
     def __init__(self, model, hyperparameters):
-        """
-        Initialize the model trainer.
-
-        Args:
-            model (T5Model): T5 model.
-            hyperparameters (Hyperparameters): Hyperparameters.
-        """
         self.model = model
         self.hyperparameters = hyperparameters
         self.optimizer = optimizers.Adam(learning_rate=0.001)
 
     def train_step(self, batch):
-        """
-        Train the model for one step.
-
-        Args:
-            batch (dict): Batch of data.
-
-        Returns:
-            tensor: Loss tensor.
-        """
         with tf.GradientTape() as tape:
             anchor_input_ids = batch["input_ids"]
             positive_input_ids = batch["labels"]
@@ -185,12 +125,6 @@ class ModelTrainer:
         return loss
 
     def train(self, dataset):
-        """
-        Train the model.
-
-        Args:
-            dataset (tf.data.Dataset): Dataset.
-        """
         for epoch in range(self.hyperparameters.num_epochs):
             total_loss = 0
             for batch in dataset:
@@ -199,12 +133,6 @@ class ModelTrainer:
             print(f"Epoch {epoch+1}, Loss: {total_loss / len(dataset)}")
 
     def evaluate(self, dataset):
-        """
-        Evaluate the model.
-
-        Args:
-            dataset (tf.data.Dataset): Dataset.
-        """
         total_loss = 0
         for batch in dataset:
             input_ids = batch["input_ids"]
@@ -216,15 +144,6 @@ class ModelTrainer:
         print(f"Test Loss: {total_loss / len(dataset)}")
 
 def load_data(file_name):
-    """
-    Load data from a file.
-
-    Args:
-        file_name (str): File name.
-
-    Returns:
-        list or None: List of data or None if the file does not exist.
-    """
     try:
         with open(file_name, 'r') as f:
             return json.load(f)
@@ -233,24 +152,13 @@ def load_data(file_name):
         return None
 
 def create_data_loader(data, conversation_format, batch_size, negative_samples):
-    """
-    Create a data loader.
-
-    Args:
-        data (list): List of data.
-        conversation_format (str): Conversation format.
-        batch_size (int): Batch size.
-        negative_samples (int): Number of negative samples.
-
-    Returns:
-        tf.data.Dataset: Data loader.
-    """
     dataset = TripletDataset(data, conversation_format, negative_samples)
     return tf.data.Dataset.from_tensor_slices(dataset).batch(batch_size)
 
 def main():
     hyperparameters = Hyperparameters(model_base="t5-base", conversation_format="none", triplet_loss_training=True)
     model = T5Model()
+    model.build(input_shape=(None, 224, 224, 3))
     training_data, testing_data = load_data("train.json"), load_data("test.json")
     if training_data is not None and testing_data is not None:
         train_data_loader = create_data_loader(training_data, hyperparameters.conversation_format, hyperparameters.train_batch_size, hyperparameters.negative_samples)
