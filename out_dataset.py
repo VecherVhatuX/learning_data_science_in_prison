@@ -9,6 +9,29 @@ import random
 from sklearn.model_selection import train_test_split
 from transformers import AutoModel, AutoTokenizer
 
+class BugTripletDataset(Dataset):
+    def __init__(self, triplets, max_sequence_length):
+        self.triplets = triplets
+        self.max_sequence_length = max_sequence_length
+        self.tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
+
+    def __len__(self):
+        return len(self.triplets)
+
+    def __getitem__(self, idx):
+        anchor = self.triplets[idx]['anchor']
+        positive = self.triplets[idx]['positive']
+        negative = self.triplets[idx]['negative']
+
+        anchor_sequence = self.tokenizer.encode(anchor, max_length=self.max_sequence_length, padding='max_length', truncation=True)
+        positive_sequence = self.tokenizer.encode(positive, max_length=self.max_sequence_length, padding='max_length', truncation=True)
+        negative_sequence = self.tokenizer.encode(negative, max_length=self.max_sequence_length, padding='max_length', truncation=True)
+
+        return torch.tensor([anchor_sequence, positive_sequence, negative_sequence])
+
+    def shuffle(self):
+        random.shuffle(self.triplets)
+
 class BugTripletModel:
     def __init__(self, 
                  max_sequence_length=512, 
@@ -59,13 +82,6 @@ class BugTripletModel:
         triplets = self.create_triplets(instance_id_map, snippets)
         return np.array_split(np.array(triplets), 2)
 
-    def tokenize_triplets(self, triplets):
-        tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
-        anchor_sequences = [tokenizer.encode(triplet['anchor'], max_length=self.max_sequence_length, padding='max_length', truncation=True) for triplet in triplets]
-        positive_sequences = [tokenizer.encode(triplet['positive'], max_length=self.max_sequence_length, padding='max_length', truncation=True) for triplet in triplets]
-        negative_sequences = [tokenizer.encode(triplet['negative'], max_length=self.max_sequence_length, padding='max_length', truncation=True) for triplet in triplets]
-        return torch.tensor(np.stack((anchor_sequences, positive_sequences, negative_sequences), axis=1))
-
     def create_model(self):
         model = nn.Sequential(
             AutoModel.from_pretrained('bert-base-uncased'),
@@ -110,19 +126,21 @@ class BugTripletModel:
 
     def train_model(self, model, train_dataset, test_dataset):
         for epoch in range(self.epochs):
-            loss = self.train(model, train_dataset)
+            train_dataset.dataset.shuffle()
+            train_loader = DataLoader(train_dataset.dataset, batch_size=self.batch_size, shuffle=True)
+            loss = self.train(model, train_loader)
             print(f'Epoch {epoch+1}, Loss: {loss}')
         print(f'Test Accuracy: {self.evaluate(model, test_dataset)}')
 
     def main(self, dataset_path, snippet_folder_path):
         train_triplets, test_triplets = self.prepare_data(dataset_path, snippet_folder_path)
-        train_tokenized_triplets = self.tokenize_triplets(train_triplets)
-        test_tokenized_triplets = self.tokenize_triplets(test_triplets)
-        train_dataset = DataLoader(train_tokenized_triplets, batch_size=self.batch_size, shuffle=True)
-        test_dataset = DataLoader(test_tokenized_triplets, batch_size=self.batch_size, shuffle=False)
+        train_dataset = BugTripletDataset(train_triplets, self.max_sequence_length)
+        test_dataset = BugTripletDataset(test_triplets, self.max_sequence_length)
+        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
+        test_loader = DataLoader(test_dataset, batch_size=self.batch_size, shuffle=False)
         model = self.create_model()
         model.to(self.device)
-        self.train_model(model, train_dataset, test_dataset)
+        self.train_model(model, train_loader, test_loader)
 
 if __name__ == "__main__":
     dataset_path = 'datasets/SWE-bench_oracle.npy'
