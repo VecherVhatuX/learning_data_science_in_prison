@@ -8,7 +8,6 @@ import json
 import os
 from sklearn.model_selection import train_test_split
 
-# Constants
 MAX_SEQUENCE_LENGTH = 512
 EMBEDDING_SIZE = 128
 FULLY_CONNECTED_SIZE = 64
@@ -25,14 +24,20 @@ class DataProcessor:
         self.num_negatives_per_positive = num_negatives_per_positive
 
     def load_data(self, file_path):
-        return np.load(file_path, allow_pickle=True) if file_path.endswith('.npy') else json.load(open(file_path, 'r', encoding='utf-8'))
+        if file_path.endswith('.npy'):
+            return np.load(file_path, allow_pickle=True)
+        else:
+            return json.load(open(file_path, 'r', encoding='utf-8'))
 
     def load_snippets(self):
-        return [(os.path.join(self.snippet_folder_path, folder), os.path.join(self.snippet_folder_path, folder, 'snippet.json')) for folder in os.listdir(self.snippet_folder_path) if os.path.isdir(os.path.join(self.snippet_folder_path, folder))]
+        return [(os.path.join(self.snippet_folder_path, folder), os.path.join(self.snippet_folder_path, folder, 'snippet.json')) 
+                for folder in os.listdir(self.snippet_folder_path) if os.path.isdir(os.path.join(self.snippet_folder_path, folder))]
 
     def separate_snippets(self, snippets):
-        bug_snippets = [snippet_data['snippet'] for _, snippet_file_path in snippets for snippet_data in [self.load_data(snippet_file_path)] if snippet_data.get('is_bug', False)]
-        non_bug_snippets = [snippet_data['snippet'] for _, snippet_file_path in snippets for snippet_data in [self.load_data(snippet_file_path)] if not snippet_data.get('is_bug', False)]
+        bug_snippets = [snippet_data['snippet'] for _, snippet_file_path in snippets 
+                        for snippet_data in [self.load_data(snippet_file_path)] if snippet_data.get('is_bug', False)]
+        non_bug_snippets = [snippet_data['snippet'] for _, snippet_file_path in snippets 
+                            for snippet_data in [self.load_data(snippet_file_path)] if not snippet_data.get('is_bug', False)]
         return bug_snippets, non_bug_snippets
 
     def create_triplets(self, instance_id_map, snippets):
@@ -55,7 +60,9 @@ class DataTokenizer:
 
     def tokenize_triplets(self, triplets):
         tokenizer = Tokenizer()
-        tokenizer.fit_on_texts([triplet['anchor'] for triplet in triplets] + [triplet['positive'] for triplet in triplets] + [triplet['negative'] for triplet in triplets])
+        tokenizer.fit_on_texts([triplet['anchor'] for triplet in triplets] + 
+                                [triplet['positive'] for triplet in triplets] + 
+                                [triplet['negative'] for triplet in triplets])
         anchor_sequences = tokenizer.texts_to_sequences([triplet['anchor'] for triplet in triplets])
         positive_sequences = tokenizer.texts_to_sequences([triplet['positive'] for triplet in triplets])
         negative_sequences = tokenizer.texts_to_sequences([triplet['negative'] for triplet in triplets])
