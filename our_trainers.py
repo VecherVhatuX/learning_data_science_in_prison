@@ -167,7 +167,7 @@ class TripletTrainer:
         recall = self.calculate_knn_recall(embeddings, labels, k)
         return 2 * (precision * recall) / (precision + recall)
 
-if __name__ == "__main__":
+def main():
     np.random.seed(42)
     torch.manual_seed(42)
 
@@ -219,3 +219,6 @@ if __name__ == "__main__":
     print("KNN Recall:", trainer.calculate_knn_recall(torch.tensor(all_embeddings, dtype=torch.float), torch.tensor(labels, dtype=torch.long), k=5))
 
     print("KNN F1-score:", trainer.calculate_knn_f1(torch.tensor(all_embeddings, dtype=torch.float), torch.tensor(labels, dtype=torch.long), k=5))
+
+if __name__ == "__main__":
+    main()
