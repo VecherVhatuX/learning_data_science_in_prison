@@ -44,10 +44,11 @@ class Hyperparameters:
     resume_checkpoint_path: str = None
     negative_samples_per_positive_sample: int = 5
 
-class CustomDataset(Dataset):
-    def __init__(self, data, conversation_format_identifier):
+class TripletDataset(Dataset):
+    def __init__(self, data, conversation_format_identifier, negative_samples_per_positive_sample):
         self.data = data
         self.conversation_format_identifier = conversation_format_identifier
+        self.negative_samples_per_positive_sample = negative_samples_per_positive_sample
 
     def __len__(self):
         return len(self.data)
@@ -57,7 +58,20 @@ class CustomDataset(Dataset):
         input_ids = torch.tensor([0] + [ord(c) for c in f"{self.conversation_format_identifier} {example['input']}"] + [1], dtype=torch.long)
         labels = torch.tensor([0] + [ord(c) for c in f"{self.conversation_format_identifier} {example['output']}"] + [1], dtype=torch.long)
         attention_mask = torch.tensor([1] * len(input_ids), dtype=torch.long)
-        return {"input_ids": input_ids, "labels": labels, "attention_mask": attention_mask}
+
+        # Sample negative examples
+        negative_examples = []
+        for _ in range(self.negative_samples_per_positive_sample):
+            negative_idx = torch.randint(0, len(self.data), (1,)).item()
+            while negative_idx == idx:
+                negative_idx = torch.randint(0, len(self.data), (1,)).item()
+            negative_example = self.data[negative_idx]
+            negative_input_ids = torch.tensor([0] + [ord(c) for c in f"{self.conversation_format_identifier} {negative_example['input']}"] + [1], dtype=torch.long)
+            negative_labels = torch.tensor([0] + [ord(c) for c in f"{self.conversation_format_identifier} {negative_example['output']}"] + [1], dtype=torch.long)
+            negative_attention_mask = torch.tensor([1] * len(negative_input_ids), dtype=torch.long)
+            negative_examples.append({"input_ids": negative_input_ids, "labels": negative_labels, "attention_mask": negative_attention_mask})
+
+        return {"input_ids": input_ids, "labels": labels, "attention_mask": attention_mask, "negative_examples": negative_examples}
 
 class NeuralNetworkModel(nn.Module):
     def __init__(self):
@@ -90,8 +104,8 @@ class T5Model(nn.Module):
 
 class DataLoaderFactory:
     @staticmethod
-    def create_data_loader(data, conversation_format_identifier, batch_size):
-        dataset = CustomDataset(data, conversation_format_identifier)
+    def create_data_loader(data, conversation_format_identifier, batch_size, negative_samples_per_positive_sample):
+        dataset = TripletDataset(data, conversation_format_identifier, negative_samples_per_positive_sample)
         return DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
 class DataUtil:
@@ -147,15 +161,53 @@ class ModelUtil:
                 total_loss += loss.item()
         print(f"Test Loss: {total_loss / len(dataset)}")
 
+class TripletLoss(nn.Module):
+    def __init__(self, margin=2.0):
+        super(TripletLoss, self).__init__()
+        self.margin = margin
+
+    def forward(self, anchor, positive, negative):
+        distance_positive = (anchor - positive).pow(2).sum(1)
+        distance_negative = (anchor - negative).pow(2).sum(1)
+        losses = torch.relu(distance_positive - distance_negative + self.margin)
+        return losses.mean()
+
+class TripletModelUtil:
+    @staticmethod
+    def train_step(model, triplet_loss, optimizer, batch):
+        model.train()
+        anchor_input_ids = batch["input_ids"]
+        positive_input_ids = batch["labels"]
+        negative_input_ids = batch["negative_examples"][0]["input_ids"]
+        anchor_outputs = model(anchor_input_ids)
+        positive_outputs = model(positive_input_ids)
+        negative_outputs = model(negative_input_ids)
+        loss = triplet_loss(anchor_outputs, positive_outputs, negative_outputs)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        return loss.item()
+
+    @staticmethod
+    def train_model(model, triplet_loss, dataset, hyperparameters):
+        optimizer = optim.Adam(model.parameters(), lr=0.001)
+        for epoch in range(hyperparameters.number_of_epochs):
+            total_loss = 0
+            for batch in dataset:
+                loss = TripletModelUtil.train_step(model, triplet_loss, optimizer, batch)
+                total_loss += loss
+            print(f"Epoch {epoch+1}, Loss: {total_loss / len(dataset)}")
+
 class Main:
     def run(self):
         hyperparameters = HyperparameterUtil.load_hyperparameters("t5-base", "none", True)
         model = T5Model()
+        triplet_loss = TripletLoss()
         training_data, testing_data = DataUtil.load_json_data("train.json"), DataUtil.load_json_data("test.json")
         if training_data is not None and testing_data is not None:
-            train_data_loader = DataLoaderFactory.create_data_loader(training_data, hyperparameters.conversation_format_identifier, hyperparameters.training_batch_size)
-            test_data_loader = DataLoaderFactory.create_data_loader(testing_data, hyperparameters.conversation_format_identifier, hyperparameters.evaluation_batch_size)
-            ModelUtil.train_model(model, train_data_loader, hyperparameters)
+            train_data_loader = DataLoaderFactory.create_data_loader(training_data, hyperparameters.conversation_format_identifier, hyperparameters.training_batch_size, hyperparameters.negative_samples_per_positive_sample)
+            test_data_loader = DataLoaderFactory.create_data_loader(testing_data, hyperparameters.conversation_format_identifier, hyperparameters.evaluation_batch_size, hyperparameters.negative_samples_per_positive_sample)
+            TripletModelUtil.train_model(model, triplet_loss, train_data_loader, hyperparameters)
             ModelUtil.evaluate_model(model, test_data_loader)
 
 if __name__ == "__main__":
