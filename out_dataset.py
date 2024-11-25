@@ -19,10 +19,7 @@ BATCH_SIZE = 32
 NUM_NEGATIVES_PER_POSITIVE = 1
 
 def load_data(file_path):
-    if file_path.endswith('.npy'):
-        return np.load(file_path, allow_pickle=True)
-    else:
-        return json.load(open(file_path, 'r', encoding='utf-8'))
+    return np.load(file_path, allow_pickle=True) if file_path.endswith('.npy') else json.load(open(file_path, 'r', encoding='utf-8'))
 
 def load_snippets(snippet_folder_path):
     return [(os.path.join(snippet_folder_path, folder), os.path.join(snippet_folder_path, folder, 'snippet.json')) 
@@ -98,6 +95,12 @@ def evaluate(model, dataset):
             total_correct += int(similarity_positive > similarity_negative)
     return total_correct / len(dataset)
 
+def train_model(model, train_dataset, test_dataset, epochs, learning_rate_value):
+    for epoch in range(epochs):
+        loss = train(model, train_dataset, learning_rate_value)
+        print(f'Epoch {epoch+1}, Loss: {loss}')
+    print(f'Test Accuracy: {evaluate(model, test_dataset)}')
+
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
@@ -107,10 +110,7 @@ def main():
     train_dataset = tf.data.Dataset.from_tensor_slices(train_tokenized_triplets).batch(BATCH_SIZE)
     test_dataset = tf.data.Dataset.from_tensor_slices(test_tokenized_triplets).batch(BATCH_SIZE)
     model = create_model(EMBEDDING_SIZE, MAX_SEQUENCE_LENGTH, FULLY_CONNECTED_SIZE, DROPOUT_RATE)
-    for epoch in range(EPOCHS):
-        loss = train(model, train_dataset, LEARNING_RATE_VALUE)
-        print(f'Epoch {epoch+1}, Loss: {loss}')
-    print(f'Test Accuracy: {evaluate(model, test_dataset)}')
+    train_model(model, train_dataset, test_dataset, EPOCHS, LEARNING_RATE_VALUE)
 
 if __name__ == "__main__":
     main()
