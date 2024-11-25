@@ -55,11 +55,11 @@ class BugTripletDataset(Dataset):
         positive = self.triplets[idx]['positive']
         negative = self.triplets[idx]['negative']
 
-        anchor_sequence = self.tokenizer.encode(anchor, max_length=self.max_sequence_length, padding='max_length', truncation=True)
-        positive_sequence = self.tokenizer.encode(positive, max_length=self.max_sequence_length, padding='max_length', truncation=True)
-        negative_sequence = self.tokenizer.encode(negative, max_length=self.max_sequence_length, padding='max_length', truncation=True)
+        anchor_sequence = self.tokenizer.encode(anchor, max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt')
+        positive_sequence = self.tokenizer.encode(positive, max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt')
+        negative_sequence = self.tokenizer.encode(negative, max_length=self.max_sequence_length, padding='max_length', truncation=True, return_tensors='pt')
 
-        return torch.tensor([anchor_sequence, positive_sequence, negative_sequence])
+        return torch.cat([anchor_sequence, positive_sequence, negative_sequence], dim=0)
 
     def shuffle(self):
         random.shuffle(self.triplets)
@@ -76,7 +76,8 @@ class BugTripletModel(nn.Module):
         )
 
     def forward(self, x):
-        return self.model(x)
+        outputs = self.model(x)
+        return outputs.last_hidden_state[:, 0, :]
 
 class Trainer:
     def __init__(self, learning_rate_value, epochs, batch_size, device):
@@ -90,12 +91,13 @@ class Trainer:
 
     def train(self, model, dataset):
         optimizer = optim.Adam(model.parameters(), lr=self.learning_rate_value)
+        model.train()
         total_loss = 0
         for batch in dataset:
             batch = batch.to(self.device)
-            anchor_embeddings = model(batch[:, 0])
-            positive_embeddings = model(batch[:, 1])
-            negative_embeddings = model(batch[:, 2])
+            anchor_embeddings = model(batch[:, 0, :])
+            positive_embeddings = model(batch[:, 1, :])
+            negative_embeddings = model(batch[:, 2, :])
             loss = self.calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
             optimizer.zero_grad()
             loss.backward()
@@ -104,13 +106,14 @@ class Trainer:
         return total_loss / len(dataset)
 
     def evaluate(self, model, dataset):
+        model.eval()
         total_correct = 0
         with torch.no_grad():
             for batch in dataset:
                 batch = batch.to(self.device)
-                anchor_embeddings = model(batch[:, 0])
-                positive_embeddings = model(batch[:, 1])
-                negative_embeddings = model(batch[:, 2])
+                anchor_embeddings = model(batch[:, 0, :])
+                positive_embeddings = model(batch[:, 1, :])
+                negative_embeddings = model(batch[:, 2, :])
                 for i in range(len(anchor_embeddings)):
                     similarity_positive = torch.sum(anchor_embeddings[i] * positive_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(positive_embeddings[i]))
                     similarity_negative = torch.sum(anchor_embeddings[i] * negative_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(negative_embeddings[i]))
@@ -140,10 +143,11 @@ class BugTripletModelRunner:
         trainer = Trainer(self.learning_rate_value, self.epochs, self.batch_size, self.device)
         train_dataset.dataset.shuffle()
         train_loader = DataLoader(train_dataset.dataset, batch_size=self.batch_size, shuffle=True)
+        test_loader = DataLoader(test_dataset.dataset, batch_size=self.batch_size, shuffle=False)
         for epoch in range(self.epochs):
             loss = trainer.train(model, train_loader)
             print(f'Epoch {epoch+1}, Loss: {loss}')
-        print(f'Test Accuracy: {trainer.evaluate(model, test_dataset)}')
+        print(f'Test Accuracy: {trainer.evaluate(model, test_loader)}')
 
     def main(self, dataset_path, snippet_folder_path):
         train_triplets, test_triplets = self.prepare_data(dataset_path, snippet_folder_path)
