@@ -88,64 +88,75 @@ class T5Model(nn.Module):
         outputs = self.model(input_ids=input_ids)
         return outputs.last_hidden_state
 
-def load_json_data(file_name):
-    try:
-        with open(file_name, 'r') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        print(f"{file_name} not found.")
-        return None
+class DataLoaderFactory:
+    @staticmethod
+    def create_data_loader(data, conversation_format_identifier, batch_size):
+        dataset = CustomDataset(data, conversation_format_identifier)
+        return DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-def load_hyperparameters(base_model_identifier, conversation_format_identifier, triplet_loss_training_enabled):
-    return Hyperparameters(base_model_identifier=base_model_identifier, conversation_format_identifier=conversation_format_identifier, triplet_loss_training_enabled=triplet_loss_training_enabled)
+class DataUtil:
+    @staticmethod
+    def load_json_data(file_name):
+        try:
+            with open(file_name, 'r') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            print(f"{file_name} not found.")
+            return None
 
-def create_data_loader(data, conversation_format_identifier, batch_size):
-    dataset = CustomDataset(data, conversation_format_identifier)
-    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
+class HyperparameterUtil:
+    @staticmethod
+    def load_hyperparameters(base_model_identifier, conversation_format_identifier, triplet_loss_training_enabled):
+        return Hyperparameters(base_model_identifier=base_model_identifier, conversation_format_identifier=conversation_format_identifier, triplet_loss_training_enabled=triplet_loss_training_enabled)
 
-def train_step(model, optimizer, batch):
-    model.train()
-    input_ids = batch["input_ids"]
-    labels = batch["labels"]
-    attention_mask = batch["attention_mask"]
-    optimizer.zero_grad()
-    outputs = model(input_ids)
-    loss = nn.CrossEntropyLoss()(outputs.view(-1, outputs.shape[-1]), labels.view(-1))
-    loss.backward()
-    optimizer.step()
-    return loss.item()
+class ModelUtil:
+    @staticmethod
+    def train_step(model, optimizer, batch):
+        model.train()
+        input_ids = batch["input_ids"]
+        labels = batch["labels"]
+        attention_mask = batch["attention_mask"]
+        optimizer.zero_grad()
+        outputs = model(input_ids)
+        loss = nn.CrossEntropyLoss()(outputs.view(-1, outputs.shape[-1]), labels.view(-1))
+        loss.backward()
+        optimizer.step()
+        return loss.item()
 
-def train_model(model, dataset, hyperparameters):
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-    for epoch in range(hyperparameters.number_of_epochs):
+    @staticmethod
+    def train_model(model, dataset, hyperparameters):
+        optimizer = optim.Adam(model.parameters(), lr=0.001)
+        for epoch in range(hyperparameters.number_of_epochs):
+            total_loss = 0
+            for batch in dataset:
+                loss = ModelUtil.train_step(model, optimizer, batch)
+                total_loss += loss
+            print(f"Epoch {epoch+1}, Loss: {total_loss / len(dataset)}")
+
+    @staticmethod
+    def evaluate_model(model, dataset):
+        model.eval()
         total_loss = 0
-        for batch in dataset:
-            loss = train_step(model, optimizer, batch)
-            total_loss += loss
-        print(f"Epoch {epoch+1}, Loss: {total_loss / len(dataset)}")
+        with torch.no_grad():
+            for batch in dataset:
+                input_ids = batch["input_ids"]
+                labels = batch["labels"]
+                attention_mask = batch["attention_mask"]
+                outputs = model(input_ids)
+                loss = nn.CrossEntropyLoss()(outputs.view(-1, outputs.shape[-1]), labels.view(-1))
+                total_loss += loss.item()
+        print(f"Test Loss: {total_loss / len(dataset)}")
 
-def evaluate_model(model, dataset):
-    model.eval()
-    total_loss = 0
-    with torch.no_grad():
-        for batch in dataset:
-            input_ids = batch["input_ids"]
-            labels = batch["labels"]
-            attention_mask = batch["attention_mask"]
-            outputs = model(input_ids)
-            loss = nn.CrossEntropyLoss()(outputs.view(-1, outputs.shape[-1]), labels.view(-1))
-            total_loss += loss.item()
-    print(f"Test Loss: {total_loss / len(dataset)}")
-
-def main():
-    hyperparameters = load_hyperparameters("t5-base", "none", True)
-    model = T5Model()
-    training_data, testing_data = load_json_data("train.json"), load_json_data("test.json")
-    if training_data is not None and testing_data is not None:
-        train_data_loader = create_data_loader(training_data, hyperparameters.conversation_format_identifier, hyperparameters.training_batch_size)
-        test_data_loader = create_data_loader(testing_data, hyperparameters.conversation_format_identifier, hyperparameters.evaluation_batch_size)
-        train_model(model, train_data_loader, hyperparameters)
-        evaluate_model(model, test_data_loader)
+class Main:
+    def run(self):
+        hyperparameters = HyperparameterUtil.load_hyperparameters("t5-base", "none", True)
+        model = T5Model()
+        training_data, testing_data = DataUtil.load_json_data("train.json"), DataUtil.load_json_data("test.json")
+        if training_data is not None and testing_data is not None:
+            train_data_loader = DataLoaderFactory.create_data_loader(training_data, hyperparameters.conversation_format_identifier, hyperparameters.training_batch_size)
+            test_data_loader = DataLoaderFactory.create_data_loader(testing_data, hyperparameters.conversation_format_identifier, hyperparameters.evaluation_batch_size)
+            ModelUtil.train_model(model, train_data_loader, hyperparameters)
+            ModelUtil.evaluate_model(model, test_data_loader)
 
 if __name__ == "__main__":
-    main()
+    Main().run()
