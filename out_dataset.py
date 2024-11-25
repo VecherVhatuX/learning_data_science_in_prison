@@ -9,29 +9,34 @@ import random
 from sklearn.model_selection import train_test_split
 from transformers import AutoModel, AutoTokenizer
 
-def load_data(file_path: str) -> dict or np.ndarray:
-    if file_path.endswith('.npy'):
-        return np.load(file_path, allow_pickle=True)
-    else:
-        return json.load(open(file_path, 'r', encoding='utf-8'))
+class DataUtil:
+    @staticmethod
+    def load_data(file_path: str) -> dict or np.ndarray:
+        if file_path.endswith('.npy'):
+            return np.load(file_path, allow_pickle=True)
+        else:
+            return json.load(open(file_path, 'r', encoding='utf-8'))
 
-def load_snippets(snippet_folder_path: str) -> list:
-    return [(os.path.join(snippet_folder_path, folder), os.path.join(snippet_folder_path, folder, 'snippet.json')) 
-            for folder in os.listdir(snippet_folder_path) if os.path.isdir(os.path.join(snippet_folder_path, folder))]
+    @staticmethod
+    def load_snippets(snippet_folder_path: str) -> list:
+        return [(os.path.join(snippet_folder_path, folder), os.path.join(snippet_folder_path, folder, 'snippet.json')) 
+                for folder in os.listdir(snippet_folder_path) if os.path.isdir(os.path.join(snippet_folder_path, folder))]
 
-def separate_snippets(snippets: list) -> tuple:
-    bug_snippets = [snippet_data['snippet'] for _, snippet_file_path in snippets 
-                    for snippet_data in [load_data(snippet_file_path)] if snippet_data.get('is_bug', False)]
-    non_bug_snippets = [snippet_data['snippet'] for _, snippet_file_path in snippets 
-                        for snippet_data in [load_data(snippet_file_path)] if not snippet_data.get('is_bug', False)]
-    return bug_snippets, non_bug_snippets
+    @staticmethod
+    def separate_snippets(snippets: list) -> tuple:
+        bug_snippets = [snippet_data['snippet'] for _, snippet_file_path in snippets 
+                        for snippet_data in [DataUtil.load_data(snippet_file_path)] if snippet_data.get('is_bug', False)]
+        non_bug_snippets = [snippet_data['snippet'] for _, snippet_file_path in snippets 
+                            for snippet_data in [DataUtil.load_data(snippet_file_path)] if not snippet_data.get('is_bug', False)]
+        return bug_snippets, non_bug_snippets
 
-def create_triplets(num_negatives_per_positive: int, instance_id_map: dict, snippets: list) -> list:
-    bug_snippets, non_bug_snippets = separate_snippets(snippets)
-    return [{'anchor': instance_id_map[os.path.basename(folder_path)], 'positive': positive_doc, 'negative': random.choice(non_bug_snippets)} 
-            for folder_path, _ in snippets 
-            for positive_doc in bug_snippets 
-            for _ in range(min(num_negatives_per_positive, len(non_bug_snippets)))]
+    @staticmethod
+    def create_triplets(num_negatives_per_positive: int, instance_id_map: dict, snippets: list) -> list:
+        bug_snippets, non_bug_snippets = DataUtil.separate_snippets(snippets)
+        return [{'anchor': instance_id_map[os.path.basename(folder_path)], 'positive': positive_doc, 'negative': random.choice(non_bug_snippets)} 
+                for folder_path, _ in snippets 
+                for positive_doc in bug_snippets 
+                for _ in range(min(num_negatives_per_positive, len(non_bug_snippets)))]
 
 class BugTripletDataset(Dataset):
     def __init__(self, triplets: list, max_sequence_length: int):
@@ -71,60 +76,66 @@ class BugTripletModel(nn.Module):
         outputs = self.model(x)
         return outputs.last_hidden_state[:, 0, :]
 
-def calculate_loss(anchor_embeddings: torch.Tensor, positive_embeddings: torch.Tensor, negative_embeddings: torch.Tensor, device: torch.device) -> torch.Tensor:
-    return torch.mean((anchor_embeddings - positive_embeddings) ** 2) + torch.max(torch.mean((anchor_embeddings - negative_embeddings) ** 2) - torch.mean((anchor_embeddings - positive_embeddings) ** 2), torch.tensor(0.0).to(device))
+class Trainer:
+    @staticmethod
+    def calculate_loss(anchor_embeddings: torch.Tensor, positive_embeddings: torch.Tensor, negative_embeddings: torch.Tensor, device: torch.device) -> torch.Tensor:
+        return torch.mean((anchor_embeddings - positive_embeddings) ** 2) + torch.max(torch.mean((anchor_embeddings - negative_embeddings) ** 2) - torch.mean((anchor_embeddings - positive_embeddings) ** 2), torch.tensor(0.0).to(device))
 
-def train(model: BugTripletModel, dataset: BugTripletDataset, learning_rate_value: float, epochs: int, batch_size: int, device: torch.device) -> float:
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate_value)
-    model.train()
-    total_loss = 0
-    for epoch in range(epochs):
-        epoch_loss = 0
-        for batch in DataLoader(dataset, batch_size=batch_size, shuffle=True):
-            batch = batch.to(device)
-            anchor_embeddings = model(batch[:, 0, :])
-            positive_embeddings = model(batch[:, 1, :])
-            negative_embeddings = model(batch[:, 2, :])
-            loss = calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings, device)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            epoch_loss += loss.item()
-        total_loss += epoch_loss / len(dataset)
-        print(f'Epoch {epoch+1}, Loss: {epoch_loss / len(dataset)}')
-    return total_loss / epochs
+    @staticmethod
+    def train(model: BugTripletModel, dataset: BugTripletDataset, learning_rate_value: float, epochs: int, batch_size: int, device: torch.device) -> float:
+        optimizer = optim.Adam(model.parameters(), lr=learning_rate_value)
+        model.train()
+        total_loss = 0
+        for epoch in range(epochs):
+            epoch_loss = 0
+            for batch in DataLoader(dataset, batch_size=batch_size, shuffle=True):
+                batch = batch.to(device)
+                anchor_embeddings = model(batch[:, 0, :])
+                positive_embeddings = model(batch[:, 1, :])
+                negative_embeddings = model(batch[:, 2, :])
+                loss = Trainer.calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings, device)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                epoch_loss += loss.item()
+            total_loss += epoch_loss / len(dataset)
+            print(f'Epoch {epoch+1}, Loss: {epoch_loss / len(dataset)}')
+        return total_loss / epochs
 
-def evaluate(model: BugTripletModel, dataset: BugTripletDataset, batch_size: int, device: torch.device) -> float:
-    model.eval()
-    total_correct = 0
-    with torch.no_grad():
-        for batch in DataLoader(dataset, batch_size=batch_size, shuffle=False):
-            batch = batch.to(device)
-            anchor_embeddings = model(batch[:, 0, :])
-            positive_embeddings = model(batch[:, 1, :])
-            negative_embeddings = model(batch[:, 2, :])
-            for i in range(len(anchor_embeddings)):
-                similarity_positive = torch.sum(anchor_embeddings[i] * positive_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(positive_embeddings[i]))
-                similarity_negative = torch.sum(anchor_embeddings[i] * negative_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(negative_embeddings[i]))
-                total_correct += int(similarity_positive > similarity_negative)
-    return total_correct / len(dataset) / batch_size
+    @staticmethod
+    def evaluate(model: BugTripletModel, dataset: BugTripletDataset, batch_size: int, device: torch.device) -> float:
+        model.eval()
+        total_correct = 0
+        with torch.no_grad():
+            for batch in DataLoader(dataset, batch_size=batch_size, shuffle=False):
+                batch = batch.to(device)
+                anchor_embeddings = model(batch[:, 0, :])
+                positive_embeddings = model(batch[:, 1, :])
+                negative_embeddings = model(batch[:, 2, :])
+                for i in range(len(anchor_embeddings)):
+                    similarity_positive = torch.sum(anchor_embeddings[i] * positive_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(positive_embeddings[i]))
+                    similarity_negative = torch.sum(anchor_embeddings[i] * negative_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(negative_embeddings[i]))
+                    total_correct += int(similarity_positive > similarity_negative)
+        return total_correct / len(dataset) / batch_size
 
-def main(dataset_path: str, snippet_folder_path: str, max_sequence_length: int, embedding_size: int, fully_connected_size: int, dropout_rate: float, learning_rate_value: float, epochs: int, batch_size: int, num_negatives_per_positive: int) -> None:
-    instance_id_map = {item['instance_id']: item['problem_statement'] for item in load_data(dataset_path)}
-    snippets = load_snippets(snippet_folder_path)
-    triplets = create_triplets(num_negatives_per_positive, instance_id_map, snippets)
-    train_triplets, test_triplets = np.array_split(np.array(triplets), 2)
-    train_dataset = BugTripletDataset(train_triplets, max_sequence_length)
-    test_dataset = BugTripletDataset(test_triplets, max_sequence_length)
-    model = BugTripletModel(embedding_size, fully_connected_size, dropout_rate)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model.to(device)
-    for epoch in range(epochs):
-        loss = train(model, train_dataset, learning_rate_value, 1, batch_size, device)
-        print(f'Epoch {epoch+1}, Loss: {loss}')
-    print(f'Test Accuracy: {evaluate(model, test_dataset, batch_size, device)}')
-
-if __name__ == "__main__":
+def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
-    main(dataset_path, snippet_folder_path, max_sequence_length=512, embedding_size=128, fully_connected_size=64, dropout_rate=0.2, learning_rate_value=1e-5, epochs=5, batch_size=32, num_negatives_per_positive=1)
+    
+    instance_id_map = {item['instance_id']: item['problem_statement'] for item in DataUtil.load_data(dataset_path)}
+    snippets = DataUtil.load_snippets(snippet_folder_path)
+    triplets = DataUtil.create_triplets(1, instance_id_map, snippets)
+    train_triplets, test_triplets = np.array_split(np.array(triplets), 2)
+    train_dataset = BugTripletDataset(train_triplets, 512)
+    test_dataset = BugTripletDataset(test_triplets, 512)
+    model = BugTripletModel(128, 64, 0.2)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model.to(device)
+    
+    for epoch in range(5):
+        loss = Trainer.train(model, train_dataset, 1e-5, 1, 32, device)
+        print(f'Epoch {epoch+1}, Loss: {loss}')
+    print(f'Test Accuracy: {Trainer.evaluate(model, test_dataset, 32, device)}')
+
+if __name__ == "__main__":
+    main()
