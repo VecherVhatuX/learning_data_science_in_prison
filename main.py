@@ -88,12 +88,6 @@ class T5Model(models.Model):
         x = self.fc3(x)
         return x
 
-    def build(self, input_shape):
-        self.model.build(input_shape)
-        self.fc1.build(input_shape)
-        self.fc2.build(input_shape)
-        self.fc3.build(input_shape)
-
 class TripletLoss(tf.keras.losses.Loss):
     def __init__(self, margin=2.0):
         super(TripletLoss, self).__init__()
