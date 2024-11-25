@@ -77,7 +77,7 @@ class BugTripletModel:
         return model
 
     def calculate_loss(self, anchor_embeddings, positive_embeddings, negative_embeddings):
-        return torch.mean((anchor_embeddings - positive_embeddings) ** 2) + torch.max(torch.mean((anchor_embeddings - negative_embeddings) ** 2) - torch.mean((anchor_embeddings - positive_embeddings) ** 2), torch.tensor(0).to(self.device))
+        return torch.mean((anchor_embeddings - positive_embeddings) ** 2) + torch.max(torch.mean((anchor_embeddings - negative_embeddings) ** 2) - torch.mean((anchor_embeddings - positive_embeddings) ** 2), torch.tensor(0.0).to(self.device))
 
     def train(self, model, dataset):
         optimizer = optim.Adam(model.parameters(), lr=self.learning_rate_value)
@@ -96,16 +96,17 @@ class BugTripletModel:
 
     def evaluate(self, model, dataset):
         total_correct = 0
-        for batch in dataset:
-            batch = batch.to(self.device)
-            anchor_embeddings = model(batch[:, 0])
-            positive_embeddings = model(batch[:, 1])
-            negative_embeddings = model(batch[:, 2])
-            for i in range(len(anchor_embeddings)):
-                similarity_positive = torch.sum(anchor_embeddings[i] * positive_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(positive_embeddings[i]))
-                similarity_negative = torch.sum(anchor_embeddings[i] * negative_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(negative_embeddings[i]))
-                total_correct += int(similarity_positive > similarity_negative)
-        return total_correct / len(dataset)
+        with torch.no_grad():
+            for batch in dataset:
+                batch = batch.to(self.device)
+                anchor_embeddings = model(batch[:, 0])
+                positive_embeddings = model(batch[:, 1])
+                negative_embeddings = model(batch[:, 2])
+                for i in range(len(anchor_embeddings)):
+                    similarity_positive = torch.sum(anchor_embeddings[i] * positive_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(positive_embeddings[i]))
+                    similarity_negative = torch.sum(anchor_embeddings[i] * negative_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(negative_embeddings[i]))
+                    total_correct += int(similarity_positive > similarity_negative)
+        return total_correct / len(dataset) / self.batch_size
 
     def train_model(self, model, train_dataset, test_dataset):
         for epoch in range(self.epochs):
