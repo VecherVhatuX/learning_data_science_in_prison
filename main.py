@@ -116,9 +116,9 @@ class ModelTrainer:
             anchor_input_ids = batch["input_ids"]
             positive_input_ids = batch["labels"]
             negative_input_ids = batch["negative_examples"][0]["input_ids"]
-            anchor_outputs = self.model(anchor_input_ids)
-            positive_outputs = self.model(positive_input_ids)
-            negative_outputs = self.model(negative_input_ids)
+            anchor_outputs = self.model(anchor_input_ids, training=True)
+            positive_outputs = self.model(positive_input_ids, training=True)
+            negative_outputs = self.model(negative_input_ids, training=True)
             loss = TripletLoss()(anchor_outputs, positive_outputs, negative_outputs)
         gradients = tape.gradient(loss, self.model.trainable_variables)
         self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
@@ -143,6 +143,9 @@ class ModelTrainer:
             total_loss += loss
         print(f"Test Loss: {total_loss / len(dataset)}")
 
+    def save_model(self, epoch):
+        self.model.save_weights(f"{self.hyperparameters.output_dir}/model_{epoch}.h5")
+
 def load_data(file_name):
     try:
         with open(file_name, 'r') as f:
@@ -164,8 +167,10 @@ def main():
         train_data_loader = create_data_loader(training_data, hyperparameters.conversation_format, hyperparameters.train_batch_size, hyperparameters.negative_samples)
         test_data_loader = create_data_loader(testing_data, hyperparameters.conversation_format, hyperparameters.eval_batch_size, hyperparameters.negative_samples)
         trainer = ModelTrainer(model, hyperparameters)
-        trainer.train(train_data_loader)
-        trainer.evaluate(test_data_loader)
+        for epoch in range(hyperparameters.num_epochs):
+            trainer.train(train_data_loader)
+            trainer.evaluate(test_data_loader)
+            trainer.save_model(epoch)
 
 if __name__ == "__main__":
     main()
