@@ -1,12 +1,13 @@
-import tensorflow as tf
-from tensorflow.keras import layers
-from tensorflow.keras.preprocessing.text import Tokenizer
-from tensorflow.keras.preprocessing.sequence import pad_sequences
-import numpy as np
-import random
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
 import json
 import os
+import numpy as np
+import random
 from sklearn.model_selection import train_test_split
+from transformers import AutoModel, AutoTokenizer
 
 class BugTripletModel:
     def __init__(self, 
@@ -26,6 +27,7 @@ class BugTripletModel:
         self.epochs = epochs
         self.batch_size = batch_size
         self.num_negatives_per_positive = num_negatives_per_positive
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     def load_data(self, file_path):
         if file_path.endswith('.npy'):
@@ -58,52 +60,50 @@ class BugTripletModel:
         return np.array_split(np.array(triplets), 2)
 
     def tokenize_triplets(self, triplets):
-        tokenizer = Tokenizer()
-        all_texts = [triplet['anchor'] for triplet in triplets] + [triplet['positive'] for triplet in triplets] + [triplet['negative'] for triplet in triplets]
-        tokenizer.fit_on_texts(all_texts)
-        anchor_sequences = tokenizer.texts_to_sequences([triplet['anchor'] for triplet in triplets])
-        positive_sequences = tokenizer.texts_to_sequences([triplet['positive'] for triplet in triplets])
-        negative_sequences = tokenizer.texts_to_sequences([triplet['negative'] for triplet in triplets])
-        anchor_padded = pad_sequences(anchor_sequences, maxlen=self.max_sequence_length, padding='post')
-        positive_padded = pad_sequences(positive_sequences, maxlen=self.max_sequence_length, padding='post')
-        negative_padded = pad_sequences(negative_sequences, maxlen=self.max_sequence_length, padding='post')
-        return np.stack((anchor_padded, positive_padded, negative_padded), axis=1)
+        tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
+        anchor_sequences = [tokenizer.encode(triplet['anchor'], max_length=self.max_sequence_length, padding='max_length', truncation=True) for triplet in triplets]
+        positive_sequences = [tokenizer.encode(triplet['positive'], max_length=self.max_sequence_length, padding='max_length', truncation=True) for triplet in triplets]
+        negative_sequences = [tokenizer.encode(triplet['negative'], max_length=self.max_sequence_length, padding='max_length', truncation=True) for triplet in triplets]
+        return torch.tensor(np.stack((anchor_sequences, positive_sequences, negative_sequences), axis=1))
 
     def create_model(self):
-        model = tf.keras.Sequential([
-            layers.Embedding(input_dim=10000, output_dim=self.embedding_size, input_length=self.max_sequence_length),
-            layers.Bidirectional(layers.LSTM(self.fully_connected_size, dropout=self.dropout_rate)),
-            layers.Dense(self.fully_connected_size, activation='relu'),
-            layers.Dense(self.embedding_size)
-        ])
+        model = nn.Sequential(
+            AutoModel.from_pretrained('bert-base-uncased'),
+            nn.Linear(768, self.fully_connected_size),
+            nn.ReLU(),
+            nn.Dropout(self.dropout_rate),
+            nn.Linear(self.fully_connected_size, self.embedding_size)
+        )
         return model
 
     def calculate_loss(self, anchor_embeddings, positive_embeddings, negative_embeddings):
-        return tf.reduce_mean((anchor_embeddings - positive_embeddings) ** 2) + tf.keras.backend.maximum(tf.reduce_mean((anchor_embeddings - negative_embeddings) ** 2) - tf.reduce_mean((anchor_embeddings - positive_embeddings) ** 2), 0)
+        return torch.mean((anchor_embeddings - positive_embeddings) ** 2) + torch.max(torch.mean((anchor_embeddings - negative_embeddings) ** 2) - torch.mean((anchor_embeddings - positive_embeddings) ** 2), torch.tensor(0).to(self.device))
 
     def train(self, model, dataset):
-        optimizer = tf.keras.optimizers.Adam(learning_rate=self.learning_rate_value)
+        optimizer = optim.Adam(model.parameters(), lr=self.learning_rate_value)
         total_loss = 0
         for batch in dataset:
-            with tf.GradientTape() as tape:
-                anchor_embeddings = model(batch[:, 0])
-                positive_embeddings = model(batch[:, 1])
-                negative_embeddings = model(batch[:, 2])
-                loss = self.calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
-            gradients = tape.gradient(loss, model.trainable_variables)
-            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-            total_loss += loss
+            batch = batch.to(self.device)
+            anchor_embeddings = model(batch[:, 0])
+            positive_embeddings = model(batch[:, 1])
+            negative_embeddings = model(batch[:, 2])
+            loss = self.calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
         return total_loss / len(dataset)
 
     def evaluate(self, model, dataset):
         total_correct = 0
         for batch in dataset:
+            batch = batch.to(self.device)
             anchor_embeddings = model(batch[:, 0])
             positive_embeddings = model(batch[:, 1])
             negative_embeddings = model(batch[:, 2])
             for i in range(len(anchor_embeddings)):
-                similarity_positive = tf.reduce_sum(anchor_embeddings[i] * positive_embeddings[i]) / (tf.norm(anchor_embeddings[i]) * tf.norm(positive_embeddings[i]))
-                similarity_negative = tf.reduce_sum(anchor_embeddings[i] * negative_embeddings[i]) / (tf.norm(anchor_embeddings[i]) * tf.norm(negative_embeddings[i]))
+                similarity_positive = torch.sum(anchor_embeddings[i] * positive_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(positive_embeddings[i]))
+                similarity_negative = torch.sum(anchor_embeddings[i] * negative_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(negative_embeddings[i]))
                 total_correct += int(similarity_positive > similarity_negative)
         return total_correct / len(dataset)
 
@@ -117,9 +117,10 @@ class BugTripletModel:
         train_triplets, test_triplets = self.prepare_data(dataset_path, snippet_folder_path)
         train_tokenized_triplets = self.tokenize_triplets(train_triplets)
         test_tokenized_triplets = self.tokenize_triplets(test_triplets)
-        train_dataset = tf.data.Dataset.from_tensor_slices(train_tokenized_triplets).batch(self.batch_size)
-        test_dataset = tf.data.Dataset.from_tensor_slices(test_tokenized_triplets).batch(self.batch_size)
+        train_dataset = DataLoader(train_tokenized_triplets, batch_size=self.batch_size, shuffle=True)
+        test_dataset = DataLoader(test_tokenized_triplets, batch_size=self.batch_size, shuffle=False)
         model = self.create_model()
+        model.to(self.device)
         self.train_model(model, train_dataset, test_dataset)
 
 if __name__ == "__main__":
