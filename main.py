@@ -44,33 +44,41 @@ class Hyperparameters:
     resume_checkpoint: str = None
     negative_samples: int = 5
 
-class TripletDataset:
-    def __init__(self, data, conversation_format, negative_samples):
+class TripletDataset(tf.keras.utils.Sequence):
+    def __init__(self, data, conversation_format, negative_samples, batch_size):
         self.data = data
         self.conversation_format = conversation_format
         self.negative_samples = negative_samples
+        self.batch_size = batch_size
 
     def __len__(self):
-        return len(self.data)
+        return len(self.data) // self.batch_size
 
     def __getitem__(self, idx):
-        example = self.data[idx]
-        input_ids = np.array([0] + [ord(c) for c in f"{self.conversation_format} {example['input']}"] + [1], dtype=np.int32)
-        labels = np.array([0] + [ord(c) for c in f"{self.conversation_format} {example['output']}"] + [1], dtype=np.int32)
-        attention_mask = np.array([1] * len(input_ids), dtype=np.int32)
-
+        batch_data = self.data[idx * self.batch_size:(idx + 1) * self.batch_size]
+        input_ids = []
+        labels = []
+        attention_mask = []
         negative_examples = []
-        for _ in range(self.negative_samples):
-            negative_idx = np.random.randint(0, len(self.data))
-            while negative_idx == idx:
+        for example in batch_data:
+            input_id = np.array([0] + [ord(c) for c in f"{self.conversation_format} {example['input']}"] + [1], dtype=np.int32)
+            label = np.array([0] + [ord(c) for c in f"{self.conversation_format} {example['output']}"] + [1], dtype=np.int32)
+            attention_mask_val = np.array([1] * len(input_id), dtype=np.int32)
+            input_ids.append(input_id)
+            labels.append(label)
+            attention_mask.append(attention_mask_val)
+            negative_example = []
+            for _ in range(self.negative_samples):
                 negative_idx = np.random.randint(0, len(self.data))
-            negative_example = self.data[negative_idx]
-            negative_input_ids = np.array([0] + [ord(c) for c in f"{self.conversation_format} {negative_example['input']}"] + [1], dtype=np.int32)
-            negative_labels = np.array([0] + [ord(c) for c in f"{self.conversation_format} {negative_example['output']}"] + [1], dtype=np.int32)
-            negative_attention_mask = np.array([1] * len(negative_input_ids), dtype=np.int32)
-            negative_examples.append({"input_ids": negative_input_ids, "labels": negative_labels, "attention_mask": negative_attention_mask})
-
-        return {"input_ids": input_ids, "labels": labels, "attention_mask": attention_mask, "negative_examples": negative_examples}
+                while negative_idx == idx:
+                    negative_idx = np.random.randint(0, len(self.data))
+                negative_example_val = self.data[negative_idx]
+                negative_input_id = np.array([0] + [ord(c) for c in f"{self.conversation_format} {negative_example_val['input']}"] + [1], dtype=np.int32)
+                negative_label = np.array([0] + [ord(c) for c in f"{self.conversation_format} {negative_example_val['output']}"] + [1], dtype=np.int32)
+                negative_attention_mask_val = np.array([1] * len(negative_input_id), dtype=np.int32)
+                negative_example.append({"input_ids": negative_input_id, "labels": negative_label, "attention_mask": negative_attention_mask_val})
+            negative_examples.append(negative_example)
+        return {"input_ids": np.array(input_ids), "labels": np.array(labels), "attention_mask": np.array(attention_mask), "negative_examples": negative_examples}
 
 class T5Model(models.Model):
     def __init__(self):
@@ -104,6 +112,7 @@ class ModelTrainer:
         self.model = model
         self.hyperparameters = hyperparameters
         self.optimizer = optimizers.Adam(learning_rate=0.001)
+        self.loss_fn = TripletLoss()
 
     def train_step(self, batch):
         with tf.GradientTape() as tape:
@@ -113,7 +122,7 @@ class ModelTrainer:
             anchor_outputs = self.model(anchor_input_ids, training=True)
             positive_outputs = self.model(positive_input_ids, training=True)
             negative_outputs = self.model(negative_input_ids, training=True)
-            loss = TripletLoss()(anchor_outputs, positive_outputs, negative_outputs)
+            loss = self.loss_fn(anchor_outputs, positive_outputs, negative_outputs)
         gradients = tape.gradient(loss, self.model.trainable_variables)
         self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
         return loss
@@ -148,22 +157,18 @@ def load_data(file_name):
         print(f"{file_name} not found.")
         return None
 
-def create_data_loader(data, conversation_format, batch_size, negative_samples):
-    dataset = TripletDataset(data, conversation_format, negative_samples)
-    return tf.data.Dataset.from_tensor_slices(dataset).batch(batch_size)
-
 def main():
     hyperparameters = Hyperparameters(model_base="t5-base", conversation_format="none", triplet_loss_training=True)
     model = T5Model()
     model.build(input_shape=(None, 224, 224, 3))
     training_data, testing_data = load_data("train.json"), load_data("test.json")
     if training_data is not None and testing_data is not None:
-        train_data_loader = create_data_loader(training_data, hyperparameters.conversation_format, hyperparameters.train_batch_size, hyperparameters.negative_samples)
-        test_data_loader = create_data_loader(testing_data, hyperparameters.conversation_format, hyperparameters.eval_batch_size, hyperparameters.negative_samples)
+        train_dataset = TripletDataset(training_data, hyperparameters.conversation_format, hyperparameters.negative_samples, hyperparameters.train_batch_size)
+        test_dataset = TripletDataset(testing_data, hyperparameters.conversation_format, hyperparameters.negative_samples, hyperparameters.eval_batch_size)
         trainer = ModelTrainer(model, hyperparameters)
         for epoch in range(hyperparameters.num_epochs):
-            trainer.train(train_data_loader)
-            trainer.evaluate(test_data_loader)
+            trainer.train(train_dataset)
+            trainer.evaluate(test_dataset)
             trainer.save_model(epoch)
 
 if __name__ == "__main__":
