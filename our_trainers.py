@@ -140,6 +140,21 @@ def train(model, dataset, criterion, optimizer, epochs):
 def test(model, dataset):
     return model(dataset.samples)
 
+def get_model():
+    return EmbeddingModel(101, 10)
+
+def get_criterion():
+    return TripletLoss()
+
+def get_optimizer(model, learning_rate):
+    return optim.Adam(model.parameters(), lr=learning_rate)
+
+def get_dataset(samples, labels, num_negatives, batch_size):
+    return TripletDataset(samples, labels, num_negatives, batch_size)
+
+def get_input_dataset(input_ids):
+    return InputDataset(input_ids)
+
 def main():
     np.random.seed(42)
 
@@ -150,10 +165,10 @@ def main():
     epochs = 10
     learning_rate = 1e-4
 
-    model = EmbeddingModel(101, 10)
-    criterion = TripletLoss()
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    dataset = TripletDataset(samples, labels, num_negatives, batch_size)
+    model = get_model()
+    criterion = get_criterion()
+    optimizer = get_optimizer(model, learning_rate)
+    dataset = get_dataset(samples, labels, num_negatives, batch_size)
 
     train(model, dataset, criterion, optimizer, epochs)
 
