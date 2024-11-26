@@ -4,7 +4,6 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 
-# Model
 class EmbeddingModel(nn.Module):
     def __init__(self, embedding_dim: int, num_features: int):
         super(EmbeddingModel, self).__init__()
@@ -16,12 +15,17 @@ class EmbeddingModel(nn.Module):
         self.l2_norm_layer = nn.LazyInstanceNorm1d()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.l2_norm_layer(self.batch_norm_layer(self.dense_layer(self.flatten_layer(self.pooling_layer(x.transpose(1, 2)).transpose(1, 2)))))
+        x = self.embedding_layer(x)
+        x = self.pooling_layer(x.transpose(1, 2)).transpose(1, 2)
+        x = self.flatten_layer(x)
+        x = self.dense_layer(x)
+        x = self.batch_norm_layer(x)
+        x = self.l2_norm_layer(x)
+        return x
 
     def embedding(self, x: torch.Tensor) -> torch.Tensor:
         return self.embedding_layer(x)
 
-# Triplet Loss
 class TripletLoss(nn.Module):
     def __init__(self, margin: float = 1.0):
         super(TripletLoss, self).__init__()
@@ -33,7 +37,6 @@ class TripletLoss(nn.Module):
         loss = torch.clamp(positive_distances - negative_distances.min(dim=1).values + self.margin, min=0.0)
         return loss.mean()
 
-# Input Dataset
 class InputDataset(Dataset):
     def __init__(self, input_ids: np.ndarray):
         self.input_ids = input_ids
@@ -44,7 +47,6 @@ class InputDataset(Dataset):
     def __getitem__(self, index: int) -> np.ndarray:
         return self.input_ids[index]
 
-# Triplet Dataset
 class TripletDataset(Dataset):
     def __init__(self, samples: np.ndarray, labels: np.ndarray, num_negatives: int, batch_size: int, shuffle: bool = True):
         self.samples = samples
@@ -64,7 +66,7 @@ class TripletDataset(Dataset):
 
     def __getitem__(self, index: int) -> dict:
         batch_indices = self.indices[index * self.batch_size:(index + 1) * self.batch_size]
-        anchor_idx = np.random.choice(batch_indices, size=self.batch_size)
+        anchor_idx = np.random.choice(batch_indices, size=self.batch_size, replace=False)
         anchor_label = self.labels[anchor_idx]
         positive_idx = np.array([np.random.choice(np.where(self.labels == label)[0], size=1)[0] for label in anchor_label])
         negative_idx = np.array([np.random.choice(np.where(self.labels != label)[0], size=self.num_negatives, replace=False) for label in anchor_label])
@@ -176,7 +178,7 @@ def main() -> None:
 
     train(model, dataset, criterion, optimizer, epochs)
 
-    input_ids = np.array([1, 2, 3, 4, 5], dtype=np.int32).reshape((1, 10))
+    input_ids = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=np.int32).reshape((1, 10))
     output = model(torch.from_numpy(input_ids))
 
     save_model(model, "triplet_model.pth")
