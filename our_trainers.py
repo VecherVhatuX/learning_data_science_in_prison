@@ -23,11 +23,15 @@ class EmbeddingModel(nn.Module):
 
 # Triplet Loss
 class TripletLoss(nn.Module):
-    def __init__(self):
+    def __init__(self, margin=1.0):
         super(TripletLoss, self).__init__()
+        self.margin = margin
 
     def forward(self, anchor_embeddings, positive_embeddings, negative_embeddings):
-        return torch.mean(torch.clamp(torch.norm(anchor_embeddings - positive_embeddings, dim=-1) - torch.min(torch.norm(anchor_embeddings.unsqueeze(1) - negative_embeddings, dim=-1), dim=1).values + 1.0, min=0.0))
+        positive_distances = torch.norm(anchor_embeddings - positive_embeddings, dim=-1)
+        negative_distances = torch.norm(anchor_embeddings.unsqueeze(1) - negative_embeddings, dim=-1)
+        loss = torch.clamp(positive_distances - negative_distances.min(dim=1).values + self.margin, min=0.0)
+        return loss.mean()
 
 # Input Dataset
 class InputDataset(Dataset):
@@ -136,21 +140,22 @@ def train(model, dataset, criterion, optimizer, epochs):
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+        print(f'Epoch {epoch+1}, Loss: {loss.item()}')
 
 def test(model, dataset):
     return model(dataset.samples)
 
-def get_model():
-    return EmbeddingModel(101, 10)
+def get_model(embedding_dim, num_features):
+    return EmbeddingModel(embedding_dim, num_features)
 
-def get_criterion():
-    return TripletLoss()
+def get_criterion(margin=1.0):
+    return TripletLoss(margin)
 
 def get_optimizer(model, learning_rate):
     return optim.Adam(model.parameters(), lr=learning_rate)
 
-def get_dataset(samples, labels, num_negatives, batch_size):
-    return TripletDataset(samples, labels, num_negatives, batch_size)
+def get_dataset(samples, labels, num_negatives, batch_size, shuffle=True):
+    return TripletDataset(samples, labels, num_negatives, batch_size, shuffle)
 
 def get_input_dataset(input_ids):
     return InputDataset(input_ids)
@@ -164,8 +169,10 @@ def main():
     num_negatives = 5
     epochs = 10
     learning_rate = 1e-4
+    embedding_dim = 101
+    num_features = 10
 
-    model = get_model()
+    model = get_model(embedding_dim, num_features)
     criterion = get_criterion()
     optimizer = get_optimizer(model, learning_rate)
     dataset = get_dataset(samples, labels, num_negatives, batch_size)
