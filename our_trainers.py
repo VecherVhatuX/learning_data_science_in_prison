@@ -16,13 +16,10 @@ class EmbeddingModel(nn.Module):
         self.l2_norm_layer = nn.LazyInstanceNorm1d()
 
     def forward(self, x):
-        x = self.embedding_layer(x)
-        x = self.pooling_layer(x.transpose(1, 2)).transpose(1, 2)
-        x = self.flatten_layer(x)
-        x = self.dense_layer(x)
-        x = self.batch_norm_layer(x)
-        x = self.l2_norm_layer(x)
-        return x
+        return self.l2_norm_layer(self.batch_norm_layer(self.dense_layer(self.flatten_layer(self.pooling_layer(x.transpose(1, 2)).transpose(1, 2)))))
+
+    def embedding(self, x):
+        return self.embedding_layer(x)
 
 # Triplet Loss
 class TripletLoss(nn.Module):
@@ -141,8 +138,7 @@ def train(model, dataset, criterion, optimizer, epochs):
             optimizer.step()
 
 def test(model, dataset):
-    predicted_embeddings = model(torch.from_numpy(dataset.samples))
-    return predicted_embeddings
+    return model(dataset.samples)
 
 def main():
     np.random.seed(42)
@@ -162,7 +158,6 @@ def main():
     train(model, dataset, criterion, optimizer, epochs)
 
     input_ids = np.array([1, 2, 3, 4, 5], dtype=np.int32).reshape((1, 10))
-    input_dataset = InputDataset(input_ids)
     output = model(torch.from_numpy(input_ids))
 
     save_model(model, "triplet_model.pth")
