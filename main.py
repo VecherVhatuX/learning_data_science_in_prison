@@ -82,11 +82,11 @@ class Dataset:
         return len(self.data) // self.batch_size
 
 class T5Model(tf.keras.Model):
-    def __init__(self, input_shape):
+    def __init__(self):
         super(T5Model, self).__init__()
         self.model = tf.keras.Sequential([
-            tf.keras.applications.MobileNetV2(weights='imagenet', include_top=False, input_shape=input_shape),
-            layers.Flatten(),
+            layers.Embedding(input_dim=1000, output_dim=128),
+            layers.LSTM(128),
             layers.Dense(128, activation='relu'),
             layers.Dense(128, activation='relu'),
             layers.Dense(1000)
@@ -120,12 +120,15 @@ class Trainer:
         for batch in dataset.generator():
             anchor_input_ids = batch["input_ids"]
             positive_input_ids = batch["labels"]
-            negative_input_ids = batch["negative_examples"][0]["input_ids"]
+            negative_input_ids = [example["input_ids"] for example in batch["negative_examples"][0]]
             with tf.GradientTape() as tape:
                 anchor_outputs = self.model(anchor_input_ids, training=True)
                 positive_outputs = self.model(positive_input_ids, training=True)
-                negative_outputs = self.model(negative_input_ids, training=True)
-                loss = triplet_loss(anchor_outputs, positive_outputs, negative_outputs)
+                negative_outputs = [self.model(negative_input_id, training=True) for negative_input_id in negative_input_ids]
+                loss = 0
+                for negative_output in negative_outputs:
+                    loss += triplet_loss(anchor_outputs, positive_outputs, negative_output)
+                loss /= len(negative_outputs)
             gradients = tape.gradient(loss, self.model.trainable_variables)
             self.model.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
             total_loss += loss
@@ -147,7 +150,7 @@ class Trainer:
 
 def main():
     hyperparameters = Hyperparameters(model_base="t5-base", conversation_format="none", triplet_loss_training=True)
-    model = T5Model((224, 224, 3))
+    model = T5Model()
     trainer = Trainer(model, hyperparameters)
     training_data = load_data("train.json")
     testing_data = load_data("test.json")
