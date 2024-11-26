@@ -74,14 +74,12 @@ class TripletDataset(Dataset):
             'negative': self.samples[negative_idx]
         }
 
-# Model Saving and Loading
 def save_model(model: nn.Module, path: str) -> None:
     torch.save(model.state_dict(), path)
 
 def load_model(model: nn.Module, path: str) -> None:
     model.load_state_dict(torch.load(path))
 
-# Metric Calculations
 def calculate_distance(embedding1: torch.Tensor, embedding2: torch.Tensor) -> torch.Tensor:
     return torch.norm(embedding1 - embedding2, dim=-1)
 
@@ -129,7 +127,6 @@ def calculate_knn_f1(embeddings: torch.Tensor, labels: torch.Tensor, k: int = 5)
     recall = calculate_knn_recall(embeddings, labels, k)
     return 2 * (precision * recall) / (precision + recall)
 
-# Training and Testing
 def train(model: nn.Module, dataset: Dataset, criterion: nn.Module, optimizer: optim.Optimizer, epochs: int) -> None:
     for epoch in range(epochs):
         for batch in dataset:
