@@ -76,7 +76,7 @@ class Dataset:
                     negative_attention_mask_val = np.array([1] * len(negative_input_id), dtype=np.int32)
                     negative_example.append({"input_ids": negative_input_id, "labels": negative_label, "attention_mask": negative_attention_mask_val})
                 negative_examples.append(negative_example)
-            yield {"input_ids": np.array(input_ids), "labels": np.array(labels), "attention_mask": np.array(attention_mask), "negative_examples": negative_examples}
+            yield {"input_ids": np.array(input_ids), "labels": np.array(labels), "attention_mask": np.array(attention_mask), "negative_examples": [np.array([example["input_ids"] for example in negative_example]) for negative_example in negative_examples]}
 
     def __len__(self):
         return len(self.data) // self.batch_size
@@ -113,14 +113,14 @@ class Trainer:
     def __init__(self, model, hyperparameters):
         self.model = model
         self.hyperparameters = hyperparameters
-        self.model.compile(optimizer=optimizers.Adam(learning_rate=0.001), loss=triplet_loss, metrics=['accuracy'])
+        self.model.compile(optimizer=optimizers.Adam(learning_rate=0.001), loss=lambda y_true, y_pred: y_pred, metrics=['accuracy'])
 
     def train(self, dataset):
         total_loss = 0
         for batch in dataset.generator():
             anchor_input_ids = batch["input_ids"]
             positive_input_ids = batch["labels"]
-            negative_input_ids = [example["input_ids"] for example in batch["negative_examples"][0]]
+            negative_input_ids = batch["negative_examples"]
             with tf.GradientTape() as tape:
                 anchor_outputs = self.model(anchor_input_ids, training=True)
                 positive_outputs = self.model(positive_input_ids, training=True)
