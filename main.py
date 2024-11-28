@@ -70,16 +70,14 @@ def load_data(file_path: str) -> dict:
 def prepare_data(data, config: ModelConfig) -> tf.data.Dataset:
     dataset = tf.data.Dataset.from_tensor_slices(data)
     dataset = dataset.shuffle(buffer_size=len(data))
-    if config.conversation_format == "none":
-        dataset = dataset.batch(config.train_batch_size if config.train_batch_size > 0 else len(data))
-    else:
-        dataset = dataset.batch(config.train_batch_size)
+    batch_size = config.train_batch_size if config.train_batch_size > 0 else len(data)
+    dataset = dataset.batch(batch_size)
     dataset = dataset.map(lambda x: ({
         "input_ids": tf.map_fn(lambda example: tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string), x, dtype=tf.string),
         "labels": tf.map_fn(lambda example: tf.strings.split(example['output'], sep='').to_tensor(dtype=tf.string), x, dtype=tf.string),
-        "attention_mask": tf.ones((config.train_batch_size if config.train_batch_size > 0 else len(data), max(map(lambda example: len(example['input']), x)))),
+        "attention_mask": tf.ones((batch_size, max(map(lambda example: len(example['input']), x)))),
         "negative_examples": tf.map_fn(lambda example: tf.map_fn(lambda _: tf.strings.split(tf.strings.reduce_join(tf.random.shuffle(tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string))), sep='').to_tensor(dtype=tf.string), tf.range(config.negative_samples), dtype=tf.string), x, dtype=tf.string)
-    }, tf.zeros((config.train_batch_size if config.train_batch_size > 0 else len(data),))))
+    }, tf.zeros((batch_size,))))
     return dataset
 
 def calculate_loss(anchor, positive, negative, margin=2.0) -> tf.Tensor:
@@ -120,10 +118,10 @@ def train(model, optimizer, config: ModelConfig, train_dataset, test_dataset) ->
             negative = batch['negative_examples']
             loss = train_on_batch(model, optimizer, anchor, positive, negative)
             total_loss += loss
-        print(f"Loss: {total_loss / len(list(train_dataset))}")
+        print(f"Epoch {epoch+1}, Loss: {total_loss / len(list(train_dataset))}")
         test_loss = evaluate(model, test_dataset)
-        print(f"Test Loss: {test_loss}")
-        save_model(model, config, epoch)
+        print(f"Epoch {epoch+1}, Test Loss: {test_loss}")
+        save_model(model, config, epoch+1)
 
 def load_and_prepare_data(config: ModelConfig) -> tuple:
     train_data = load_data("train.json")
