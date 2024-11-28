@@ -44,70 +44,68 @@ class Hyperparameters:
     resume_checkpoint: str = None
     negative_samples: int = 5
 
-def load_data(file_name):
-    try:
-        with open(file_name, 'r') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        print(f"{file_name} not found.")
-        return None
+class DataLoader:
+    def __init__(self, file_name):
+        self.file_name = file_name
 
-def create_dataset(data, conversation_format, negative_samples, batch_size):
-    class Dataset:
-        def __init__(self, data, conversation_format, negative_samples, batch_size):
-            self.data = data
-            self.conversation_format = conversation_format
-            self.negative_samples = negative_samples
-            self.batch_size = batch_size
+    def load_data(self):
+        try:
+            with open(self.file_name, 'r') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            print(f"{self.file_name} not found.")
+            return None
 
-        def generator(self):
-            for i in range(len(self.data) // self.batch_size):
-                batch_data = self.data[i * self.batch_size:(i + 1) * self.batch_size]
-                input_ids = []
-                labels = []
-                attention_mask = []
-                negative_examples = []
-                for example in batch_data:
-                    input_id = np.array([0] + [ord(c) for c in f"{self.conversation_format} {example['input']}"] + [1], dtype=np.int32)
-                    label = np.array([0] + [ord(c) for c in f"{self.conversation_format} {example['output']}"] + [1], dtype=np.int32)
-                    attention_mask_val = np.array([1] * len(input_id), dtype=np.int32)
-                    input_ids.append(input_id)
-                    labels.append(label)
-                    attention_mask.append(attention_mask_val)
-                    negative_example = []
-                    for _ in range(self.negative_samples):
+class Dataset:
+    def __init__(self, data, conversation_format, negative_samples, batch_size):
+        self.data = data
+        self.conversation_format = conversation_format
+        self.negative_samples = negative_samples
+        self.batch_size = batch_size
+
+    def generator(self):
+        for i in range(len(self.data) // self.batch_size):
+            batch_data = self.data[i * self.batch_size:(i + 1) * self.batch_size]
+            input_ids = []
+            labels = []
+            attention_mask = []
+            negative_examples = []
+            for example in batch_data:
+                input_id = np.array([0] + [ord(c) for c in f"{self.conversation_format} {example['input']}"] + [1], dtype=np.int32)
+                label = np.array([0] + [ord(c) for c in f"{self.conversation_format} {example['output']}"] + [1], dtype=np.int32)
+                attention_mask_val = np.array([1] * len(input_id), dtype=np.int32)
+                input_ids.append(input_id)
+                labels.append(label)
+                attention_mask.append(attention_mask_val)
+                negative_example = []
+                for _ in range(self.negative_samples):
+                    negative_idx = np.random.randint(0, len(self.data))
+                    while negative_idx == i:
                         negative_idx = np.random.randint(0, len(self.data))
-                        while negative_idx == i:
-                            negative_idx = np.random.randint(0, len(self.data))
-                        negative_example_val = self.data[negative_idx]
-                        negative_input_id = np.array([0] + [ord(c) for c in f"{self.conversation_format} {negative_example_val['input']}"] + [1], dtype=np.int32)
-                        negative_label = np.array([0] + [ord(c) for c in f"{self.conversation_format} {negative_example_val['output']}"] + [1], dtype=np.int32)
-                        negative_attention_mask_val = np.array([1] * len(negative_input_id), dtype=np.int32)
-                        negative_example.append({"input_ids": negative_input_id, "labels": negative_label, "attention_mask": negative_attention_mask_val})
-                    negative_examples.append(negative_example)
-                yield {"input_ids": np.array(input_ids), "labels": np.array(labels), "attention_mask": np.array(attention_mask), "negative_examples": [np.array([example["input_ids"] for example in negative_example]) for negative_example in negative_examples]}
+                    negative_example_val = self.data[negative_idx]
+                    negative_input_id = np.array([0] + [ord(c) for c in f"{self.conversation_format} {negative_example_val['input']}"] + [1], dtype=np.int32)
+                    negative_label = np.array([0] + [ord(c) for c in f"{self.conversation_format} {negative_example_val['output']}"] + [1], dtype=np.int32)
+                    negative_attention_mask_val = np.array([1] * len(negative_input_id), dtype=np.int32)
+                    negative_example.append({"input_ids": negative_input_id, "labels": negative_label, "attention_mask": negative_attention_mask_val})
+                negative_examples.append(negative_example)
+            yield {"input_ids": np.array(input_ids), "labels": np.array(labels), "attention_mask": np.array(attention_mask), "negative_examples": [np.array([example["input_ids"] for example in negative_example]) for negative_example in negative_examples]}
 
-        def __len__(self):
-            return len(self.data) // self.batch_size
+    def __len__(self):
+        return len(self.data) // self.batch_size
 
-    return Dataset(data, conversation_format, negative_samples, batch_size)
+class T5Model(tf.keras.Model):
+    def __init__(self):
+        super(T5Model, self).__init__()
+        self.model = tf.keras.Sequential([
+            layers.Embedding(input_dim=1000, output_dim=128),
+            layers.LSTM(128),
+            layers.Dense(128, activation='relu'),
+            layers.Dense(128, activation='relu'),
+            layers.Dense(1000)
+        ])
 
-def create_model():
-    class T5Model(tf.keras.Model):
-        def __init__(self):
-            super(T5Model, self).__init__()
-            self.model = tf.keras.Sequential([
-                layers.Embedding(input_dim=1000, output_dim=128),
-                layers.LSTM(128),
-                layers.Dense(128, activation='relu'),
-                layers.Dense(128, activation='relu'),
-                layers.Dense(1000)
-            ])
-
-        def call(self, inputs, training=None, mask=None):
-            return self.model(inputs, training=training)
-
-    return T5Model()
+    def call(self, inputs, training=None, mask=None):
+        return self.model(inputs, training=training)
 
 def triplet_loss(anchor, positive, negative, margin=2.0):
     distance_positive = tf.reduce_sum(tf.square(anchor - positive), axis=1)
@@ -115,7 +113,7 @@ def triplet_loss(anchor, positive, negative, margin=2.0):
     losses = tf.maximum(distance_positive - distance_negative + margin, 0)
     return tf.reduce_mean(losses)
 
-def train_model(model, dataset, hyperparameters):
+def train(model, dataset, hyperparameters):
     total_loss = 0
     for batch in dataset.generator():
         anchor_input_ids = batch["input_ids"]
@@ -134,7 +132,7 @@ def train_model(model, dataset, hyperparameters):
         total_loss += loss
     print(f"Loss: {total_loss / len(dataset)}")
 
-def evaluate_model(model, dataset):
+def evaluate(model, dataset):
     total_loss = 0
     for batch in dataset.generator():
         input_ids = batch["input_ids"]
@@ -145,22 +143,24 @@ def evaluate_model(model, dataset):
         total_loss += loss
     print(f"Test Loss: {total_loss / len(dataset)}")
 
-def save_model(model, epoch, output_dir):
+def save(model, epoch, output_dir):
     model.save_weights(f"{output_dir}/model_{epoch}.h5")
 
 def main():
     hyperparameters = Hyperparameters(model_base="t5-base", conversation_format="none", triplet_loss_training=True)
-    model = create_model()
+    model = T5Model()
     model.compile(optimizer=optimizers.Adam(learning_rate=0.001), loss=lambda y_true, y_pred: y_pred, metrics=['accuracy'])
-    training_data = load_data("train.json")
-    testing_data = load_data("test.json")
+    train_data_loader = DataLoader("train.json")
+    test_data_loader = DataLoader("test.json")
+    training_data = train_data_loader.load_data()
+    testing_data = test_data_loader.load_data()
     if training_data is not None and testing_data is not None:
-        train_dataset = create_dataset(training_data, hyperparameters.conversation_format, hyperparameters.negative_samples, hyperparameters.train_batch_size)
-        test_dataset = create_dataset(testing_data, hyperparameters.conversation_format, hyperparameters.negative_samples, hyperparameters.eval_batch_size)
+        train_dataset = Dataset(training_data, hyperparameters.conversation_format, hyperparameters.negative_samples, hyperparameters.train_batch_size)
+        test_dataset = Dataset(testing_data, hyperparameters.conversation_format, hyperparameters.negative_samples, hyperparameters.eval_batch_size)
         for epoch in range(hyperparameters.num_epochs):
-            train_model(model, train_dataset, hyperparameters)
-            evaluate_model(model, test_dataset)
-            save_model(model, epoch, hyperparameters.output_dir)
+            train(model, train_dataset, hyperparameters)
+            evaluate(model, test_dataset)
+            save(model, epoch, hyperparameters.output_dir)
 
 if __name__ == "__main__":
     main()
