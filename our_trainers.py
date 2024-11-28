@@ -1,6 +1,7 @@
 import tensorflow as tf
 import numpy as np
 
+# Model Building
 def build_model(embedding_dim, num_features):
     return tf.keras.Sequential([
         tf.keras.layers.Embedding(embedding_dim, num_features, input_length=10),
@@ -11,6 +12,7 @@ def build_model(embedding_dim, num_features):
         tf.keras.layers.LayerNormalization()
     ])
 
+# Loss Function
 def build_criterion(margin=1.0):
     @tf.function
     def triplet_loss(anchor, positive, negative):
@@ -20,9 +22,11 @@ def build_criterion(margin=1.0):
         return tf.reduce_mean(loss)
     return triplet_loss
 
+# Optimizer
 def build_optimizer(model, learning_rate):
     return tf.keras.optimizers.Adam(learning_rate=learning_rate)
 
+# Dataset
 def build_dataset(samples, labels, num_negatives, batch_size, shuffle=True):
     @tf.function
     def generate_triplets():
@@ -46,6 +50,7 @@ def build_dataset(samples, labels, num_negatives, batch_size, shuffle=True):
         )
     )
 
+# Distance and Similarity Metrics
 def distance(embedding1, embedding2):
     return tf.norm(embedding1 - embedding2, axis=-1)
 
@@ -63,6 +68,7 @@ def similar_embeddings(embeddings, target_embedding, k=5):
     similarities = similarity(embeddings, target_embedding)
     return tf.argsort(-similarities)[:k]
 
+# KNN Metrics
 def knn_accuracy(embeddings, labels, k=5):
     return tf.reduce_mean(tf.map_fn(lambda x: tf.reduce_any(tf.equal(labels[x[1:k+1]], labels[x[0]])), (tf.argsort(distance(embeddings, embeddings), axis=1)), tf.float32))
 
@@ -77,24 +83,20 @@ def knn_f1(embeddings, labels, k=5):
     recall = knn_recall(embeddings, labels, k)
     return 2 * (precision * recall) / (precision + recall)
 
-def build_and_train(embedding_dim, num_features, batch_size, num_negatives, epochs, learning_rate, samples, labels):
-    model = build_model(embedding_dim, num_features)
-    criterion = build_criterion()
-    optimizer = build_optimizer(model, learning_rate)
-    dataset = build_dataset(samples, labels, num_negatives, batch_size)
-    for epoch in range(epochs):
-        for batch in dataset:
-            anchor, positive, negative = batch
-            with tf.GradientTape() as tape:
-                anchor_embeddings = model(anchor, training=True)
-                positive_embeddings = model(positive, training=True)
-                negative_embeddings = model(negative, training=True)
-                loss = criterion(anchor_embeddings, positive_embeddings, negative_embeddings)
-            gradients = tape.gradient(loss, model.trainable_variables)
-            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-        print(f'Epoch {epoch+1}, Loss: {loss.numpy()}')
-    return model
+# Training
+def train(model, criterion, optimizer, dataset):
+    for batch in dataset:
+        anchor, positive, negative = batch
+        with tf.GradientTape() as tape:
+            anchor_embeddings = model(anchor, training=True)
+            positive_embeddings = model(positive, training=True)
+            negative_embeddings = model(negative, training=True)
+            loss = criterion(anchor_embeddings, positive_embeddings, negative_embeddings)
+        gradients = tape.gradient(loss, model.trainable_variables)
+        optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+        print(f'Loss: {loss.numpy()}')
 
+# Main
 def main():
     np.random.seed(42)
 
@@ -107,7 +109,14 @@ def main():
     embedding_dim = 101
     num_features = 10
 
-    model = build_and_train(embedding_dim, num_features, batch_size, num_negatives, epochs, learning_rate, samples, labels)
+    model = build_model(embedding_dim, num_features)
+    criterion = build_criterion()
+    optimizer = build_optimizer(model, learning_rate)
+    dataset = build_dataset(samples, labels, num_negatives, batch_size)
+
+    for epoch in range(epochs):
+        train(model, criterion, optimizer, dataset)
+        print(f'Epoch {epoch+1}')
 
     input_ids = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=np.int32).reshape((1, 10))
     output = model.predict(input_ids)
