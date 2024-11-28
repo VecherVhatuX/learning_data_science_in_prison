@@ -14,7 +14,6 @@ def build_model(embedding_dim, num_features):
 
 # Loss Function
 def build_criterion(margin=1.0):
-    @tf.function
     def triplet_loss(anchor, positive, negative):
         d_ap = tf.norm(anchor - positive, axis=-1)
         d_an = tf.norm(anchor[:, None] - negative, axis=-1)
@@ -28,7 +27,6 @@ def build_optimizer(model, learning_rate):
 
 # Dataset
 def build_dataset(samples, labels, num_negatives, batch_size, shuffle=True):
-    @tf.function
     def generate_triplets():
         indices = np.arange(len(samples))
         if shuffle:
@@ -97,33 +95,18 @@ def train(model, criterion, optimizer, dataset, epochs):
             optimizer.apply_gradients(zip(gradients, model.trainable_variables))
             print(f'Epoch: {epoch+1}, Loss: {loss.numpy()}')
 
-# Main
-def main():
-    np.random.seed(42)
-
+def pipeline(learning_rate, batch_size, epochs, num_negatives, embedding_dim, num_features):
     samples = np.random.randint(0, 100, (100, 10))
     labels = np.random.randint(0, 2, (100,))
-    batch_size = 32
-    num_negatives = 5
-    epochs = 10
-    learning_rate = 1e-4
-    embedding_dim = 101
-    num_features = 10
-
     model = build_model(embedding_dim, num_features)
     criterion = build_criterion()
     optimizer = build_optimizer(model, learning_rate)
     dataset = build_dataset(samples, labels, num_negatives, batch_size)
-
     train(model, criterion, optimizer, dataset, epochs)
-
     input_ids = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=np.int32).reshape((1, 10))
     output = model.predict(input_ids)
-
     model.save_weights("triplet_model.h5")
-
     predicted_embeddings = model.predict(samples)
-
     print(distance(output, output))
     print(similarity(output, output))
     print(cosine_distance(output, output))
@@ -133,6 +116,10 @@ def main():
     print("KNN Precision:", knn_precision(predicted_embeddings, labels, k=5))
     print("KNN Recall:", knn_recall(predicted_embeddings, labels, k=5))
     print("KNN F1-score:", knn_f1(predicted_embeddings, labels, k=5))
+
+def main():
+    np.random.seed(42)
+    pipeline(1e-4, 32, 10, 5, 101, 10)
 
 if __name__ == "__main__":
     main()
