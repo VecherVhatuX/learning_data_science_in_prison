@@ -32,7 +32,14 @@ def fetch_snippet_file_data(snippet_files):
     return [load_json_data(path)['snippet'] for path in snippet_files]
 
 def separate_snippet_types(snippets):
-    bug_snippets, non_bug_snippets = fetch_snippet_file_data(snippets)
+    bug_snippets = []
+    non_bug_snippets = []
+    for _, snippet_file in snippets:
+        snippet_data = load_json_data(snippet_file)
+        if snippet_data.get('is_bug', False):
+            bug_snippets.append(snippet_data['snippet'])
+        else:
+            non_bug_snippets.append(snippet_data['snippet'])
     bug_snippets = [snippet for snippet in bug_snippets if snippet]
     non_bug_snippets = [snippet for snippet in non_bug_snippets if snippet]
     return bug_snippets, non_bug_snippets
@@ -141,14 +148,14 @@ class TripletTrainer:
     def calculate_triplet_loss(self, anchor_embeddings, positive_embeddings, negative_embeddings):
         positive_distance = (anchor_embeddings - positive_embeddings).pow(2).sum(dim=1)
         negative_distance = (anchor_embeddings - negative_embeddings).pow(2).sum(dim=1)
-        return positive_distance + torch.clamp(negative_distance - positive_distance, min=0.0)
+        return (positive_distance - negative_distance + 0.2).clamp(min=0).mean()
 
     def train_triplet_network(self, train_loader, optimizer, epochs):
         for epoch in range(epochs):
             for batch in train_loader:
                 optimizer.zero_grad()
                 anchor_embeddings, positive_embeddings, negative_embeddings = self.model(batch)
-                batch_loss = self.calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings).mean()
+                batch_loss = self.calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
                 batch_loss.backward()
                 optimizer.step()
                 print(f'Epoch {epoch+1}, Batch Loss: {batch_loss.item()}')
@@ -158,11 +165,9 @@ class TripletTrainer:
         with torch.no_grad():
             for batch in test_loader:
                 anchor_embeddings, positive_embeddings, negative_embeddings = self.model(batch)
-                for i in range(len(anchor_embeddings)):
-                    positive_similarity = torch.dot(anchor_embeddings[i], positive_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(positive_embeddings[i]))
-                    negative_similarity = torch.dot(anchor_embeddings[i], negative_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(negative_embeddings[i]))
-                    if positive_similarity > negative_similarity:
-                        total_correct += 1
+                positive_similarity = torch.nn.functional.cosine_similarity(anchor_embeddings, positive_embeddings)
+                negative_similarity = torch.nn.functional.cosine_similarity(anchor_embeddings, negative_embeddings)
+                total_correct += (positive_similarity > negative_similarity).sum().item()
         return total_correct / len(test_loader.dataset)
 
 def main():
