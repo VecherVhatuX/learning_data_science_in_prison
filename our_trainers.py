@@ -4,7 +4,6 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 
-
 class TripletModel(nn.Module):
     def __init__(self, embedding_dim, num_features):
         super(TripletModel, self).__init__()
