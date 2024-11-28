@@ -1,13 +1,16 @@
-# Import necessary libraries for numerical operations, deep learning, data manipulation and more.
-import numpy as np
-import torch
-from torch import nn
-from torch.optim import Adam
-from torch.utils.data import Dataset, DataLoader
-from transformers import AutoModel, AutoTokenizer
+import jax
+import jax.numpy as jnp
+from jax.experimental import stax
+from jax.experimental.stax import Conv, Dense, MaxPool, Relu, Flatten, Sigmoid
 import json
 import os
 import random
+import tensorflow as tf
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.preprocessing.text import Tokenizer
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, Embedding, LSTM, Dense
+import numpy as np
 
 # Function to load JSON data from a specified file path.
 def fetch_json_data(path):
@@ -50,13 +53,12 @@ def load_dataset(dataset_path, snippet_folder_path):
     return instance_id_map, snippets
 
 # Custom dataset class for code snippets.
-class CodeSnippetDataset(Dataset):
+class CodeSnippetDataset:
     # Initialize the dataset with a list of triplets and maximum sequence length.
     def __init__(self, triplets, max_sequence_length):
         self.triplets = triplets
         self.max_sequence_length = max_sequence_length
-        # Load pre-trained BERT tokenizer.
-        self.tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
+        self.tokenizer = tf.keras.preprocessing.text.Tokenizer()
 
     # Return the length of the dataset.
     def __len__(self):
@@ -69,77 +71,58 @@ class CodeSnippetDataset(Dataset):
         positive = self.triplets[idx]['positive']
         negative = self.triplets[idx]['negative']
 
-        # Tokenize anchor, positive, and negative samples using the BERT tokenizer.
-        anchor_sequence = self.tokenizer.encode_plus(anchor, 
-                                                       max_length=self.max_sequence_length, 
-                                                       padding='max_length', 
-                                                       truncation=True, 
-                                                       return_tensors='pt',
-                                                       return_attention_mask=True)
+        # Tokenize anchor, positive, and negative samples using the tokenizer.
+        self.tokenizer.fit_on_texts([anchor, positive, negative])
+        anchor_sequence = self.tokenizer.texts_to_sequences([anchor])[0]
+        positive_sequence = self.tokenizer.texts_to_sequences([positive])[0]
+        negative_sequence = self.tokenizer.texts_to_sequences([negative])[0]
 
-        positive_sequence = self.tokenizer.encode_plus(positive, 
-                                                         max_length=self.max_sequence_length, 
-                                                         padding='max_length', 
-                                                         truncation=True, 
-                                                         return_tensors='pt',
-                                                       return_attention_mask=True)
-
-        negative_sequence = self.tokenizer.encode_plus(negative, 
-                                                         max_length=self.max_sequence_length, 
-                                                         padding='max_length', 
-                                                         truncation=True, 
-                                                         return_tensors='pt',
-                                                       return_attention_mask=True)
+        # Pad sequences to maximum sequence length.
+        anchor_sequence = pad_sequences([anchor_sequence], maxlen=self.max_sequence_length)[0]
+        positive_sequence = pad_sequences([positive_sequence], maxlen=self.max_sequence_length)[0]
+        negative_sequence = pad_sequences([negative_sequence], maxlen=self.max_sequence_length)[0]
 
         # Return a dictionary containing input IDs and attention masks for anchor, positive, and negative samples.
-        return {'anchor': {'input_ids': anchor_sequence['input_ids'].flatten(), 
-                           'attention_mask': anchor_sequence['attention_mask'].flatten()}, 
-                'positive': {'input_ids': positive_sequence['input_ids'].flatten(), 
-                             'attention_mask': positive_sequence['attention_mask'].flatten()}, 
-                'negative': {'input_ids': negative_sequence['input_ids'].flatten(), 
-                             'attention_mask': negative_sequence['attention_mask'].flatten()}}
-
-    # Custom function to shuffle and oversample triplets every epoch
-    def shuffle_and_oversample(self):
-        random.shuffle(self.triplets)
-        # Oversample triplets where anchor and positive are not the same
-        oversampled_triplets = [triplet for triplet in self.triplets if triplet['anchor'] != triplet['positive']]
-        # Add oversampled triplets to original triplets
-        self.triplets = self.triplets + oversampled_triplets
+        return {'anchor': anchor_sequence, 
+                'positive': positive_sequence, 
+                'negative': negative_sequence}
 
 # Custom neural network model for triplet learning.
-class TripletNetwork(nn.Module):
+class TripletNetwork(Model):
     # Initialize the model with embedding size, fully connected size, and dropout rate.
-    def __init__(self, embedding_size, fully_connected_size, dropout_rate):
+    def __init__(self, embedding_size, fully_connected_size, dropout_rate, vocab_size, max_sequence_length):
         super(TripletNetwork, self).__init__()
-        # Load pre-trained BERT model.
-        self.bert = AutoModel.from_pretrained('bert-base-uncased')
+        # Initialize embedding layer.
+        self.embedding = Embedding(vocab_size, embedding_size, input_length=max_sequence_length)
+        # Initialize LSTM layer.
+        self.lstm = LSTM(fully_connected_size)
         # Initialize dropout layer.
-        self.dropout = nn.Dropout(dropout_rate)
+        self.dropout = tf.keras.layers.Dropout(dropout_rate)
         # Initialize fully connected layers.
-        self.fc1 = nn.Linear(768, fully_connected_size)
-        self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(fully_connected_size, embedding_size)
+        self.fc1 = Dense(fully_connected_size, activation='relu')
+        self.fc2 = Dense(embedding_size)
 
     # Forward pass through the model.
-    def forward(self, x):
-        # Extract anchor, positive, and negative input IDs and attention masks.
-        anchor_input_ids = x['anchor']['input_ids']
-        anchor_attention_mask = x['anchor']['attention_mask']
-        positive_input_ids = x['positive']['input_ids']
-        positive_attention_mask = x['positive']['attention_mask']
-        negative_input_ids = x['negative']['input_ids']
-        negative_attention_mask = x['negative']['attention_mask']
+    def call(self, x):
+        # Extract anchor, positive, and negative input IDs.
+        anchor_sequence = x['anchor']
+        positive_sequence = x['positive']
+        negative_sequence = x['negative']
 
-        # Pass anchor, positive, and negative samples through the BERT model.
-        anchor_output = self.bert(anchor_input_ids, attention_mask=anchor_attention_mask)
-        positive_output = self.bert(positive_input_ids, attention_mask=positive_attention_mask)
-        negative_output = self.bert(negative_input_ids, attention_mask=negative_attention_mask)
+        # Pass anchor, positive, and negative samples through the embedding layer.
+        anchor_embedding = self.embedding(anchor_sequence)
+        positive_embedding = self.embedding(positive_sequence)
+        negative_embedding = self.embedding(negative_sequence)
+
+        # Pass anchor, positive, and negative samples through the LSTM layer.
+        anchor_output = self.lstm(anchor_embedding)
+        positive_output = self.lstm(positive_embedding)
+        negative_output = self.lstm(negative_embedding)
 
         # Pass output through fully connected layers to obtain embeddings.
-        anchor_embedding = self.fc2(self.relu(self.fc1(self.dropout(anchor_output.pooler_output))))
-        positive_embedding = self.fc2(self.relu(self.fc1(self.dropout(positive_output.pooler_output))))
-        negative_embedding = self.fc2(self.relu(self.fc1(self.dropout(negative_output.pooler_output))))
+        anchor_embedding = self.fc2(self.fc1(self.dropout(anchor_output)))
+        positive_embedding = self.fc2(self.fc1(self.dropout(positive_output)))
+        negative_embedding = self.fc2(self.fc1(self.dropout(negative_output)))
 
         # Return anchor, positive, and negative embeddings.
         return anchor_embedding, positive_embedding, negative_embedding
@@ -147,59 +130,54 @@ class TripletNetwork(nn.Module):
 # Custom trainer class for the triplet network.
 class TripletTrainer:
     # Initialize the trainer with the model and device.
-    def __init__(self, model, device):
+    def __init__(self, model):
         self.model = model
-        self.device = device
 
     # Function to calculate triplet loss.
     def calculate_triplet_loss(self, anchor_embeddings, positive_embeddings, negative_embeddings):
         # Calculate distance between anchor and positive embeddings.
-        positive_distance = torch.mean((anchor_embeddings - positive_embeddings) ** 2)
+        positive_distance = tf.reduce_mean((anchor_embeddings - positive_embeddings) ** 2)
         # Calculate distance between anchor and negative embeddings.
-        negative_distance = torch.mean((anchor_embeddings - negative_embeddings) ** 2)
+        negative_distance = tf.reduce_mean((anchor_embeddings - negative_embeddings) ** 2)
         # Return triplet loss.
-        return positive_distance + torch.max(negative_distance - positive_distance, torch.tensor(0.0).to(self.device))
+        return positive_distance + tf.maximum(negative_distance - positive_distance, 0.0)
 
     # Function to train the triplet network.
-    def train_triplet_network(self, train_loader, optimizer, epochs):
+    def train_triplet_network(self, train_dataset, optimizer, epochs):
         # Iterate through each epoch.
         for epoch in range(epochs):
-            # Iterate through each batch in the train loader.
-            for batch in train_loader:
+            # Iterate through each batch in the train dataset.
+            for batch in train_dataset:
                 # Zero out gradients.
-                optimizer.zero_grad()
-                # Calculate batch loss.
-                batch_loss = self.calculate_triplet_loss(*self.model({k: v.to(self.device) for k, v in batch.items()}))
+                with tf.GradientTape() as tape:
+                    # Calculate batch loss.
+                    batch_loss = self.calculate_triplet_loss(*self.model(batch))
                 # Backpropagate gradients.
-                batch_loss.backward()
-                # Update model parameters.
-                optimizer.step()
+                gradients = tape.gradient(batch_loss, self.model.trainable_variables)
+                optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
                 # Print batch loss.
-                print(f'Epoch {epoch+1}, Batch Loss: {batch_loss.item()}')
-            # Shuffle and oversample dataset every epoch
-            train_loader.dataset.shuffle_and_oversample()
+                print(f'Epoch {epoch+1}, Batch Loss: {batch_loss.numpy()}')
 
     # Function to evaluate the triplet network.
-    def evaluate_triplet_network(self, test_loader):
+    def evaluate_triplet_network(self, test_dataset):
         # Initialize correct count.
         total_correct = 0
-        # Iterate through each batch in the test loader.
-        with torch.no_grad():
-            for batch in test_loader:
-                # Pass batch through the model to obtain embeddings.
-                anchor_embeddings, positive_embeddings, negative_embeddings = self.model({k: v.to(self.device) for k, v in batch.items()})
-                # Iterate through each anchor embedding.
-                for i in range(len(anchor_embeddings)):
-                    # Calculate similarity between anchor and positive embeddings.
-                    positive_similarity = torch.sum(anchor_embeddings[i] * positive_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(positive_embeddings[i]))
-                    # Calculate similarity between anchor and negative embeddings.
-                    negative_similarity = torch.sum(anchor_embeddings[i] * negative_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(negative_embeddings[i]))
-                    # Check if positive similarity is greater than negative similarity.
-                    if positive_similarity > negative_similarity:
-                        # Increment correct count.
-                        total_correct += 1
+        # Iterate through each batch in the test dataset.
+        for batch in test_dataset:
+            # Pass batch through the model to obtain embeddings.
+            anchor_embeddings, positive_embeddings, negative_embeddings = self.model(batch)
+            # Iterate through each anchor embedding.
+            for i in range(len(anchor_embeddings)):
+                # Calculate similarity between anchor and positive embeddings.
+                positive_similarity = tf.reduce_sum(anchor_embeddings[i] * positive_embeddings[i]) / (tf.norm(anchor_embeddings[i]) * tf.norm(positive_embeddings[i]))
+                # Calculate similarity between anchor and negative embeddings.
+                negative_similarity = tf.reduce_sum(anchor_embeddings[i] * negative_embeddings[i]) / (tf.norm(anchor_embeddings[i]) * tf.norm(negative_embeddings[i]))
+                # Check if positive similarity is greater than negative similarity.
+                if positive_similarity > negative_similarity:
+                    # Increment correct count.
+                    total_correct += 1
         # Return accuracy.
-        return total_correct / len(test_loader.dataset)
+        return total_correct / len(test_dataset)
 
 # Main function.
 def main():
@@ -217,20 +195,16 @@ def main():
     train_dataset = CodeSnippetDataset(train_triplets, 512)
     test_dataset = CodeSnippetDataset(test_triplets, 512)
     # Create train and test data loaders.
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    train_loader = tf.data.Dataset.from_tensor_slices(train_dataset.triplets).batch(32)
+    test_loader = tf.data.Dataset.from_tensor_slices(test_dataset.triplets).batch(32)
 
-    # Specify device.
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     # Initialize model.
-    model = TripletNetwork(128, 64, 0.2)
-    # Move model to device.
-    model.to(device)
+    model = TripletNetwork(128, 64, 0.2, 10000, 512)
     # Initialize optimizer.
-    optimizer = Adam(model.parameters(), lr=1e-5)
+    optimizer = tf.keras.optimizers.Adam(1e-5)
 
     # Initialize trainer.
-    trainer = TripletTrainer(model, device)
+    trainer = TripletTrainer(model)
     # Train model.
     trainer.train_triplet_network(train_loader, optimizer, 5)
     # Evaluate model.
