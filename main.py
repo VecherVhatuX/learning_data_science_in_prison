@@ -77,8 +77,8 @@ class Dataset:
         return ({
             "input_ids": tf.strings.split(batch['input'], sep='').to_tensor(dtype=tf.string),
             "labels": tf.strings.split(batch['output'], sep='').to_tensor(dtype=tf.string),
-            "attention_mask": tf.ones((self.config.train_batch_size, max(map(lambda example: len(example['input']), [batch])))),
-            "negative_examples": tf.map_fn(lambda example: tf.map_fn(lambda _: tf.strings.split(tf.strings.reduce_join(tf.random.shuffle(tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string))), sep='').to_tensor(dtype=tf.string), tf.range(self.config.negative_samples), dtype=tf.string), [batch], dtype=tf.string)
+            "attention_mask": tf.ones((self.config.train_batch_size, max(map(lambda example: len(example['input']), batch)))),
+            "negative_examples": tf.map_fn(lambda example: tf.map_fn(lambda _: tf.strings.split(tf.strings.reduce_join(tf.random.shuffle(tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string))), sep='').to_tensor(dtype=tf.string), tf.range(self.config.negative_samples), dtype=tf.string), batch, dtype=tf.string)
         }, tf.zeros((self.config.train_batch_size,)))
 
     def dataset(self):
