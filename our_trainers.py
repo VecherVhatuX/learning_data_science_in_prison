@@ -1,31 +1,86 @@
 import tensorflow as tf
 import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.manifold import TSNE
 
-# Model Building
-def build_model(embedding_dim, num_features):
-    return tf.keras.Sequential([
-        tf.keras.layers.Embedding(input_dim=embedding_dim, output_dim=num_features, input_length=10),
-        tf.keras.layers.GlobalAveragePooling1D(),
-        tf.keras.layers.Flatten(),
-        tf.keras.layers.Dense(num_features),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.LayerNormalization()
-    ])
+class TripletModel:
+    def __init__(self, embedding_dim, num_features):
+        self.model = tf.keras.Sequential([
+            tf.keras.layers.Embedding(input_dim=embedding_dim, output_dim=num_features, input_length=10),
+            tf.keras.layers.GlobalAveragePooling1D(),
+            tf.keras.layers.Flatten(),
+            tf.keras.layers.Dense(num_features),
+            tf.keras.layers.BatchNormalization(),
+            tf.keras.layers.LayerNormalization()
+        ])
 
-# Loss Function
-def build_criterion(margin=1.0):
-    def triplet_loss(anchor, positive, negative):
-        d_ap = tf.norm(anchor - positive, axis=-1)
-        d_an = tf.norm(anchor[:, None] - negative, axis=-1)
-        loss = tf.maximum(d_ap - tf.reduce_min(d_an, axis=-1) + margin, 0.0)
-        return tf.reduce_mean(loss)
-    return triplet_loss
+    def build_criterion(self, margin=1.0):
+        def triplet_loss(anchor, positive, negative):
+            d_ap = tf.norm(anchor - positive, axis=-1)
+            d_an = tf.norm(anchor[:, None] - negative, axis=-1)
+            loss = tf.maximum(d_ap - tf.reduce_min(d_an, axis=-1) + margin, 0.0)
+            return tf.reduce_mean(loss)
+        return triplet_loss
 
-# Optimizer
-def build_optimizer(model, learning_rate):
-    return tf.keras.optimizers.Adam(learning_rate=learning_rate)
+    def train(self, dataset, epochs, optimizer, criterion):
+        for epoch in range(epochs):
+            for batch in dataset:
+                anchor, positive, negative = batch
+                with tf.GradientTape() as tape:
+                    anchor_embeddings = self.model(anchor, training=True)
+                    positive_embeddings = self.model(positive, training=True)
+                    negative_embeddings = self.model(negative, training=True)
+                    loss = criterion(anchor_embeddings, positive_embeddings, negative_embeddings)
+                gradients = tape.gradient(loss, self.model.trainable_variables)
+                optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+                print(f'Epoch: {epoch+1}, Loss: {loss.numpy()}')
 
-# Dataset
+    def validate(self, embeddings, labels, k=5):
+        predicted_embeddings = self.model.predict(embeddings)
+        print("Validation KNN Accuracy:", self.knn_accuracy(predicted_embeddings, labels, k))
+        print("Validation KNN Precision:", self.knn_precision(predicted_embeddings, labels, k))
+        print("Validation KNN Recall:", self.knn_recall(predicted_embeddings, labels, k))
+        print("Validation KNN F1-score:", self.knn_f1(predicted_embeddings, labels, k))
+        self.embedding_visualization(predicted_embeddings, labels)
+
+    def distance(self, embedding1, embedding2):
+        return tf.norm(embedding1 - embedding2, axis=-1)
+
+    def similarity(self, embedding1, embedding2):
+        return tf.reduce_sum(embedding1 * embedding2, axis=-1) / (tf.norm(embedding1, axis=-1) * tf.norm(embedding2, axis=-1))
+
+    def cosine_distance(self, embedding1, embedding2):
+        return 1 - self.similarity(embedding1, embedding2)
+
+    def nearest_neighbors(self, embeddings, target_embedding, k=5):
+        distances = self.distance(embeddings, target_embedding)
+        return tf.argsort(distances)[:k]
+
+    def similar_embeddings(self, embeddings, target_embedding, k=5):
+        similarities = self.similarity(embeddings, target_embedding)
+        return tf.argsort(-similarities)[:k]
+
+    def embedding_visualization(self, embeddings, labels):
+        tsne = TSNE(n_components=2)
+        reduced_embeddings = tsne.fit_transform(embeddings)
+        plt.figure(figsize=(8, 8))
+        plt.scatter(reduced_embeddings[:, 0], reduced_embeddings[:, 1], c=labels)
+        plt.show()
+
+    def knn_accuracy(self, embeddings, labels, k=5):
+        return tf.reduce_mean(tf.map_fn(lambda x: tf.reduce_any(tf.equal(labels[x[1:k+1]], labels[x[0]])), (tf.argsort(self.distance(embeddings, embeddings), axis=1)), tf.float32))
+
+    def knn_precision(self, embeddings, labels, k=5):
+        return tf.reduce_mean(tf.map_fn(lambda x: tf.reduce_sum(tf.equal(labels[x[1:k+1]], labels[x[0]])) / k, (tf.argsort(self.distance(embeddings, embeddings), axis=1)), tf.float32))
+
+    def knn_recall(self, embeddings, labels, k=5):
+        return tf.reduce_mean(tf.map_fn(lambda x: tf.reduce_sum(tf.equal(labels[x[1:k+1]], labels[x[0]])) / tf.reduce_sum(tf.equal(labels, labels[x[0]])), (tf.argsort(self.distance(embeddings, embeddings), axis=1)), tf.float32))
+
+    def knn_f1(self, embeddings, labels, k=5):
+        precision = self.knn_precision(embeddings, labels, k)
+        recall = self.knn_recall(embeddings, labels, k)
+        return 2 * (precision * recall) / (precision + recall)
+
 def build_dataset(samples, labels, num_negatives, batch_size, shuffle=True):
     def generate_triplets():
         indices = np.arange(len(samples))
@@ -48,88 +103,27 @@ def build_dataset(samples, labels, num_negatives, batch_size, shuffle=True):
         )
     )
 
-# Distance and Similarity Metrics
-def distance(embedding1, embedding2):
-    return tf.norm(embedding1 - embedding2, axis=-1)
-
-def similarity(embedding1, embedding2):
-    return tf.reduce_sum(embedding1 * embedding2, axis=-1) / (tf.norm(embedding1, axis=-1) * tf.norm(embedding2, axis=-1))
-
-def cosine_distance(embedding1, embedding2):
-    return 1 - similarity(embedding1, embedding2)
-
-def nearest_neighbors(embeddings, target_embedding, k=5):
-    distances = distance(embeddings, target_embedding)
-    return tf.argsort(distances)[:k]
-
-def similar_embeddings(embeddings, target_embedding, k=5):
-    similarities = similarity(embeddings, target_embedding)
-    return tf.argsort(-similarities)[:k]
-
-def embedding_visualization(embeddings, labels):
-    import matplotlib.pyplot as plt
-    from sklearn.manifold import TSNE
-    tsne = TSNE(n_components=2)
-    reduced_embeddings = tsne.fit_transform(embeddings)
-    plt.figure(figsize=(8, 8))
-    plt.scatter(reduced_embeddings[:, 0], reduced_embeddings[:, 1], c=labels)
-    plt.show()
-
-# KNN Metrics
-def knn_accuracy(embeddings, labels, k=5):
-    return tf.reduce_mean(tf.map_fn(lambda x: tf.reduce_any(tf.equal(labels[x[1:k+1]], labels[x[0]])), (tf.argsort(distance(embeddings, embeddings), axis=1)), tf.float32))
-
-def knn_precision(embeddings, labels, k=5):
-    return tf.reduce_mean(tf.map_fn(lambda x: tf.reduce_sum(tf.equal(labels[x[1:k+1]], labels[x[0]])) / k, (tf.argsort(distance(embeddings, embeddings), axis=1)), tf.float32))
-
-def knn_recall(embeddings, labels, k=5):
-    return tf.reduce_mean(tf.map_fn(lambda x: tf.reduce_sum(tf.equal(labels[x[1:k+1]], labels[x[0]])) / tf.reduce_sum(tf.equal(labels, labels[x[0]])), (tf.argsort(distance(embeddings, embeddings), axis=1)), tf.float32))
-
-def knn_f1(embeddings, labels, k=5):
-    precision = knn_precision(embeddings, labels, k)
-    recall = knn_recall(embeddings, labels, k)
-    return 2 * (precision * recall) / (precision + recall)
-
-# Training
-def train(model, criterion, optimizer, dataset, epochs):
-    for epoch in range(epochs):
-        for batch in dataset:
-            anchor, positive, negative = batch
-            with tf.GradientTape() as tape:
-                anchor_embeddings = model(anchor, training=True)
-                positive_embeddings = model(positive, training=True)
-                negative_embeddings = model(negative, training=True)
-                loss = criterion(anchor_embeddings, positive_embeddings, negative_embeddings)
-            gradients = tape.gradient(loss, model.trainable_variables)
-            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-            print(f'Epoch: {epoch+1}, Loss: {loss.numpy()}')
-
-def validate(model, embeddings, labels, k=5):
-    predicted_embeddings = model.predict(embeddings)
-    print("Validation KNN Accuracy:", knn_accuracy(predicted_embeddings, labels, k))
-    print("Validation KNN Precision:", knn_precision(predicted_embeddings, labels, k))
-    print("Validation KNN Recall:", knn_recall(predicted_embeddings, labels, k))
-    print("Validation KNN F1-score:", knn_f1(predicted_embeddings, labels, k))
-    embedding_visualization(predicted_embeddings, labels)
+def build_optimizer(model, learning_rate):
+    return tf.keras.optimizers.Adam(learning_rate=learning_rate)
 
 def pipeline(learning_rate, batch_size, epochs, num_negatives, embedding_dim, num_features):
     samples = np.random.randint(0, 100, (100, 10))
     labels = np.random.randint(0, 2, (100,))
-    model = build_model(embedding_dim, num_features)
-    criterion = build_criterion()
-    optimizer = build_optimizer(model, learning_rate)
+    model = TripletModel(embedding_dim, num_features)
+    criterion = model.build_criterion()
+    optimizer = build_optimizer(model.model, learning_rate)
     dataset = build_dataset(samples, labels, num_negatives, batch_size)
-    train(model, criterion, optimizer, dataset, epochs)
+    model.train(dataset, epochs, optimizer, criterion)
     input_ids = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=np.int32).reshape((1, 10))
-    output = model.predict(input_ids)
-    model.save_weights("triplet_model.h5")
-    predicted_embeddings = model.predict(samples)
-    print(distance(output, output))
-    print(similarity(output, output))
-    print(cosine_distance(output, output))
-    print(nearest_neighbors(predicted_embeddings, output, k=5))
-    print(similar_embeddings(predicted_embeddings, output, k=5))
-    validate(model, samples, labels, k=5)
+    output = model.model.predict(input_ids)
+    model.model.save_weights("triplet_model.h5")
+    predicted_embeddings = model.model.predict(samples)
+    print(model.distance(output, output))
+    print(model.similarity(output, output))
+    print(model.cosine_distance(output, output))
+    print(model.nearest_neighbors(predicted_embeddings, output, k=5))
+    print(model.similar_embeddings(predicted_embeddings, output, k=5))
+    model.validate(samples, labels, k=5)
 
 def main():
     np.random.seed(42)
