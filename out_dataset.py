@@ -12,28 +12,28 @@ from functools import partial
 from operator import itemgetter
 
 # Data Loading
-def load_data_from_json(path):
-    """Loads data from a JSON file."""
+def fetch_json_data(path):
+    """Extract data from a JSON file."""
     return json.load(open(path))
 
-def fetch_snippet_folders(folder):
-    """Fetches a list of snippet folders."""
+def gather_snippet_directories(folder):
+    """Aggregate snippet directories."""
     return [(os.path.join(folder, f), os.path.join(folder, f, 'snippet.json')) 
             for f in os.listdir(folder) if os.path.isdir(os.path.join(folder, f))]
 
-def categorize_snippets(snippets):
-    """Categorizes snippets into bug and non-bug snippets."""
-    bug_snippets = list(map(lambda x: [load_data_from_json(path)['snippet'] for _, path in x 
-                                if load_data_from_json(path).get('is_bug', False)],
+def separate_snippet_types(snippets):
+    """Group snippets into bug and non-bug categories."""
+    bug_snippets = list(map(lambda x: [fetch_json_data(path)['snippet'] for _, path in x 
+                                if fetch_json_data(path).get('is_bug', False)],
                     [snippets, snippets]))
-    non_bug_snippets = list(map(lambda x: [load_data_from_json(path)['snippet'] for _, path in x 
-                                if not load_data_from_json(path).get('is_bug', False)],
+    non_bug_snippets = list(map(lambda x: [fetch_json_data(path)['snippet'] for _, path in x 
+                                if not fetch_json_data(path).get('is_bug', False)],
                     [snippets, snippets]))
     return bug_snippets[0], non_bug_snippets[0]
 
-def generate_triplets(num_negatives, instance_id_map, snippets):
-    """Generates triplets for training."""
-    bug_snippets, non_bug_snippets = categorize_snippets(snippets)
+def construct_triplets(num_negatives, instance_id_map, snippets):
+    """Create triplets for model training."""
+    bug_snippets, non_bug_snippets = separate_snippet_types(snippets)
     return [{'anchor': instance_id_map[os.path.basename(folder)], 
              'positive': positive_doc, 
              'negative': random.choice(non_bug_snippets)} 
@@ -42,19 +42,19 @@ def generate_triplets(num_negatives, instance_id_map, snippets):
             for _ in range(min(num_negatives, len(non_bug_snippets)))]
 
 # Dataset
-class SnippetDataset(Dataset):
+class CodeSnippetDataset(Dataset):
     def __init__(self, triplets, max_sequence_length):
-        """Initializes the snippet dataset."""
+        """Initialize the code snippet dataset."""
         self.triplets = triplets
         self.max_sequence_length = max_sequence_length
         self.tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
 
     def __len__(self):
-        """Returns the length of the dataset."""
+        """Return the dataset length."""
         return len(self.triplets)
 
     def __getitem__(self, idx):
-        """Returns a triplet from the dataset."""
+        """Return a triplet from the dataset."""
         anchor = self.triplets[idx]['anchor']
         positive = self.triplets[idx]['positive']
         negative = self.triplets[idx]['negative']
@@ -89,10 +89,10 @@ class SnippetDataset(Dataset):
                              'attention_mask': negative_sequence['attention_mask'].flatten()}}
 
 # Model
-class TripletModel(nn.Module):
+class TripletNetwork(nn.Module):
     def __init__(self, embedding_size, fully_connected_size, dropout_rate):
-        """Initializes the triplet model."""
-        super(TripletModel, self).__init__()
+        """Initialize the triplet network."""
+        super(TripletNetwork, self).__init__()
         self.bert = AutoModel.from_pretrained('bert-base-uncased')
         self.dropout = nn.Dropout(dropout_rate)
         self.fc1 = nn.Linear(768, fully_connected_size)
@@ -119,23 +119,23 @@ class TripletModel(nn.Module):
         return anchor_embedding, positive_embedding, negative_embedding
 
 # Training
-def compute_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, device):
-    """Computes the triplet loss."""
+def calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, device):
+    """Compute the triplet loss."""
     return torch.mean((anchor_embeddings - positive_embeddings) ** 2) + torch.max(torch.mean((anchor_embeddings - negative_embeddings) ** 2) - torch.mean((anchor_embeddings - positive_embeddings) ** 2), torch.tensor(0.0).to(device))
 
-def train_triplet_model(model, device, train_loader, optimizer, epochs):
-    """Trains the triplet model."""
+def train_triplet_network(model, device, train_loader, optimizer, epochs):
+    """Train the triplet network."""
     for epoch in range(epochs):
         for batch in train_loader:
             optimizer.zero_grad()
-            batch_loss = compute_triplet_loss(*model({k: v.to(device) for k, v in batch.items()}), device)
+            batch_loss = calculate_triplet_loss(*model({k: v.to(device) for k, v in batch.items()}), device)
             batch_loss.backward()
             optimizer.step()
             print(f'Epoch {epoch+1}, Batch Loss: {batch_loss.item()}')
 
 # Evaluation
-def evaluate_triplet_model(model, device, test_loader):
-    """Evaluates the triplet model."""
+def evaluate_triplet_network(model, device, test_loader):
+    """Evaluate the triplet network."""
     total_correct = 0
     with torch.no_grad():
         for batch in test_loader:
@@ -146,49 +146,49 @@ def evaluate_triplet_model(model, device, test_loader):
     return total_correct / len(test_loader.dataset)
 
 # Main
-def load_data(dataset_path, snippet_folder_path):
-    instance_id_map = {item['instance_id']: item['problem_statement'] for item in load_data_from_json(dataset_path)}
-    snippets = fetch_snippet_folders(snippet_folder_path)
+def load_dataset(dataset_path, snippet_folder_path):
+    instance_id_map = {item['instance_id']: item['problem_statement'] for item in fetch_json_data(dataset_path)}
+    snippets = gather_snippet_directories(snippet_folder_path)
     return instance_id_map, snippets
 
 def create_dataset(instance_id_map, snippets, max_sequence_length):
-    triplets = generate_triplets(1, instance_id_map, snippets)
-    return SnippetDataset(triplets, max_sequence_length)
+    triplets = construct_triplets(1, instance_id_map, snippets)
+    return CodeSnippetDataset(triplets, max_sequence_length)
 
 def create_data_loaders(dataset, batch_size, shuffle=False):
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
 
-def create_model(embedding_size, fully_connected_size, dropout_rate):
-    return TripletModel(embedding_size, fully_connected_size, dropout_rate)
+def create_triplet_model(embedding_size, fully_connected_size, dropout_rate):
+    return TripletNetwork(embedding_size, fully_connected_size, dropout_rate)
 
 def create_optimizer(model, lr):
     return optim.Adam(model.parameters(), lr=lr)
 
-def train(model, device, train_loader, optimizer, epochs):
-    train_triplet_model(model, device, train_loader, optimizer, epochs)
+def train_model(model, device, train_loader, optimizer, epochs):
+    train_triplet_network(model, device, train_loader, optimizer, epochs)
 
-def evaluate(model, device, test_loader):
-    return evaluate_triplet_model(model, device, test_loader)
+def evaluate_model(model, device, test_loader):
+    return evaluate_triplet_network(model, device, test_loader)
 
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
 
-    instance_id_map, snippets = load_data(dataset_path, snippet_folder_path)
-    triplets = generate_triplets(1, instance_id_map, snippets)
+    instance_id_map, snippets = load_dataset(dataset_path, snippet_folder_path)
+    triplets = construct_triplets(1, instance_id_map, snippets)
     train_triplets, test_triplets = np.array_split(np.array(triplets), 2)
-    train_dataset = SnippetDataset(train_triplets, 512)
-    test_dataset = SnippetDataset(test_triplets, 512)
+    train_dataset = CodeSnippetDataset(train_triplets, 512)
+    test_dataset = CodeSnippetDataset(test_triplets, 512)
     train_loader = create_data_loaders(train_dataset, 32, shuffle=True)
     test_loader = create_data_loaders(test_dataset, 32, shuffle=False)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = create_model(128, 64, 0.2)
+    model = create_triplet_model(128, 64, 0.2)
     model.to(device)
     optimizer = create_optimizer(model, 1e-5)
 
-    train(model, device, train_loader, optimizer, 5)
-    print(f'Test Accuracy: {evaluate(model, device, test_loader)}')
+    train_model(model, device, train_loader, optimizer, 5)
+    print(f'Test Accuracy: {evaluate_model(model, device, test_loader)}')
 
 if __name__ == "__main__":
     main()
