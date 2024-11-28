@@ -8,32 +8,31 @@ import numpy as np
 import random
 from sklearn.model_selection import train_test_split
 from transformers import AutoModel, AutoTokenizer
+from functools import partial
+from operator import itemgetter
 
-def load_data(path):
-    if path.endswith('.npy'):
-        return np.load(path, allow_pickle=True)
-    else:
-        return json.load(open(path, 'r', encoding='utf-8'))
+load_data = partial(json.load, open)
 
 def load_snippets(folder):
     return [(os.path.join(folder, f), os.path.join(folder, f, 'snippet.json')) 
             for f in os.listdir(folder) if os.path.isdir(os.path.join(folder, f))]
 
 def separate_snippets(snippets):
-    bug_snippets = [load_data(path)['snippet'] for _, path in snippets 
-                    if load_data(path).get('is_bug', False)]
-    non_bug_snippets = [load_data(path)['snippet'] for _, path in snippets 
-                        if not load_data(path).get('is_bug', False)]
-    return bug_snippets, non_bug_snippets
+    return list(map(lambda x: [load_data(path)['snippet'] for _, path in x 
+                                if load_data(path).get('is_bug', False)],
+                    [snippets, snippets])), \
+           list(map(lambda x: [load_data(path)['snippet'] for _, path in x 
+                                if not load_data(path).get('is_bug', False)],
+                    [snippets, snippets]))
 
 def create_triplets(num_negatives, instance_id_map, snippets):
     bug_snippets, non_bug_snippets = separate_snippets(snippets)
     return [{'anchor': instance_id_map[os.path.basename(folder)], 
              'positive': positive_doc, 
-             'negative': random.choice(non_bug_snippets)} 
+             'negative': random.choice(non_bug_snippets[0])} 
             for folder, _ in snippets 
-            for positive_doc in bug_snippets 
-            for _ in range(min(num_negatives, len(non_bug_snippets)))]
+            for positive_doc in bug_snippets[0] 
+            for _ in range(min(num_negatives, len(non_bug_snippets[0])))]
 
 class CustomDataset(Dataset):
     def __init__(self, triplets, max_sequence_length):
@@ -49,26 +48,27 @@ class CustomDataset(Dataset):
         positive = self.triplets[idx]['positive']
         negative = self.triplets[idx]['negative']
 
-        anchor_sequence = self.tokenizer.encode_plus(anchor, 
-                                                      max_length=self.max_sequence_length, 
-                                                      padding='max_length', 
-                                                      truncation=True, 
-                                                      return_tensors='pt',
-                                                      return_attention_mask=True)
+        encode_plus = self.tokenizer.encode_plus
+        anchor_sequence = encode_plus(anchor, 
+                                       max_length=self.max_sequence_length, 
+                                       padding='max_length', 
+                                       truncation=True, 
+                                       return_tensors='pt',
+                                       return_attention_mask=True)
 
-        positive_sequence = self.tokenizer.encode_plus(positive, 
-                                                        max_length=self.max_sequence_length, 
-                                                        padding='max_length', 
-                                                        truncation=True, 
-                                                        return_tensors='pt',
-                                                        return_attention_mask=True)
+        positive_sequence = encode_plus(positive, 
+                                         max_length=self.max_sequence_length, 
+                                         padding='max_length', 
+                                         truncation=True, 
+                                         return_tensors='pt',
+                                         return_attention_mask=True)
 
-        negative_sequence = self.tokenizer.encode_plus(negative, 
-                                                        max_length=self.max_sequence_length, 
-                                                        padding='max_length', 
-                                                        truncation=True, 
-                                                        return_tensors='pt',
-                                                        return_attention_mask=True)
+        negative_sequence = encode_plus(negative, 
+                                         max_length=self.max_sequence_length, 
+                                         padding='max_length', 
+                                         truncation=True, 
+                                         return_tensors='pt',
+                                         return_attention_mask=True)
 
         return {'anchor': {'input_ids': anchor_sequence['input_ids'].flatten(), 
                            'attention_mask': anchor_sequence['attention_mask'].flatten()}, 
@@ -77,8 +77,8 @@ class CustomDataset(Dataset):
                 'negative': {'input_ids': negative_sequence['input_ids'].flatten(), 
                              'attention_mask': negative_sequence['attention_mask'].flatten()}}
 
-    def shuffle(self):
-        random.shuffle(self.triplets)
+def shuffle(self):
+    random.shuffle(self.triplets)
 
 class CustomModel(nn.Module):
     def __init__(self, embedding_size, fully_connected_size, dropout_rate):
@@ -107,35 +107,24 @@ class CustomModel(nn.Module):
 
         return anchor_embedding, positive_embedding, negative_embedding
 
-def calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings, device):
-    return torch.mean((anchor_embeddings - positive_embeddings) ** 2) + torch.max(torch.mean((anchor_embeddings - negative_embeddings) ** 2) - torch.mean((anchor_embeddings - positive_embeddings) ** 2), torch.tensor(0.0).to(device))
+calculate_loss = lambda anchor_embeddings, positive_embeddings, negative_embeddings, device: torch.mean((anchor_embeddings - positive_embeddings) ** 2) + torch.max(torch.mean((anchor_embeddings - negative_embeddings) ** 2) - torch.mean((anchor_embeddings - positive_embeddings) ** 2), torch.tensor(0.0).to(device))
 
-def train_model(model, device, train_loader, optimizer, epochs):
-    model.train()
-    for epoch in range(epochs):
-        total_loss = 0
-        for batch in train_loader:
-            batch = {k: v.to(device) for k, v in batch.items()}
-            anchor_embeddings, positive_embeddings, negative_embeddings = model(batch)
-            batch_loss = calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings, device)
-            optimizer.zero_grad()
-            batch_loss.backward()
-            optimizer.step()
-            total_loss += batch_loss.item()
-        print(f'Epoch {epoch+1}, Loss: {total_loss / len(train_loader)}')
+train_model = lambda model, device, train_loader, optimizer, epochs: \
+    list(map(lambda epoch: list(map(lambda batch: 
+                                     (optimizer.zero_grad(), 
+                                      (batch_loss := calculate_loss(*model({k: v.to(device) for k, v in batch.items()}), device)), 
+                                      batch_loss.backward(), 
+                                      optimizer.step(), 
+                                      batch_loss.item()), 
+                                     train_loader)), 
+                   range(epochs)))
 
-def evaluate_model(model, device, test_loader):
-    model.eval()
-    total_correct = 0
-    with torch.no_grad():
-        for batch in test_loader:
-            batch = {k: v.to(device) for k, v in batch.items()}
-            anchor_embeddings, positive_embeddings, negative_embeddings = model(batch)
-            for i in range(len(anchor_embeddings)):
-                similarity_positive = torch.sum(anchor_embeddings[i] * positive_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(positive_embeddings[i]))
-                similarity_negative = torch.sum(anchor_embeddings[i] * negative_embeddings[i]) / (torch.norm(anchor_embeddings[i]) * torch.norm(negative_embeddings[i]))
-                total_correct += int(similarity_positive > similarity_negative)
-    return total_correct / len(test_loader.dataset)
+evaluate_model = lambda model, device, test_loader: \
+    sum(map(lambda batch: sum(map(lambda i: int(torch.sum(model({k: v.to(device) for k, v in batch.items()})[0][i] * model({k: v.to(device) for k, v in batch.items()})[1][i]) / (torch.norm(model({k: v.to(device) for k, v in batch.items()})[0][i]) * torch.norm(model({k: v.to(device) for k, v in batch.items()})[1][i])) > 
+                                        torch.sum(model({k: v.to(device) for k, v in batch.items()})[0][i] * model({k: v.to(device) for k, v in batch.items()})[2][i]) / (torch.norm(model({k: v.to(device) for k, v in batch.items()})[0][i]) * torch.norm(model({k: v.to(device) for k, v in batch.items()})[2][i])), 
+                                        0), 
+                               range(len(model({k: v.to(device) for k, v in batch.items()})[0]))), 
+                      test_loader)) / len(test_loader.dataset)
 
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
@@ -155,8 +144,7 @@ def main():
     model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-5)
 
-    for epoch in range(5):
-        train_model(model, device, train_loader, optimizer, 1)
+    train_model(model, device, train_loader, optimizer, 5)
     print(f'Test Accuracy: {evaluate_model(model, device, test_loader)}')
 
 if __name__ == "__main__":
