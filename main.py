@@ -8,7 +8,8 @@ from tensorflow.keras.utils import to_categorical
 import numpy as np
 
 @dataclass
-class Hyperparameters:
+class ModelConfig:
+    """Configuration for the model architecture and training process."""
     model_base: str = "t5-base"
     conversation_format: str = "none"
     low_rank_alpha: int = 16
@@ -44,15 +45,17 @@ class Hyperparameters:
     resume_checkpoint: str = None
     negative_samples: int = 5
 
-def load_data(file_name):
+def load_json_data(file_path):
+    """Load JSON data from a file."""
     try:
-        with open(file_name, 'r') as f:
-            return json.load(f)
+        with open(file_path, 'r') as file:
+            return json.load(file)
     except FileNotFoundError:
-        print(f"{file_name} not found.")
+        print(f"File {file_path} not found.")
         return None
 
-def create_dataset(data, conversation_format, negative_samples, batch_size):
+def prepare_dataset(data, conversation_format, negative_samples, batch_size):
+    """Prepare a dataset for training or evaluation."""
     dataset = tf.data.Dataset.from_tensor_slices(data)
     dataset = dataset.shuffle(buffer_size=len(data))
     dataset = dataset.batch(batch_size)
@@ -64,7 +67,8 @@ def create_dataset(data, conversation_format, negative_samples, batch_size):
     }, tf.zeros((batch_size,))))
     return dataset
 
-def t5_model():
+def build_t5_model():
+    """Build a T5 model architecture."""
     model = tf.keras.Sequential([
         layers.Embedding(input_dim=1000, output_dim=128),
         layers.LSTM(128),
@@ -75,23 +79,26 @@ def t5_model():
     optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
     return model, optimizer
 
-def triplet_loss(anchor, positive, negative, margin=2.0):
+def calculate_triplet_loss(anchor, positive, negative, margin=2.0):
+    """Calculate the triplet loss for a batch of samples."""
     distance_positive = tf.reduce_sum(tf.square(anchor - positive), axis=1)
     distance_negative = tf.reduce_sum(tf.square(anchor - negative), axis=1)
     losses = tf.maximum(distance_positive - distance_negative + margin, 0)
     return tf.reduce_mean(losses)
 
-def train_step(model, optimizer, anchor, positive, negative):
+def train_on_batch(model, optimizer, anchor, positive, negative):
+    """Train the model on a batch of samples."""
     with tf.GradientTape() as tape:
         anchor_outputs = model(anchor, training=True)
         positive_outputs = model(positive, training=True)
         negative_outputs = model(negative, training=True)
-        loss = triplet_loss(anchor_outputs, positive_outputs, negative_outputs)
+        loss = calculate_triplet_loss(anchor_outputs, positive_outputs, negative_outputs)
     gradients = tape.gradient(loss, model.trainable_variables)
     optimizer.apply_gradients(zip(gradients, model.trainable_variables))
     return loss
 
-def evaluate(model, dataset):
+def evaluate_model(model, dataset):
+    """Evaluate the model on a dataset."""
     total_loss = 0
     for batch in dataset:
         input_ids = batch['input_ids']
@@ -101,29 +108,30 @@ def evaluate(model, dataset):
         total_loss += loss
     return total_loss / len(dataset)
 
-def save_model(model, epoch, output_dir):
+def save_trained_model(model, epoch, output_dir):
+    """Save the trained model to a file."""
     model.save_weights(f"{output_dir}/model_{epoch}.h5")
 
 def main():
-    hyperparameters = Hyperparameters(model_base="t5-base", conversation_format="none", triplet_loss_training=True)
-    model, optimizer = t5_model()
-    train_data = load_data("train.json")
-    test_data = load_data("test.json")
+    model_config = ModelConfig(model_base="t5-base", conversation_format="none", triplet_loss_training=True)
+    model, optimizer = build_t5_model()
+    train_data = load_json_data("train.json")
+    test_data = load_json_data("test.json")
     if train_data is not None and test_data is not None:
-        train_dataset = create_dataset(train_data, hyperparameters.conversation_format, hyperparameters.negative_samples, hyperparameters.train_batch_size)
-        test_dataset = create_dataset(test_data, hyperparameters.conversation_format, hyperparameters.negative_samples, hyperparameters.eval_batch_size)
-        for epoch in range(hyperparameters.num_epochs):
+        train_dataset = prepare_dataset(train_data, model_config.conversation_format, model_config.negative_samples, model_config.train_batch_size)
+        test_dataset = prepare_dataset(test_data, model_config.conversation_format, model_config.negative_samples, model_config.eval_batch_size)
+        for epoch in range(model_config.num_epochs):
             total_loss = 0
             for batch in train_dataset:
                 anchor = batch['input_ids']
                 positive = batch['labels']
                 negative = batch['negative_examples']
-                loss = train_step(model, optimizer, anchor, positive, negative)
+                loss = train_on_batch(model, optimizer, anchor, positive, negative)
                 total_loss += loss
             print(f"Loss: {total_loss / len(train_dataset)}")
-            test_loss = evaluate(model, test_dataset)
+            test_loss = evaluate_model(model, test_dataset)
             print(f"Test Loss: {test_loss}")
-            save_model(model, epoch, hyperparameters.output_dir)
+            save_trained_model(model, epoch, model_config.output_dir)
 
 if __name__ == "__main__":
     main()
