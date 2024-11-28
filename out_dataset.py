@@ -21,7 +21,7 @@ def load_dataset(dataset_path):
 
 def gather_snippet_directories(snippet_folder_path):
     return [(os.path.join(folder, f), os.path.join(folder, f, 'snippet.json')) 
-            for f in fetch_directories(snippet_folder_path)]
+            for f in os.listdir(snippet_folder_path) if os.path.isdir(os.path.join(snippet_folder_path, f))]
 
 def separate_files_by_type(snippet_files):
     bug_files = [path for path in snippet_files if load_json_data(path).get('is_bug', False)]
@@ -142,8 +142,9 @@ class TripletNetwork(nn.Module):
         return anchor_embedding, positive_embedding, negative_embedding
 
 class TripletTrainer:
-    def __init__(self, model):
+    def __init__(self, model, device):
         self.model = model
+        self.device = device
 
     def calculate_triplet_loss(self, anchor_embeddings, positive_embeddings, negative_embeddings):
         positive_distance = (anchor_embeddings - positive_embeddings).pow(2).sum(dim=1)
@@ -151,8 +152,10 @@ class TripletTrainer:
         return (positive_distance - negative_distance + 0.2).clamp(min=0).mean()
 
     def train_triplet_network(self, train_loader, optimizer, epochs):
+        self.model.train()
         for epoch in range(epochs):
             for batch in train_loader:
+                batch = {key: value.to(self.device) for key, value in batch.items()}
                 optimizer.zero_grad()
                 anchor_embeddings, positive_embeddings, negative_embeddings = self.model(batch)
                 batch_loss = self.calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings)
@@ -161,9 +164,11 @@ class TripletTrainer:
                 print(f'Epoch {epoch+1}, Batch Loss: {batch_loss.item()}')
 
     def evaluate_triplet_network(self, test_loader):
+        self.model.eval()
         total_correct = 0
         with torch.no_grad():
             for batch in test_loader:
+                batch = {key: value.to(self.device) for key, value in batch.items()}
                 anchor_embeddings, positive_embeddings, negative_embeddings = self.model(batch)
                 positive_similarity = torch.nn.functional.cosine_similarity(anchor_embeddings, positive_embeddings)
                 negative_similarity = torch.nn.functional.cosine_similarity(anchor_embeddings, negative_embeddings)
@@ -181,13 +186,16 @@ def main():
     train_dataset = CodeSnippetDataset(train_triplets, 512)
     test_dataset = CodeSnippetDataset(test_triplets, 512)
 
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    batch_size = 32
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     model = TripletNetwork()
+    model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-5)
 
-    trainer = TripletTrainer(model)
+    trainer = TripletTrainer(model, device)
     trainer.train_triplet_network(train_loader, optimizer, 5)
     print(f'Test Accuracy: {trainer.evaluate_triplet_network(test_loader)}')
 
