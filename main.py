@@ -7,7 +7,6 @@ from tensorflow.keras import layers, models, optimizers
 from tensorflow.keras.utils import to_categorical
 import numpy as np
 
-# Dataclass for model configuration
 @dataclasses.dataclass
 class ModelConfig:
     model_base: str = "t5-base"
@@ -144,7 +143,7 @@ def train(model, optimizer, config: ModelConfig, train_dataset, test_dataset) ->
             loss = train_on_batch(model, optimizer, anchor, positive, negative)
             total_loss += loss
         print(f"Epoch {epoch+1}, Loss: {total_loss / len(list(dataset))}")
-        test_loss = evaluate(model, test_dataset)
+        test_loss = evaluate(model, test_dataset.dataset())
         print(f"Epoch {epoch+1}, Test Loss: {test_loss}")
         save_model(model, config, epoch+1)
 
