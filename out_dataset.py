@@ -8,41 +8,34 @@ import json
 import os
 import random
 
-# Data Loading
-class DataProcessor:
-    def __init__(self, dataset_path, snippet_folder_path):
-        self.dataset_path = dataset_path
-        self.snippet_folder_path = snippet_folder_path
+def fetch_json_data(path):
+    return json.load(open(path))
 
-    def fetch_json_data(self, path):
-        return json.load(open(path))
+def gather_snippet_directories(folder):
+    return [(os.path.join(folder, f), os.path.join(folder, f, 'snippet.json')) 
+            for f in os.listdir(folder) if os.path.isdir(os.path.join(folder, f))]
 
-    def gather_snippet_directories(self, folder):
-        return [(os.path.join(folder, f), os.path.join(folder, f, 'snippet.json')) 
-                for f in os.listdir(folder) if os.path.isdir(os.path.join(folder, f))]
+def separate_snippet_types(snippets):
+    bug_snippets = [fetch_json_data(path)['snippet'] for _, path in snippets 
+                    if fetch_json_data(path).get('is_bug', False)]
+    non_bug_snippets = [fetch_json_data(path)['snippet'] for _, path in snippets 
+                        if not fetch_json_data(path).get('is_bug', False)]
+    return bug_snippets, non_bug_snippets
 
-    def separate_snippet_types(self, snippets):
-        bug_snippets = [fetch_json_data(path)['snippet'] for _, path in snippets 
-                        if fetch_json_data(path).get('is_bug', False)]
-        non_bug_snippets = [fetch_json_data(path)['snippet'] for _, path in snippets 
-                            if not fetch_json_data(path).get('is_bug', False)]
-        return bug_snippets, non_bug_snippets
+def construct_triplets(num_negatives, instance_id_map, snippets):
+    bug_snippets, non_bug_snippets = separate_snippet_types(snippets)
+    return [{'anchor': instance_id_map[os.path.basename(folder)], 
+             'positive': positive_doc, 
+             'negative': random.choice(non_bug_snippets)} 
+            for folder, _ in snippets 
+            for positive_doc in bug_snippets 
+            for _ in range(min(num_negatives, len(non_bug_snippets)))]
 
-    def construct_triplets(self, num_negatives, instance_id_map, snippets):
-        bug_snippets, non_bug_snippets = self.separate_snippet_types(snippets)
-        return [{'anchor': instance_id_map[os.path.basename(folder)], 
-                 'positive': positive_doc, 
-                 'negative': random.choice(non_bug_snippets)} 
-                for folder, _ in snippets 
-                for positive_doc in bug_snippets 
-                for _ in range(min(num_negatives, len(non_bug_snippets)))]
+def load_dataset(dataset_path, snippet_folder_path):
+    instance_id_map = {item['instance_id']: item['problem_statement'] for item in fetch_json_data(dataset_path)}
+    snippets = gather_snippet_directories(snippet_folder_path)
+    return instance_id_map, snippets
 
-    def load_dataset(self):
-        instance_id_map = {item['instance_id']: item['problem_statement'] for item in self.fetch_json_data(self.dataset_path)}
-        snippets = self.gather_snippet_directories(self.snippet_folder_path)
-        return instance_id_map, snippets
-
-# Dataset
 class CodeSnippetDataset(Dataset):
     def __init__(self, triplets, max_sequence_length):
         self.triplets = triplets
@@ -85,7 +78,6 @@ class CodeSnippetDataset(Dataset):
                 'negative': {'input_ids': negative_sequence['input_ids'].flatten(), 
                              'attention_mask': negative_sequence['attention_mask'].flatten()}}
 
-# Model
 class TripletNetwork(nn.Module):
     def __init__(self, embedding_size, fully_connected_size, dropout_rate):
         super(TripletNetwork, self).__init__()
@@ -113,7 +105,6 @@ class TripletNetwork(nn.Module):
 
         return anchor_embedding, positive_embedding, negative_embedding
 
-# Training and Evaluation
 class TripletTrainer:
     def __init__(self, model, device):
         self.model = model
@@ -141,14 +132,12 @@ class TripletTrainer:
                         total_correct += 1
         return total_correct / len(test_loader.dataset)
 
-# Main
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
 
-    data_processor = DataProcessor(dataset_path, snippet_folder_path)
-    instance_id_map, snippets = data_processor.load_dataset()
-    triplets = data_processor.construct_triplets(1, instance_id_map, snippets)
+    instance_id_map, snippets = load_dataset(dataset_path, snippet_folder_path)
+    triplets = construct_triplets(1, instance_id_map, snippets)
     train_triplets, test_triplets = np.array_split(np.array(triplets), 2)
     train_dataset = CodeSnippetDataset(train_triplets, 512)
     test_dataset = CodeSnippetDataset(test_triplets, 512)
