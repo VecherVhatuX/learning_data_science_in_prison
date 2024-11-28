@@ -44,63 +44,6 @@ class Hyperparameters:
     resume_checkpoint: str = None
     negative_samples: int = 5
 
-class Dataset:
-    def __init__(self, data, conversation_format, negative_samples, batch_size):
-        self.data = data
-        self.conversation_format = conversation_format
-        self.negative_samples = negative_samples
-        self.batch_size = batch_size
-
-    def generator(self):
-        for i in range(len(self.data) // self.batch_size):
-            batch_data = self.data[i * self.batch_size:(i + 1) * self.batch_size]
-            input_ids = []
-            labels = []
-            attention_mask = []
-            negative_examples = []
-            for example in batch_data:
-                input_id = np.array([0] + [ord(c) for c in f"{self.conversation_format} {example['input']}"] + [1], dtype=np.int32)
-                label = np.array([0] + [ord(c) for c in f"{self.conversation_format} {example['output']}"] + [1], dtype=np.int32)
-                attention_mask_val = np.array([1] * len(input_id), dtype=np.int32)
-                input_ids.append(input_id)
-                labels.append(label)
-                attention_mask.append(attention_mask_val)
-                negative_example = []
-                for _ in range(self.negative_samples):
-                    negative_idx = np.random.randint(0, len(self.data))
-                    while negative_idx == i:
-                        negative_idx = np.random.randint(0, len(self.data))
-                    negative_example_val = self.data[negative_idx]
-                    negative_input_id = np.array([0] + [ord(c) for c in f"{self.conversation_format} {negative_example_val['input']}"] + [1], dtype=np.int32)
-                    negative_label = np.array([0] + [ord(c) for c in f"{self.conversation_format} {negative_example_val['output']}"] + [1], dtype=np.int32)
-                    negative_attention_mask_val = np.array([1] * len(negative_input_id), dtype=np.int32)
-                    negative_example.append({"input_ids": negative_input_id, "labels": negative_label, "attention_mask": negative_attention_mask_val})
-                negative_examples.append(negative_example)
-            yield {"input_ids": np.array(input_ids), "labels": np.array(labels), "attention_mask": np.array(attention_mask), "negative_examples": [np.array([example["input_ids"] for example in negative_example]) for negative_example in negative_examples]}
-
-    def __len__(self):
-        return len(self.data) // self.batch_size
-
-class T5Model(tf.keras.Model):
-    def __init__(self):
-        super(T5Model, self).__init__()
-        self.model = tf.keras.Sequential([
-            layers.Embedding(input_dim=1000, output_dim=128),
-            layers.LSTM(128),
-            layers.Dense(128, activation='relu'),
-            layers.Dense(128, activation='relu'),
-            layers.Dense(1000)
-        ])
-
-    def call(self, inputs, training=None, mask=None):
-        return self.model(inputs, training=training)
-
-def triplet_loss(anchor, positive, negative, margin=2.0):
-    distance_positive = tf.reduce_sum(tf.square(anchor - positive), axis=1)
-    distance_negative = tf.reduce_sum(tf.square(anchor - negative), axis=1)
-    losses = tf.maximum(distance_positive - distance_negative + margin, 0)
-    return tf.reduce_mean(losses)
-
 def load_data(file_name):
     try:
         with open(file_name, 'r') as f:
@@ -109,58 +52,115 @@ def load_data(file_name):
         print(f"{file_name} not found.")
         return None
 
-class Trainer:
-    def __init__(self, model, hyperparameters):
-        self.model = model
-        self.hyperparameters = hyperparameters
-        self.model.compile(optimizer=optimizers.Adam(learning_rate=0.001), loss=lambda y_true, y_pred: y_pred, metrics=['accuracy'])
+def create_dataset(data, conversation_format, negative_samples, batch_size):
+    class Dataset:
+        def __init__(self, data, conversation_format, negative_samples, batch_size):
+            self.data = data
+            self.conversation_format = conversation_format
+            self.negative_samples = negative_samples
+            self.batch_size = batch_size
 
-    def train(self, dataset):
-        total_loss = 0
-        for batch in dataset.generator():
-            anchor_input_ids = batch["input_ids"]
-            positive_input_ids = batch["labels"]
-            negative_input_ids = batch["negative_examples"]
-            with tf.GradientTape() as tape:
-                anchor_outputs = self.model(anchor_input_ids, training=True)
-                positive_outputs = self.model(positive_input_ids, training=True)
-                negative_outputs = [self.model(negative_input_id, training=True) for negative_input_id in negative_input_ids]
-                loss = 0
-                for negative_output in negative_outputs:
-                    loss += triplet_loss(anchor_outputs, positive_outputs, negative_output)
-                loss /= len(negative_outputs)
-            gradients = tape.gradient(loss, self.model.trainable_variables)
-            self.model.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
-            total_loss += loss
-        print(f"Loss: {total_loss / len(dataset)}")
+        def generator(self):
+            for i in range(len(self.data) // self.batch_size):
+                batch_data = self.data[i * self.batch_size:(i + 1) * self.batch_size]
+                input_ids = []
+                labels = []
+                attention_mask = []
+                negative_examples = []
+                for example in batch_data:
+                    input_id = np.array([0] + [ord(c) for c in f"{self.conversation_format} {example['input']}"] + [1], dtype=np.int32)
+                    label = np.array([0] + [ord(c) for c in f"{self.conversation_format} {example['output']}"] + [1], dtype=np.int32)
+                    attention_mask_val = np.array([1] * len(input_id), dtype=np.int32)
+                    input_ids.append(input_id)
+                    labels.append(label)
+                    attention_mask.append(attention_mask_val)
+                    negative_example = []
+                    for _ in range(self.negative_samples):
+                        negative_idx = np.random.randint(0, len(self.data))
+                        while negative_idx == i:
+                            negative_idx = np.random.randint(0, len(self.data))
+                        negative_example_val = self.data[negative_idx]
+                        negative_input_id = np.array([0] + [ord(c) for c in f"{self.conversation_format} {negative_example_val['input']}"] + [1], dtype=np.int32)
+                        negative_label = np.array([0] + [ord(c) for c in f"{self.conversation_format} {negative_example_val['output']}"] + [1], dtype=np.int32)
+                        negative_attention_mask_val = np.array([1] * len(negative_input_id), dtype=np.int32)
+                        negative_example.append({"input_ids": negative_input_id, "labels": negative_label, "attention_mask": negative_attention_mask_val})
+                    negative_examples.append(negative_example)
+                yield {"input_ids": np.array(input_ids), "labels": np.array(labels), "attention_mask": np.array(attention_mask), "negative_examples": [np.array([example["input_ids"] for example in negative_example]) for negative_example in negative_examples]}
 
-    def evaluate(self, dataset):
-        total_loss = 0
-        for batch in dataset.generator():
-            input_ids = batch["input_ids"]
-            labels = batch["labels"]
-            attention_mask = batch["attention_mask"]
-            outputs = self.model(input_ids)
-            loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)(labels, outputs)
-            total_loss += loss
-        print(f"Test Loss: {total_loss / len(dataset)}")
+        def __len__(self):
+            return len(self.data) // self.batch_size
 
-    def save_model(self, epoch, output_dir):
-        self.model.save_weights(f"{output_dir}/model_{epoch}.h5")
+    return Dataset(data, conversation_format, negative_samples, batch_size)
+
+def create_model():
+    class T5Model(tf.keras.Model):
+        def __init__(self):
+            super(T5Model, self).__init__()
+            self.model = tf.keras.Sequential([
+                layers.Embedding(input_dim=1000, output_dim=128),
+                layers.LSTM(128),
+                layers.Dense(128, activation='relu'),
+                layers.Dense(128, activation='relu'),
+                layers.Dense(1000)
+            ])
+
+        def call(self, inputs, training=None, mask=None):
+            return self.model(inputs, training=training)
+
+    return T5Model()
+
+def triplet_loss(anchor, positive, negative, margin=2.0):
+    distance_positive = tf.reduce_sum(tf.square(anchor - positive), axis=1)
+    distance_negative = tf.reduce_sum(tf.square(anchor - negative), axis=1)
+    losses = tf.maximum(distance_positive - distance_negative + margin, 0)
+    return tf.reduce_mean(losses)
+
+def train_model(model, dataset, hyperparameters):
+    total_loss = 0
+    for batch in dataset.generator():
+        anchor_input_ids = batch["input_ids"]
+        positive_input_ids = batch["labels"]
+        negative_input_ids = batch["negative_examples"]
+        with tf.GradientTape() as tape:
+            anchor_outputs = model(anchor_input_ids, training=True)
+            positive_outputs = model(positive_input_ids, training=True)
+            negative_outputs = [model(negative_input_id, training=True) for negative_input_id in negative_input_ids]
+            loss = 0
+            for negative_output in negative_outputs:
+                loss += triplet_loss(anchor_outputs, positive_outputs, negative_output)
+            loss /= len(negative_outputs)
+        gradients = tape.gradient(loss, model.trainable_variables)
+        model.optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+        total_loss += loss
+    print(f"Loss: {total_loss / len(dataset)}")
+
+def evaluate_model(model, dataset):
+    total_loss = 0
+    for batch in dataset.generator():
+        input_ids = batch["input_ids"]
+        labels = batch["labels"]
+        attention_mask = batch["attention_mask"]
+        outputs = model(input_ids)
+        loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)(labels, outputs)
+        total_loss += loss
+    print(f"Test Loss: {total_loss / len(dataset)}")
+
+def save_model(model, epoch, output_dir):
+    model.save_weights(f"{output_dir}/model_{epoch}.h5")
 
 def main():
     hyperparameters = Hyperparameters(model_base="t5-base", conversation_format="none", triplet_loss_training=True)
-    model = T5Model()
-    trainer = Trainer(model, hyperparameters)
+    model = create_model()
+    model.compile(optimizer=optimizers.Adam(learning_rate=0.001), loss=lambda y_true, y_pred: y_pred, metrics=['accuracy'])
     training_data = load_data("train.json")
     testing_data = load_data("test.json")
     if training_data is not None and testing_data is not None:
-        train_dataset = Dataset(training_data, hyperparameters.conversation_format, hyperparameters.negative_samples, hyperparameters.train_batch_size)
-        test_dataset = Dataset(testing_data, hyperparameters.conversation_format, hyperparameters.negative_samples, hyperparameters.eval_batch_size)
+        train_dataset = create_dataset(training_data, hyperparameters.conversation_format, hyperparameters.negative_samples, hyperparameters.train_batch_size)
+        test_dataset = create_dataset(testing_data, hyperparameters.conversation_format, hyperparameters.negative_samples, hyperparameters.eval_batch_size)
         for epoch in range(hyperparameters.num_epochs):
-            trainer.train(train_dataset)
-            trainer.evaluate(test_dataset)
-            trainer.save_model(epoch, hyperparameters.output_dir)
+            train_model(model, train_dataset, hyperparameters)
+            evaluate_model(model, test_dataset)
+            save_model(model, epoch, hyperparameters.output_dir)
 
 if __name__ == "__main__":
     main()
