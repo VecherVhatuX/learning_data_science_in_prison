@@ -1,6 +1,7 @@
 import tensorflow as tf
 import numpy as np
 
+# Model
 class TripletModel(tf.keras.Model):
     def __init__(self, embedding_dim, num_features):
         super(TripletModel, self).__init__()
@@ -20,7 +21,7 @@ class TripletModel(tf.keras.Model):
         x = self.instance_norm(x)
         return x
 
-
+# Loss
 class TripletLoss(tf.keras.layers.Layer):
     def __init__(self, margin=1.0):
         super(TripletLoss, self).__init__()
@@ -33,7 +34,7 @@ class TripletLoss(tf.keras.layers.Layer):
         loss = tf.maximum(d_ap - tf.reduce_min(d_an, axis=-1) + self.margin, 0.0)
         return tf.reduce_mean(loss)
 
-
+# Dataset
 class TripletData(tf.data.Dataset):
     def __init__(self, samples, labels, num_negatives, batch_size, shuffle=True):
         self.samples = samples
@@ -54,36 +55,23 @@ class TripletData(tf.data.Dataset):
         negative_idx = np.array([np.random.choice(np.where(self.labels != label)[0], size=self.num_negatives, replace=False) for label in anchor_label])
         return (self.samples[anchor_idx], self.samples[positive_idx], self.samples[negative_idx])
 
-
-def save_checkpoint(model, path):
-    model.save_weights(path)
-
-
-def load_checkpoint(model, path):
-    model.load_weights(path)
-
-
+# Metrics
 def distance(embedding1, embedding2):
     return tf.norm(embedding1 - embedding2, axis=-1)
-
 
 def similarity(embedding1, embedding2):
     return tf.reduce_sum(embedding1 * embedding2, axis=-1) / (tf.norm(embedding1, axis=-1) * tf.norm(embedding2, axis=-1))
 
-
 def cosine_distance(embedding1, embedding2):
     return 1 - similarity(embedding1, embedding2)
-
 
 def nearest_neighbors(embeddings, target_embedding, k=5):
     distances = distance(embeddings, target_embedding)
     return tf.argsort(distances)[:k]
 
-
 def similar_embeddings(embeddings, target_embedding, k=5):
     similarities = similarity(embeddings, target_embedding)
     return tf.argsort(-similarities)[:k]
-
 
 def knn_accuracy(embeddings, labels, k=5):
     correct = 0
@@ -94,7 +82,6 @@ def knn_accuracy(embeddings, labels, k=5):
             correct += 1
     return correct / len(embeddings)
 
-
 def knn_precision(embeddings, labels, k=5):
     precision = 0
     for i in range(len(embeddings)):
@@ -102,7 +89,6 @@ def knn_precision(embeddings, labels, k=5):
         indices = tf.argsort(distances)[1:k+1]
         precision += len(tf.where(labels[indices] == labels[i])) / k
     return precision / len(embeddings)
-
 
 def knn_recall(embeddings, labels, k=5):
     recall = 0
@@ -112,13 +98,12 @@ def knn_recall(embeddings, labels, k=5):
         recall += len(tf.where(labels[indices] == labels[i])) / len(tf.where(labels == labels[i]))
     return recall / len(embeddings)
 
-
 def knn_f1(embeddings, labels, k=5):
     precision = knn_precision(embeddings, labels, k)
     recall = knn_recall(embeddings, labels, k)
     return 2 * (precision * recall) / (precision + recall)
 
-
+# Training
 def train(model, dataset, criterion, optimizer, epochs):
     for epoch in range(epochs):
         for batch in dataset:
@@ -132,7 +117,7 @@ def train(model, dataset, criterion, optimizer, epochs):
             optimizer.apply_gradients(zip(gradients, model.trainable_variables))
         print(f'Epoch {epoch+1}, Loss: {loss.numpy()}')
 
-
+# Evaluation
 def evaluate(model, dataset):
     embeddings = []
     for batch in dataset:
@@ -140,19 +125,19 @@ def evaluate(model, dataset):
         embeddings.append(batch_embeddings)
     return tf.concat(embeddings, axis=0)
 
-
+# Model builder
 def build_model(embedding_dim, num_features):
     return TripletModel(embedding_dim, num_features)
 
-
+# Loss builder
 def build_criterion(margin=1.0):
     return TripletLoss(margin)
 
-
+# Optimizer builder
 def build_optimizer(model, learning_rate):
     return tf.keras.optimizers.Adam(learning_rate=learning_rate)
 
-
+# Dataset builder
 def build_dataset(samples, labels, num_negatives, batch_size, shuffle=True):
     return tf.data.Dataset.from_generator(
         lambda: TripletData(samples, labels, num_negatives, batch_size, shuffle),
@@ -164,7 +149,7 @@ def build_dataset(samples, labels, num_negatives, batch_size, shuffle=True):
         )
     )
 
-
+# Main
 def main():
     np.random.seed(42)
 
@@ -187,7 +172,7 @@ def main():
     input_ids = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=np.int32).reshape((1, 10))
     output = model.predict(input_ids)
 
-    save_checkpoint(model, "triplet_model.h5")
+    model.save_weights("triplet_model.h5")
 
     predicted_embeddings = evaluate(model, dataset)
     print(predicted_embeddings)
@@ -215,7 +200,6 @@ def main():
     print("KNN Recall:", knn_recall(all_embeddings, labels, k=5))
 
     print("KNN F1-score:", knn_f1(all_embeddings, labels, k=5))
-
 
 if __name__ == "__main__":
     main()
