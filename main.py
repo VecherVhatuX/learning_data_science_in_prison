@@ -44,6 +44,21 @@ class ModelConfig:
     resume_checkpoint: str = None
     negative_samples: int = 5
 
+class TripletModel(models.Model):
+    def __init__(self, embedding_dim, vocab_size):
+        super(TripletModel, self).__init__()
+        self.embedding = layers.Embedding(input_dim=vocab_size, output_dim=embedding_dim)
+        self.lstm = layers.LSTM(embedding_dim)
+        self.dense = layers.Dense(embedding_dim, activation='relu')
+        self.output_dense = layers.Dense(vocab_size)
+
+    def call(self, inputs):
+        x = self.embedding(inputs)
+        x = self.lstm(x)
+        x = self.dense(x)
+        x = self.output_dense(x)
+        return x
+
 def load_data(file_path: str) -> dict:
     try:
         with open(file_path, 'r') as file:
@@ -66,17 +81,6 @@ def prepare_data(data, config: ModelConfig) -> tf.data.Dataset:
         "negative_examples": tf.map_fn(lambda example: tf.map_fn(lambda _: tf.strings.split(tf.strings.reduce_join(tf.random.shuffle(tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string))), sep='').to_tensor(dtype=tf.string), tf.range(config.negative_samples), dtype=tf.string), x, dtype=tf.string)
     }, tf.zeros((config.train_batch_size if config.train_batch_size > 0 else len(data),))))
     return dataset
-
-def build_model(config: ModelConfig) -> (tf.keras.Model, tf.keras.optimizers.Optimizer):
-    model = tf.keras.Sequential([
-        layers.Embedding(input_dim=1000, output_dim=128),
-        layers.LSTM(128),
-        layers.Dense(128, activation='relu'),
-        layers.Dense(128, activation='relu'),
-        layers.Dense(1000)
-    ])
-    optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
-    return model, optimizer
 
 def calculate_loss(anchor, positive, negative, margin=2.0) -> tf.Tensor:
     distance_positive = tf.reduce_sum(tf.square(anchor - positive), axis=1)
@@ -129,7 +133,8 @@ def load_and_prepare_data(config: ModelConfig) -> tuple:
     return train_dataset, test_dataset
 
 def build_and_compile_model(config: ModelConfig) -> tuple:
-    model, optimizer = build_model(config)
+    model = TripletModel(embedding_dim=128, vocab_size=1000)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
     return model, optimizer
 
 def main() -> None:
