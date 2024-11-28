@@ -1,70 +1,11 @@
 import json
 import os
 import random
-from torch.utils.data import Dataset, DataLoader
+import numpy as np
 import torch
 import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
 from transformers import AutoModel, AutoTokenizer
-import numpy as np
-
-def load_json_data(path):
-    return json.load(open(path))
-
-def fetch_files(folder):
-    return [os.path.join(folder, f) for f in os.listdir(folder) if os.path.isfile(os.path.join(folder, f))]
-
-def fetch_directories(folder):
-    return [os.path.join(folder, f) for f in os.listdir(folder) if os.path.isdir(os.path.join(folder, f))]
-
-def load_dataset(dataset_path):
-    return load_json_data(dataset_path)
-
-def gather_snippet_directories(snippet_folder_path):
-    return [(os.path.join(folder, f), os.path.join(folder, f, 'snippet.json')) 
-            for f in os.listdir(snippet_folder_path) if os.path.isdir(os.path.join(snippet_folder_path, f))]
-
-def separate_files_by_type(snippet_files):
-    bug_files = [path for path in snippet_files if load_json_data(path).get('is_bug', False)]
-    non_bug_files = [path for path in snippet_files if not load_json_data(path).get('is_bug', False)]
-    return bug_files, non_bug_files
-
-def fetch_snippet_file_data(snippet_files):
-    return [load_json_data(path)['snippet'] for path in snippet_files]
-
-def separate_snippet_types(snippets):
-    bug_snippets = []
-    non_bug_snippets = []
-    for _, snippet_file in snippets:
-        snippet_data = load_json_data(snippet_file)
-        if snippet_data.get('is_bug', False):
-            bug_snippets.append(snippet_data['snippet'])
-        else:
-            non_bug_snippets.append(snippet_data['snippet'])
-    bug_snippets = [snippet for snippet in bug_snippets if snippet]
-    non_bug_snippets = [snippet for snippet in non_bug_snippets if snippet]
-    return bug_snippets, non_bug_snippets
-
-def construct_triplets(num_negatives, instance_id_map, snippets):
-    bug_snippets, non_bug_snippets = separate_snippet_types(snippets)
-    return [{'anchor': instance_id_map[os.path.basename(folder)], 
-             'positive': positive_doc, 
-             'negative': random.choice(non_bug_snippets)} 
-            for folder, _ in snippets 
-            for positive_doc in bug_snippets 
-            for _ in range(min(num_negatives, len(non_bug_snippets)))]
-
-def create_instance_id_map(dataset):
-    return {item['instance_id']: item['problem_statement'] for item in dataset}
-
-def load_snippet_folder(snippet_folder_path):
-    snippet_directories = gather_snippet_directories(snippet_folder_path)
-    return [(folder, load_json_data(snippet_file)) for folder, snippet_file in snippet_directories]
-
-def load_data(dataset_path, snippet_folder_path):
-    dataset = load_dataset(dataset_path)
-    instance_id_map = create_instance_id_map(dataset)
-    snippets = load_snippet_folder(snippet_folder_path)
-    return instance_id_map, snippets
 
 class CodeSnippetDataset(Dataset):
     def __init__(self, triplets, max_sequence_length):
@@ -174,6 +115,48 @@ class TripletTrainer:
                 negative_similarity = torch.nn.functional.cosine_similarity(anchor_embeddings, negative_embeddings)
                 total_correct += (positive_similarity > negative_similarity).sum().item()
         return total_correct / len(test_loader.dataset)
+
+def load_json_data(path):
+    return json.load(open(path))
+
+def gather_snippet_directories(snippet_folder_path):
+    return [(os.path.join(folder, f), os.path.join(folder, f, 'snippet.json')) 
+            for f in os.listdir(snippet_folder_path) if os.path.isdir(os.path.join(snippet_folder_path, f))]
+
+def construct_triplets(num_negatives, instance_id_map, snippets):
+    bug_snippets, non_bug_snippets = separate_snippet_types(snippets)
+    return [{'anchor': instance_id_map[os.path.basename(folder)], 
+             'positive': positive_doc, 
+             'negative': random.choice(non_bug_snippets)} 
+            for folder, _ in snippets 
+            for positive_doc in bug_snippets 
+            for _ in range(min(num_negatives, len(non_bug_snippets)))]
+
+def create_instance_id_map(dataset):
+    return {item['instance_id']: item['problem_statement'] for item in dataset}
+
+def separate_snippet_types(snippets):
+    bug_snippets = []
+    non_bug_snippets = []
+    for _, snippet_file in snippets:
+        snippet_data = load_json_data(snippet_file)
+        if snippet_data.get('is_bug', False):
+            bug_snippets.append(snippet_data['snippet'])
+        else:
+            non_bug_snippets.append(snippet_data['snippet'])
+    bug_snippets = [snippet for snippet in bug_snippets if snippet]
+    non_bug_snippets = [snippet for snippet in non_bug_snippets if snippet]
+    return bug_snippets, non_bug_snippets
+
+def load_snippet_folder(snippet_folder_path):
+    snippet_directories = gather_snippet_directories(snippet_folder_path)
+    return [(folder, load_json_data(snippet_file)) for folder, snippet_file in snippet_directories]
+
+def load_data(dataset_path, snippet_folder_path):
+    dataset = load_json_data(dataset_path)
+    instance_id_map = create_instance_id_map(dataset)
+    snippets = load_snippet_folder(snippet_folder_path)
+    return instance_id_map, snippets
 
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
