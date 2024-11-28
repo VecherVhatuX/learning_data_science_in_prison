@@ -45,96 +45,107 @@ class ModelConfig:
     resume_checkpoint: str = None
     negative_samples: int = 5
 
-def load_data(file_path):
-    try:
-        with open(file_path, 'r') as file:
-            return json.load(file)
-    except FileNotFoundError:
-        print(f"File {file_path} not found.")
-        return None
+class DataLoader:
+    def __init__(self, file_path, conversation_format, negative_samples, batch_size):
+        self.file_path = file_path
+        self.conversation_format = conversation_format
+        self.negative_samples = negative_samples
+        self.batch_size = batch_size
 
-def prepare_data(data, conversation_format, negative_samples, batch_size):
-    dataset = tf.data.Dataset.from_tensor_slices(data)
-    dataset = dataset.shuffle(buffer_size=len(data))
-    dataset = dataset.batch(batch_size)
-    dataset = dataset.map(lambda x: ({
-        "input_ids": tf.map_fn(lambda example: tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string), x, dtype=tf.string),
-        "labels": tf.map_fn(lambda example: tf.strings.split(example['output'], sep='').to_tensor(dtype=tf.string), x, dtype=tf.string),
-        "attention_mask": tf.ones((batch_size, max(map(lambda example: len(example['input']), x)))),
-        "negative_examples": tf.map_fn(lambda example: tf.map_fn(lambda _: tf.strings.split(tf.strings.reduce_join(tf.random.shuffle(tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string))), sep='').to_tensor(dtype=tf.string), tf.range(negative_samples), dtype=tf.string), x, dtype=tf.string)
-    }, tf.zeros((batch_size,))))
-    return dataset
+    def load_data(self):
+        try:
+            with open(self.file_path, 'r') as file:
+                return json.load(file)
+        except FileNotFoundError:
+            print(f"File {self.file_path} not found.")
+            return None
 
-def build_model():
-    model = tf.keras.Sequential([
-        layers.Embedding(input_dim=1000, output_dim=128),
-        layers.LSTM(128),
-        layers.Dense(128, activation='relu'),
-        layers.Dense(128, activation='relu'),
-        layers.Dense(1000)
-    ])
-    optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
-    return model, optimizer
+    def prepare_data(self, data):
+        dataset = tf.data.Dataset.from_tensor_slices(data)
+        dataset = dataset.shuffle(buffer_size=len(data))
+        dataset = dataset.batch(self.batch_size)
+        dataset = dataset.map(lambda x: ({
+            "input_ids": tf.map_fn(lambda example: tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string), x, dtype=tf.string),
+            "labels": tf.map_fn(lambda example: tf.strings.split(example['output'], sep='').to_tensor(dtype=tf.string), x, dtype=tf.string),
+            "attention_mask": tf.ones((self.batch_size, max(map(lambda example: len(example['input']), x)))),
+            "negative_examples": tf.map_fn(lambda example: tf.map_fn(lambda _: tf.strings.split(tf.strings.reduce_join(tf.random.shuffle(tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string))), sep='').to_tensor(dtype=tf.string), tf.range(self.negative_samples), dtype=tf.string), x, dtype=tf.string)
+        }, tf.zeros((self.batch_size,))))
+        return dataset
 
-def calculate_loss(anchor, positive, negative, margin=2.0):
-    distance_positive = tf.reduce_sum(tf.square(anchor - positive), axis=1)
-    distance_negative = tf.reduce_sum(tf.square(anchor - negative), axis=1)
-    losses = tf.maximum(distance_positive - distance_negative + margin, 0)
-    return tf.reduce_mean(losses)
+class ModelBuilder:
+    def __init__(self):
+        pass
 
-def train_on_batch(model, optimizer, anchor, positive, negative):
-    with tf.GradientTape() as tape:
-        anchor_outputs = model(anchor, training=True)
-        positive_outputs = model(positive, training=True)
-        negative_outputs = model(negative, training=True)
-        loss = calculate_loss(anchor_outputs, positive_outputs, negative_outputs)
-    gradients = tape.gradient(loss, model.trainable_variables)
-    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-    return loss
+    def build_model(self):
+        model = tf.keras.Sequential([
+            layers.Embedding(input_dim=1000, output_dim=128),
+            layers.LSTM(128),
+            layers.Dense(128, activation='relu'),
+            layers.Dense(128, activation='relu'),
+            layers.Dense(1000)
+        ])
+        optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
+        return model, optimizer
 
-def evaluate(model, dataset):
-    total_loss = 0
-    for batch in dataset:
-        input_ids = batch['input_ids']
-        labels = batch['labels']
-        outputs = model(input_ids)
-        loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)(labels, outputs)
-        total_loss += loss
-    return total_loss / len(dataset)
+class Trainer:
+    def __init__(self, model, optimizer, output_dir):
+        self.model = model
+        self.optimizer = optimizer
+        self.output_dir = output_dir
 
-def save_model(model, epoch, output_dir):
-    model.save_weights(f"{output_dir}/model_{epoch}.h5")
+    def calculate_loss(self, anchor, positive, negative, margin=2.0):
+        distance_positive = tf.reduce_sum(tf.square(anchor - positive), axis=1)
+        distance_negative = tf.reduce_sum(tf.square(anchor - negative), axis=1)
+        losses = tf.maximum(distance_positive - distance_negative + margin, 0)
+        return tf.reduce_mean(losses)
 
-def create_model_config(model_base="t5-base", conversation_format="none", triplet_loss_training=True):
-    return ModelConfig(model_base=model_base, conversation_format=conversation_format, triplet_loss_training=triplet_loss_training)
+    def train_on_batch(self, anchor, positive, negative):
+        with tf.GradientTape() as tape:
+            anchor_outputs = self.model(anchor, training=True)
+            positive_outputs = self.model(positive, training=True)
+            negative_outputs = self.model(negative, training=True)
+            loss = self.calculate_loss(anchor_outputs, positive_outputs, negative_outputs)
+        gradients = tape.gradient(loss, self.model.trainable_variables)
+        self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+        return loss
 
-def load_and_prepare_data(file_path, conversation_format, negative_samples, batch_size):
-    data = load_data(file_path)
-    if data is not None:
-        return prepare_data(data, conversation_format, negative_samples, batch_size)
-    return None
-
-def train(model, optimizer, train_dataset, test_dataset, num_epochs, output_dir):
-    for epoch in range(num_epochs):
+    def evaluate(self, dataset):
         total_loss = 0
-        for batch in train_dataset:
-            anchor = batch['input_ids']
-            positive = batch['labels']
-            negative = batch['negative_examples']
-            loss = train_on_batch(model, optimizer, anchor, positive, negative)
+        for batch in dataset:
+            input_ids = batch['input_ids']
+            labels = batch['labels']
+            outputs = self.model(input_ids)
+            loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)(labels, outputs)
             total_loss += loss
-        print(f"Loss: {total_loss / len(train_dataset)}")
-        test_loss = evaluate(model, test_dataset)
-        print(f"Test Loss: {test_loss}")
-        save_model(model, epoch, output_dir)
+        return total_loss / len(dataset)
+
+    def save_model(self, epoch):
+        self.model.save_weights(f"{self.output_dir}/model_{epoch}.h5")
+
+    def train(self, train_dataset, test_dataset, num_epochs):
+        for epoch in range(num_epochs):
+            total_loss = 0
+            for batch in train_dataset:
+                anchor = batch['input_ids']
+                positive = batch['labels']
+                negative = batch['negative_examples']
+                loss = self.train_on_batch(anchor, positive, negative)
+                total_loss += loss
+            print(f"Loss: {total_loss / len(train_dataset)}")
+            test_loss = self.evaluate(test_dataset)
+            print(f"Test Loss: {test_loss}")
+            self.save_model(epoch)
 
 def main():
-    model_config = create_model_config(model_base="t5-base", conversation_format="none", triplet_loss_training=True)
-    model, optimizer = build_model()
-    train_data = load_and_prepare_data("train.json", model_config.conversation_format, model_config.negative_samples, model_config.train_batch_size)
-    test_data = load_and_prepare_data("test.json", model_config.conversation_format, model_config.negative_samples, model_config.eval_batch_size)
-    if train_data is not None and test_data is not None:
-        train(model, optimizer, train_data, test_data, model_config.num_epochs, model_config.output_dir)
+    model_config = ModelConfig()
+    data_loader = DataLoader("train.json", model_config.conversation_format, model_config.negative_samples, model_config.train_batch_size)
+    train_data = data_loader.prepare_data(data_loader.load_data())
+    test_data_loader = DataLoader("test.json", model_config.conversation_format, model_config.negative_samples, model_config.eval_batch_size)
+    test_data = test_data_loader.prepare_data(test_data_loader.load_data())
+    model_builder = ModelBuilder()
+    model, optimizer = model_builder.build_model()
+    trainer = Trainer(model, optimizer, model_config.output_dir)
+    trainer.train(train_data, test_data, model_config.num_epochs)
 
 if __name__ == "__main__":
     main()
