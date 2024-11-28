@@ -4,7 +4,7 @@ import numpy as np
 # Model Building
 def build_model(embedding_dim, num_features):
     return tf.keras.Sequential([
-        tf.keras.layers.Embedding(embedding_dim, num_features, input_length=10),
+        tf.keras.layers.Embedding(input_dim=embedding_dim, output_dim=num_features, input_length=10),
         tf.keras.layers.GlobalAveragePooling1D(),
         tf.keras.layers.Flatten(),
         tf.keras.layers.Dense(num_features),
@@ -84,17 +84,18 @@ def knn_f1(embeddings, labels, k=5):
     return 2 * (precision * recall) / (precision + recall)
 
 # Training
-def train(model, criterion, optimizer, dataset):
-    for batch in dataset:
-        anchor, positive, negative = batch
-        with tf.GradientTape() as tape:
-            anchor_embeddings = model(anchor, training=True)
-            positive_embeddings = model(positive, training=True)
-            negative_embeddings = model(negative, training=True)
-            loss = criterion(anchor_embeddings, positive_embeddings, negative_embeddings)
-        gradients = tape.gradient(loss, model.trainable_variables)
-        optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-        print(f'Loss: {loss.numpy()}')
+def train(model, criterion, optimizer, dataset, epochs):
+    for epoch in range(epochs):
+        for batch in dataset:
+            anchor, positive, negative = batch
+            with tf.GradientTape() as tape:
+                anchor_embeddings = model(anchor, training=True)
+                positive_embeddings = model(positive, training=True)
+                negative_embeddings = model(negative, training=True)
+                loss = criterion(anchor_embeddings, positive_embeddings, negative_embeddings)
+            gradients = tape.gradient(loss, model.trainable_variables)
+            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+            print(f'Epoch: {epoch+1}, Loss: {loss.numpy()}')
 
 # Main
 def main():
@@ -114,9 +115,7 @@ def main():
     optimizer = build_optimizer(model, learning_rate)
     dataset = build_dataset(samples, labels, num_negatives, batch_size)
 
-    for epoch in range(epochs):
-        train(model, criterion, optimizer, dataset)
-        print(f'Epoch {epoch+1}')
+    train(model, criterion, optimizer, dataset, epochs)
 
     input_ids = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=np.int32).reshape((1, 10))
     output = model.predict(input_ids)
