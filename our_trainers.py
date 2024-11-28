@@ -3,23 +3,35 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 
-def build_model(embedding_dim, num_features):
-    return tf.keras.Sequential([
-        tf.keras.layers.Embedding(embedding_dim, num_features),
-        tf.keras.layers.GlobalAveragePooling1D(),
-        tf.keras.layers.Flatten(),
-        tf.keras.layers.Dense(num_features),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.LayerNormalization()
-    ])
+class TripletModel(tf.keras.Model):
+    def __init__(self, embedding_dim, num_features):
+        super(TripletModel, self).__init__()
+        self.embedding = tf.keras.layers.Embedding(embedding_dim, num_features)
+        self.avg_pooling = tf.keras.layers.GlobalAveragePooling1D()
+        self.flatten = tf.keras.layers.Flatten()
+        self.dense = tf.keras.layers.Dense(num_features)
+        self.batch_norm = tf.keras.layers.BatchNormalization()
+        self.layer_norm = tf.keras.layers.LayerNormalization()
 
-def build_criterion(margin=1.0):
-    def triplet_loss(anchor, positive, negative):
+    def call(self, inputs):
+        x = self.embedding(inputs)
+        x = self.avg_pooling(x)
+        x = self.flatten(x)
+        x = self.dense(x)
+        x = self.batch_norm(x)
+        x = self.layer_norm(x)
+        return x
+
+class TripletLoss(tf.keras.losses.Loss):
+    def __init__(self, margin=1.0):
+        super(TripletLoss, self).__init__()
+        self.margin = margin
+
+    def call(self, anchor, positive, negative):
         d_ap = tf.norm(anchor - positive, axis=-1)
         d_an = tf.norm(anchor[:, tf.newaxis, :] - negative, axis=-1)
-        loss = tf.maximum(d_ap - tf.reduce_min(d_an, axis=-1) + margin, tf.zeros_like(d_ap))
+        loss = tf.maximum(d_ap - tf.reduce_min(d_an, axis=-1) + self.margin, tf.zeros_like(d_ap))
         return tf.reduce_mean(loss)
-    return triplet_loss
 
 def train(model, dataset, epochs, optimizer, criterion):
     for epoch in range(epochs):
@@ -100,8 +112,8 @@ def build_optimizer(model, learning_rate):
 def pipeline(learning_rate, batch_size, epochs, num_negatives, embedding_dim, num_features):
     samples = np.random.randint(0, 100, (100, 10))
     labels = np.random.randint(0, 2, (100,))
-    model = build_model(embedding_dim, num_features)
-    criterion = build_criterion()
+    model = TripletModel(embedding_dim, num_features)
+    criterion = TripletLoss()
     optimizer = build_optimizer(model, learning_rate)
     dataset = build_dataset(samples, labels, num_negatives, batch_size)
     train(model, dataset, epochs, optimizer, criterion)
