@@ -11,26 +11,32 @@ from transformers import AutoModel, AutoTokenizer
 from functools import partial
 from operator import itemgetter
 
+# Import required libraries for data loading and manipulation
+
 # Data Loading
-def load_json_data(path):
+def load_data_from_json(path):
+    """Loads data from a JSON file."""
     return json.load(open(path))
 
-def load_snippets(folder):
+def fetch_snippet_folders(folder):
+    """Fetches a list of snippet folders."""
     return [(os.path.join(folder, f), os.path.join(folder, f, 'snippet.json')) 
             for f in os.listdir(folder) if os.path.isdir(os.path.join(folder, f))]
 
-def separate_snippets(snippets):
-    bug_snippets = list(map(lambda x: [load_json_data(path)['snippet'] for _, path in x 
-                                if load_json_data(path).get('is_bug', False)],
+def categorize_snippets(snippets):
+    """Categorizes snippets into bug and non-bug snippets."""
+    bug_snippets = list(map(lambda x: [load_data_from_json(path)['snippet'] for _, path in x 
+                                if load_data_from_json(path).get('is_bug', False)],
                     [snippets, snippets]))
-    non_bug_snippets = list(map(lambda x: [load_json_data(path)['snippet'] for _, path in x 
-                                if not load_json_data(path).get('is_bug', False)],
+    non_bug_snippets = list(map(lambda x: [load_data_from_json(path)['snippet'] for _, path in x 
+                                if not load_data_from_json(path).get('is_bug', False)],
                     [snippets, snippets]))
     return bug_snippets[0], non_bug_snippets[0]
 
 # Data Preprocessing
-def create_triplets(num_negatives, instance_id_map, snippets):
-    bug_snippets, non_bug_snippets = separate_snippets(snippets)
+def generate_triplets(num_negatives, instance_id_map, snippets):
+    """Generates triplets for training."""
+    bug_snippets, non_bug_snippets = categorize_snippets(snippets)
     return [{'anchor': instance_id_map[os.path.basename(folder)], 
              'positive': positive_doc, 
              'negative': random.choice(non_bug_snippets)} 
@@ -39,16 +45,19 @@ def create_triplets(num_negatives, instance_id_map, snippets):
             for _ in range(min(num_negatives, len(non_bug_snippets)))]
 
 # Custom Dataset
-class CustomDataset(Dataset):
+class SnippetDataset(Dataset):
     def __init__(self, triplets, max_sequence_length):
+        """Initializes the snippet dataset."""
         self.triplets = triplets
         self.max_sequence_length = max_sequence_length
         self.tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
 
     def __len__(self):
+        """Returns the length of the dataset."""
         return len(self.triplets)
 
     def __getitem__(self, idx):
+        """Returns a triplet from the dataset."""
         anchor = self.triplets[idx]['anchor']
         positive = self.triplets[idx]['positive']
         negative = self.triplets[idx]['negative']
@@ -66,14 +75,14 @@ class CustomDataset(Dataset):
                                          padding='max_length', 
                                          truncation=True, 
                                          return_tensors='pt',
-                                         return_attention_mask=True)
+                                       return_attention_mask=True)
 
         negative_sequence = encode_plus(negative, 
                                          max_length=self.max_sequence_length, 
                                          padding='max_length', 
                                          truncation=True, 
                                          return_tensors='pt',
-                                         return_attention_mask=True)
+                                       return_attention_mask=True)
 
         return {'anchor': {'input_ids': anchor_sequence['input_ids'].flatten(), 
                            'attention_mask': anchor_sequence['attention_mask'].flatten()}, 
@@ -83,9 +92,10 @@ class CustomDataset(Dataset):
                              'attention_mask': negative_sequence['attention_mask'].flatten()}}
 
 # Model
-class CustomModel(nn.Module):
+class TripletModel(nn.Module):
     def __init__(self, embedding_size, fully_connected_size, dropout_rate):
-        super(CustomModel, self).__init__()
+        """Initializes the triplet model."""
+        super(TripletModel, self).__init__()
         self.bert = AutoModel.from_pretrained('bert-base-uncased')
         self.dropout = nn.Dropout(dropout_rate)
         self.fc1 = nn.Linear(768, fully_connected_size)
@@ -93,6 +103,7 @@ class CustomModel(nn.Module):
         self.fc2 = nn.Linear(fully_connected_size, embedding_size)
 
     def forward(self, x):
+        """Forward pass of the model."""
         anchor_input_ids = x['anchor']['input_ids']
         anchor_attention_mask = x['anchor']['attention_mask']
         positive_input_ids = x['positive']['input_ids']
@@ -111,20 +122,23 @@ class CustomModel(nn.Module):
         return anchor_embedding, positive_embedding, negative_embedding
 
 # Training
-def calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings, device):
+def compute_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings, device):
+    """Computes the triplet loss."""
     return torch.mean((anchor_embeddings - positive_embeddings) ** 2) + torch.max(torch.mean((anchor_embeddings - negative_embeddings) ** 2) - torch.mean((anchor_embeddings - positive_embeddings) ** 2), torch.tensor(0.0).to(device))
 
-def train_model(model, device, train_loader, optimizer, epochs):
+def train_triplet_model(model, device, train_loader, optimizer, epochs):
+    """Trains the triplet model."""
     for epoch in range(epochs):
         for batch in train_loader:
             optimizer.zero_grad()
-            batch_loss = calculate_loss(*model({k: v.to(device) for k, v in batch.items()}), device)
+            batch_loss = compute_triplet_loss(*model({k: v.to(device) for k, v in batch.items()}), device)
             batch_loss.backward()
             optimizer.step()
             print(f'Epoch {epoch+1}, Batch Loss: {batch_loss.item()}')
 
 # Evaluation
-def evaluate_model(model, device, test_loader):
+def evaluate_triplet_model(model, device, test_loader):
+    """Evaluates the triplet model."""
     total_correct = 0
     with torch.no_grad():
         for batch in test_loader:
@@ -139,22 +153,22 @@ def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
 
-    instance_id_map = {item['instance_id']: item['problem_statement'] for item in load_json_data(dataset_path)}
-    snippets = load_snippets(snippet_folder_path)
-    triplets = create_triplets(1, instance_id_map, snippets)
+    instance_id_map = {item['instance_id']: item['problem_statement'] for item in load_data_from_json(dataset_path)}
+    snippets = fetch_snippet_folders(snippet_folder_path)
+    triplets = generate_triplets(1, instance_id_map, snippets)
     train_triplets, test_triplets = np.array_split(np.array(triplets), 2)
-    train_dataset = CustomDataset(train_triplets, 512)
-    test_dataset = CustomDataset(test_triplets, 512)
+    train_dataset = SnippetDataset(train_triplets, 512)
+    test_dataset = SnippetDataset(test_triplets, 512)
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = CustomModel(128, 64, 0.2)
+    model = TripletModel(128, 64, 0.2)
     model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-5)
 
-    train_model(model, device, train_loader, optimizer, 5)
-    print(f'Test Accuracy: {evaluate_model(model, device, test_loader)}')
+    train_triplet_model(model, device, train_loader, optimizer, 5)
+    print(f'Test Accuracy: {evaluate_triplet_model(model, device, test_loader)}')
 
 if __name__ == "__main__":
     main()
