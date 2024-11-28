@@ -62,52 +62,6 @@ class TripletModel(tf.keras.Model):
         x = self.output_dense(x)
         return x
 
-class Dataset(tf.data.Dataset):
-    """Custom dataset class."""
-    def __init__(self, data, config: ModelConfig):
-        self.data = data
-        self.config = config
-
-    def _shuffle(self):
-        """Shuffle the dataset."""
-        np.random.shuffle(self.data)
-
-    def _get_batch(self, batch_size):
-        """Get a batch of data."""
-        for i in range(0, len(self.data), batch_size):
-            batch = self.data[i:i+batch_size]
-            yield batch
-
-    def _map_fn(self, batch):
-        """Map function for data processing."""
-        input_ids = tf.strings.split(batch['input'], sep='').to_tensor(dtype=tf.string)
-        labels = tf.strings.split(batch['output'], sep='').to_tensor(dtype=tf.string)
-        attention_mask = tf.ones((self.config.train_batch_size, max(map(lambda example: len(example['input']), batch))))
-        negative_examples = tf.map_fn(
-            lambda example: tf.map_fn(
-                lambda _: tf.strings.split(tf.strings.reduce_join(tf.random.shuffle(tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string))), sep='').to_tensor(dtype=tf.string),
-                tf.range(self.config.negative_samples),
-                dtype=tf.string
-            ),
-            batch,
-            dtype=tf.string
-        )
-        return ({
-            "input_ids": input_ids,
-            "labels": labels,
-            "attention_mask": attention_mask,
-            "negative_examples": negative_examples
-        }, tf.zeros((self.config.train_batch_size,)))
-
-    def __new__(cls, data, config: ModelConfig):
-        return super(Dataset, cls).__new__(cls)
-
-    def __getitem__(self, idx):
-        return self._map_fn(next(self._get_batch(self.config.train_batch_size)))
-
-    def __len__(self):
-        return len(self.data)
-
 def load_data(file_path: str) -> dict:
     """Load data from a file."""
     try:
@@ -150,10 +104,31 @@ def save_model(model, config: ModelConfig, epoch: int) -> None:
     """Save the model at a given epoch."""
     model.save_weights(f"{config.output_dir}/model_{epoch}.h5")
 
-def train(model, optimizer, config: ModelConfig, train_dataset, test_dataset) -> None:
+def prepare_dataset(data, config: ModelConfig):
+    """Prepare the dataset."""
+    inputs = tf.data.Dataset.from_tensor_slices(data)
+    inputs = inputs.map(lambda example: (
+        {
+            "input_ids": tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string),
+            "labels": tf.strings.split(example['output'], sep='').to_tensor(dtype=tf.string),
+            "attention_mask": tf.ones((config.train_batch_size, max(map(lambda example: len(example['input']), [example])))),
+            "negative_examples": tf.map_fn(
+                lambda example: tf.map_fn(
+                    lambda _: tf.strings.split(tf.strings.reduce_join(tf.random.shuffle(tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string))), sep='').to_tensor(dtype=tf.string),
+                    tf.range(config.negative_samples),
+                    dtype=tf.string
+                ),
+                [example],
+                dtype=tf.string
+            )[0]
+        },
+        tf.zeros((config.train_batch_size,)))
+    )
+    return inputs
+
+def train_model(model, optimizer, config: ModelConfig, train_dataset, test_dataset) -> None:
     """Train the model."""
     for epoch in range(config.num_epochs):
-        np.random.shuffle(train_dataset.data)
         total_loss = 0
         for batch in train_dataset:
             anchor = batch[0]['input_ids']
@@ -161,31 +136,21 @@ def train(model, optimizer, config: ModelConfig, train_dataset, test_dataset) ->
             negative = batch[0]['negative_examples']
             loss = train_on_batch(model, optimizer, anchor, positive, negative)
             total_loss += loss
-        print(f"Epoch {epoch+1}, Loss: {total_loss / len(train_dataset)}")
+        print(f"Epoch {epoch+1}, Loss: {total_loss / len(list(train_dataset))}")
         test_loss = evaluate(model, test_dataset)
         print(f"Epoch {epoch+1}, Test Loss: {test_loss}")
         save_model(model, config, epoch+1)
 
-def load_and_prepare_data(config: ModelConfig) -> tuple:
-    """Load and prepare the data."""
-    train_data = load_data("train.json")
-    test_data = load_data("test.json")
-    train_dataset = Dataset(train_data, config)
-    test_dataset = Dataset(test_data, config)
-    return train_dataset, test_dataset
-
-def build_and_compile_model(config: ModelConfig) -> tuple:
-    """Build and compile the model."""
-    model = TripletModel(embedding_dim=128, vocab_size=1000)
-    optimizer = optimizers.Adam(learning_rate=0.001)
-    return model, optimizer
-
 def main() -> None:
     """Main function."""
     config = ModelConfig()
-    train_dataset, test_dataset = load_and_prepare_data(config)
-    model, optimizer = build_and_compile_model(config)
-    train(model, optimizer, config, train_dataset, test_dataset)
+    train_data = load_data("train.json")
+    test_data = load_data("test.json")
+    train_dataset = prepare_dataset(train_data, config)
+    test_dataset = prepare_dataset(test_data, config)
+    model = TripletModel(embedding_dim=128, vocab_size=1000)
+    optimizer = optimizers.Adam(learning_rate=0.001)
+    train_model(model, optimizer, config, train_dataset, test_dataset)
 
 if __name__ == "__main__":
     main()
