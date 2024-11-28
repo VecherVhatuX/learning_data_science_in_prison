@@ -12,6 +12,7 @@ from transformers import AutoModel, AutoTokenizer
 class DataProcessor:
     @staticmethod
     def load_data(file_path):
+        """Retrieves data from a specified file path."""
         if file_path.endswith('.npy'):
             return np.load(file_path, allow_pickle=True)
         else:
@@ -19,11 +20,13 @@ class DataProcessor:
 
     @staticmethod
     def load_snippets(snippet_folder_path):
+        """Loads snippets from a folder and returns their paths."""
         return [(os.path.join(snippet_folder_path, folder), os.path.join(snippet_folder_path, folder, 'snippet.json')) 
                 for folder in os.listdir(snippet_folder_path) if os.path.isdir(os.path.join(snippet_folder_path, folder))]
 
     @staticmethod
     def separate_snippets(snippets):
+        """Separates snippets into bug and non-bug categories."""
         bug_snippets = [snippet_data['snippet'] for _, snippet_file_path in snippets 
                         for snippet_data in [DataProcessor.load_data(snippet_file_path)] if snippet_data.get('is_bug', False)]
         non_bug_snippets = [snippet_data['snippet'] for _, snippet_file_path in snippets 
@@ -34,6 +37,7 @@ class DataProcessor:
 class TripletCreator:
     @staticmethod
     def create_triplets(num_negatives_per_positive, instance_id_map, snippets):
+        """Generates triplets based on the provided snippets and instance id map."""
         bug_snippets, non_bug_snippets = DataProcessor.separate_snippets(snippets)
         return [{'anchor': instance_id_map[os.path.basename(folder_path)], 'positive': positive_doc, 'negative': random.choice(non_bug_snippets)} 
                 for folder_path, _ in snippets 
@@ -43,14 +47,17 @@ class TripletCreator:
 
 class BugTripletDataset(Dataset):
     def __init__(self, triplets, max_sequence_length):
+        """Initializes the BugTripletDataset with the provided triplets and max sequence length."""
         self.triplets = triplets
         self.max_sequence_length = max_sequence_length
         self.tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
 
     def __len__(self):
+        """Returns the number of triplets in the dataset."""
         return len(self.triplets)
 
     def __getitem__(self, idx):
+        """Retrieves a triplet from the dataset and preprocesses it for training."""
         anchor = self.triplets[idx]['anchor']
         positive = self.triplets[idx]['positive']
         negative = self.triplets[idx]['negative']
@@ -84,11 +91,13 @@ class BugTripletDataset(Dataset):
                              'attention_mask': negative_sequence['attention_mask'].flatten()}}
 
     def shuffle(self):
+        """Shuffles the triplets in the dataset."""
         random.shuffle(self.triplets)
 
 
 class BugTripletModel(nn.Module):
     def __init__(self, embedding_size, fully_connected_size, dropout_rate):
+        """Initializes the BugTripletModel with the specified hyperparameters."""
         super(BugTripletModel, self).__init__()
         self.bert = AutoModel.from_pretrained('bert-base-uncased')
         self.dropout = nn.Dropout(dropout_rate)
@@ -97,6 +106,7 @@ class BugTripletModel(nn.Module):
         self.fc2 = nn.Linear(fully_connected_size, embedding_size)
 
     def forward(self, x):
+        """Defines the forward pass of the BugTripletModel."""
         anchor_input_ids = x['anchor']['input_ids']
         anchor_attention_mask = x['anchor']['attention_mask']
         positive_input_ids = x['positive']['input_ids']
@@ -116,10 +126,12 @@ class BugTripletModel(nn.Module):
 
 
 def calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings, device):
+    """Calculates the loss based on the anchor, positive, and negative embeddings."""
     return torch.mean((anchor_embeddings - positive_embeddings) ** 2) + torch.max(torch.mean((anchor_embeddings - negative_embeddings) ** 2) - torch.mean((anchor_embeddings - positive_embeddings) ** 2), torch.tensor(0.0).to(device))
 
 
 def train(model, device, train_loader, optimizer, epochs):
+    """Trains the model on the provided training data."""
     model.train()
     total_loss = 0
     for epoch in range(epochs):
@@ -138,6 +150,7 @@ def train(model, device, train_loader, optimizer, epochs):
 
 
 def evaluate(model, device, test_loader):
+    """Evaluates the model on the provided test data."""
     model.eval()
     total_correct = 0
     with torch.no_grad():
@@ -152,6 +165,7 @@ def evaluate(model, device, test_loader):
 
 
 def main():
+    """Executes the main training and evaluation loop."""
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
 
