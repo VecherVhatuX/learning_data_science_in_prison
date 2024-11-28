@@ -87,6 +87,7 @@ class Dataset:
 
     # Generator to yield batches of data
     def generator(self):
+        np.random.shuffle(self.data)
         for i in range(len(self.data) // self.batch_size):
             # Get batch data
             batch_data = self.data[i * self.batch_size:(i + 1) * self.batch_size]
