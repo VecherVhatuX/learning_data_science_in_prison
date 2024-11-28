@@ -45,35 +45,35 @@ class ModelConfig:
     negative_samples: int = 5
 
 class DataLoader:
-    def __init__(self, file_path, conversation_format, negative_samples, batch_size):
-        self.file_path = file_path
-        self.conversation_format = conversation_format
-        self.negative_samples = negative_samples
-        self.batch_size = batch_size
+    def __init__(self, config: ModelConfig):
+        self.config = config
 
-    def load_data(self):
+    def load_data(self, file_path: str):
         try:
-            with open(self.file_path, 'r') as file:
+            with open(file_path, 'r') as file:
                 return json.load(file)
         except FileNotFoundError:
-            print(f"File {self.file_path} not found.")
+            print(f"File {file_path} not found.")
             return None
 
     def prepare_data(self, data):
         dataset = tf.data.Dataset.from_tensor_slices(data)
         dataset = dataset.shuffle(buffer_size=len(data))
-        dataset = dataset.batch(self.batch_size)
+        if self.config.conversation_format == "none":
+            dataset = dataset.batch(self.config.train_batch_size if self.config.train_batch_size > 0 else len(data))
+        else:
+            dataset = dataset.batch(self.config.train_batch_size)
         dataset = dataset.map(lambda x: ({
             "input_ids": tf.map_fn(lambda example: tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string), x, dtype=tf.string),
             "labels": tf.map_fn(lambda example: tf.strings.split(example['output'], sep='').to_tensor(dtype=tf.string), x, dtype=tf.string),
-            "attention_mask": tf.ones((self.batch_size, max(map(lambda example: len(example['input']), x)))),
-            "negative_examples": tf.map_fn(lambda example: tf.map_fn(lambda _: tf.strings.split(tf.strings.reduce_join(tf.random.shuffle(tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string))), sep='').to_tensor(dtype=tf.string), tf.range(self.negative_samples), dtype=tf.string), x, dtype=tf.string)
-        }, tf.zeros((self.batch_size,))))
+            "attention_mask": tf.ones((self.config.train_batch_size if self.config.train_batch_size > 0 else len(data), max(map(lambda example: len(example['input']), x)))),
+            "negative_examples": tf.map_fn(lambda example: tf.map_fn(lambda _: tf.strings.split(tf.strings.reduce_join(tf.random.shuffle(tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string))), sep='').to_tensor(dtype=tf.string), tf.range(self.config.negative_samples), dtype=tf.string), x, dtype=tf.string)
+        }, tf.zeros((self.config.train_batch_size if self.config.train_batch_size > 0 else len(data),))))
         return dataset
 
 class ModelBuilder:
-    def __init__(self):
-        pass
+    def __init__(self, config: ModelConfig):
+        self.config = config
 
     def build_model(self):
         model = tf.keras.Sequential([
@@ -87,10 +87,10 @@ class ModelBuilder:
         return model, optimizer
 
 class Trainer:
-    def __init__(self, model, optimizer, output_dir):
+    def __init__(self, model, optimizer, config: ModelConfig):
         self.model = model
         self.optimizer = optimizer
-        self.output_dir = output_dir
+        self.config = config
 
     def calculate_loss(self, anchor, positive, negative, margin=2.0):
         distance_positive = tf.reduce_sum(tf.square(anchor - positive), axis=1)
@@ -119,10 +119,10 @@ class Trainer:
         return total_loss / len(dataset)
 
     def save_model(self, epoch):
-        self.model.save_weights(f"{self.output_dir}/model_{epoch}.h5")
+        self.model.save_weights(f"{self.config.output_dir}/model_{epoch}.h5")
 
-    def train(self, train_dataset, test_dataset, num_epochs):
-        for epoch in range(num_epochs):
+    def train(self, train_dataset, test_dataset):
+        for epoch in range(self.config.num_epochs):
             total_loss = 0
             for batch in train_dataset:
                 anchor = batch['input_ids']
@@ -137,14 +137,14 @@ class Trainer:
 
 def main():
     model_config = ModelConfig()
-    data_loader = DataLoader("train.json", model_config.conversation_format, model_config.negative_samples, model_config.train_batch_size)
-    train_data = data_loader.prepare_data(data_loader.load_data())
-    test_data_loader = DataLoader("test.json", model_config.conversation_format, model_config.negative_samples, model_config.eval_batch_size)
-    test_data = test_data_loader.prepare_data(test_data_loader.load_data())
-    model_builder = ModelBuilder()
+    data_loader = DataLoader(model_config)
+    train_data = data_loader.prepare_data(data_loader.load_data("train.json"))
+    test_data_loader = DataLoader(model_config)
+    test_data = test_data_loader.prepare_data(test_data_loader.load_data("test.json"))
+    model_builder = ModelBuilder(model_config)
     model, optimizer = model_builder.build_model()
-    trainer = Trainer(model, optimizer, model_config.output_dir)
-    trainer.train(train_data, test_data, model_config.num_epochs)
+    trainer = Trainer(model, optimizer, model_config)
+    trainer.train(train_data, test_data)
 
 if __name__ == "__main__":
     main()
