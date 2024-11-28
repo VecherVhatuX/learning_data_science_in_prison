@@ -103,6 +103,7 @@ class T5Model(tf.keras.Model):
             layers.Dense(128, activation='relu'),
             layers.Dense(1000)
         ])
+        self.optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
 
     def call(self, inputs, training=None, mask=None):
         return self.model(inputs, training=training)
@@ -149,7 +150,6 @@ def save(model, epoch, output_dir):
 def main():
     hyperparameters = Hyperparameters(model_base="t5-base", conversation_format="none", triplet_loss_training=True)
     model = T5Model()
-    model.compile(optimizer=optimizers.Adam(learning_rate=0.001), loss=lambda y_true, y_pred: y_pred, metrics=['accuracy'])
     train_data_loader = DataLoader("train.json")
     test_data_loader = DataLoader("test.json")
     training_data = train_data_loader.load_data()
