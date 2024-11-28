@@ -1,6 +1,3 @@
-Here's the entire code with rewritten comments:
-
-```python
 # Import necessary libraries for numerical operations, deep learning, data manipulation and more.
 import numpy as np
 import torch
@@ -102,6 +99,14 @@ class CodeSnippetDataset(Dataset):
                 'negative': {'input_ids': negative_sequence['input_ids'].flatten(), 
                              'attention_mask': negative_sequence['attention_mask'].flatten()}}
 
+    # Custom function to shuffle and oversample triplets every epoch
+    def shuffle_and_oversample(self):
+        random.shuffle(self.triplets)
+        # Oversample triplets where anchor and positive are not the same
+        oversampled_triplets = [triplet for triplet in self.triplets if triplet['anchor'] != triplet['positive']]
+        # Add oversampled triplets to original triplets
+        self.triplets = self.triplets + oversampled_triplets
+
 # Custom neural network model for triplet learning.
 class TripletNetwork(nn.Module):
     # Initialize the model with embedding size, fully connected size, and dropout rate.
@@ -171,6 +176,8 @@ class TripletTrainer:
                 optimizer.step()
                 # Print batch loss.
                 print(f'Epoch {epoch+1}, Batch Loss: {batch_loss.item()}')
+            # Shuffle and oversample dataset every epoch
+            train_loader.dataset.shuffle_and_oversample()
 
     # Function to evaluate the triplet network.
     def evaluate_triplet_network(self, test_loader):
@@ -210,7 +217,7 @@ def main():
     train_dataset = CodeSnippetDataset(train_triplets, 512)
     test_dataset = CodeSnippetDataset(test_triplets, 512)
     # Create train and test data loaders.
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
 
     # Specify device.
@@ -231,4 +238,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
