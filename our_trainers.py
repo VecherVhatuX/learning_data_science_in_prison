@@ -154,8 +154,15 @@ def build_optimizer(model, learning_rate):
 
 
 def build_dataset(samples, labels, num_negatives, batch_size, shuffle=True):
-    dataset = tf.data.Dataset.from_generator(lambda: TripletData(samples, labels, num_negatives, batch_size, shuffle), (tf.int32, tf.int32, tf.int32), (tf.TensorShape([batch_size, 10]), tf.TensorShape([batch_size, 10]), tf.TensorShape([batch_size, num_negatives, 10])))
-    return dataset
+    return tf.data.Dataset.from_generator(
+        lambda: TripletData(samples, labels, num_negatives, batch_size, shuffle),
+        output_types=(tf.int32, tf.int32, tf.int32),
+        output_shapes=(
+            tf.TensorShape([batch_size, 10]),
+            tf.TensorShape([batch_size, 10]),
+            tf.TensorShape([batch_size, num_negatives, 10])
+        )
+    )
 
 
 def main():
