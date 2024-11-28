@@ -59,7 +59,7 @@ class TripletModel(tf.keras.Model):
         x = self.output_dense(x)
         return x
 
-class Dataset:
+class Dataset(tf.data.Dataset):
     def __init__(self, data, config: ModelConfig):
         self.data = data
         self.config = config
@@ -92,18 +92,14 @@ class Dataset:
             "negative_examples": negative_examples
         }, tf.zeros((self.config.train_batch_size,)))
 
-    def dataset(self):
-        self._shuffle()
-        return tf.data.Dataset.from_generator(
-            lambda: self._get_batch(self.config.train_batch_size),
-            output_types=(dict, tf.float32),
-            output_shapes=({
-                "input_ids": tf.TensorShape([None, None]),
-                "labels": tf.TensorShape([None, None]),
-                "attention_mask": tf.TensorShape([None, None]),
-                "negative_examples": tf.TensorShape([None, None, None])
-            }, tf.TensorShape([]))
-        ).map(self._map_fn)
+    def __new__(cls, data, config: ModelConfig):
+        return super(Dataset, cls).__new__(cls)
+
+    def __getitem__(self, idx):
+        return self._map_fn(next(self._get_batch(self.config.train_batch_size)))
+
+    def __len__(self):
+        return len(self.data)
 
 def load_data(file_path: str) -> dict:
     try:
@@ -144,15 +140,16 @@ def save_model(model, config: ModelConfig, epoch: int) -> None:
 
 def train(model, optimizer, config: ModelConfig, train_dataset, test_dataset) -> None:
     for epoch in range(config.num_epochs):
+        np.random.shuffle(train_dataset.data)
         total_loss = 0
-        for batch in train_dataset.dataset():
-            anchor = batch['input_ids']
-            positive = batch['labels']
-            negative = batch['negative_examples']
+        for batch in train_dataset:
+            anchor = batch[0]['input_ids']
+            positive = batch[0]['labels']
+            negative = batch[0]['negative_examples']
             loss = train_on_batch(model, optimizer, anchor, positive, negative)
             total_loss += loss
-        print(f"Epoch {epoch+1}, Loss: {total_loss / len(list(train_dataset.dataset()))}")
-        test_loss = evaluate(model, test_dataset.dataset())
+        print(f"Epoch {epoch+1}, Loss: {total_loss / len(train_dataset)}")
+        test_loss = evaluate(model, test_dataset)
         print(f"Epoch {epoch+1}, Test Loss: {test_loss}")
         save_model(model, config, epoch+1)
 
