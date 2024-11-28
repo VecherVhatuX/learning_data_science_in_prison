@@ -9,50 +9,53 @@ import numpy as np
 
 @dataclasses.dataclass
 class ModelConfig:
-    model_base: str = "t5-base"
-    conversation_format: str = "none"
-    low_rank_alpha: int = 16
-    low_rank_dropout: float = 0.1
-    low_rank_rank: int = 64
-    target_layers: str = "q_proj,k_proj,v_proj,o_proj,down_proj,up_proj,gate_proj"
-    nested_quantization: bool = False
-    four_bit_dtype: str = "float16"
-    four_bit_storage_dtype: str = "uint8"
-    four_bit_quantization: str = "nf4"
-    flash_attention: bool = False
-    peft_low_rank: bool = False
-    eight_bit_quantization: bool = False
-    four_bit_quantization_enabled: bool = False
-    reentrant_training: bool = False
-    unsloth_training: bool = False
-    triplet_loss_training: bool = True
-    dataset: str = "timdettmers/openassistant-guanaco"
-    append_special_token: bool = False
-    add_special_tokens: bool = False
-    dataset_splits: str = "train,test"
-    tokenized_data_path: str = None
-    output_dir: str = "./results"
-    num_epochs: int = 3
-    train_batch_size: int = 16
-    eval_batch_size: int = 64
-    warmup_steps: int = 500
-    weight_decay: float = 0.01
-    log_dir: str = "./logs"
-    save_steps: int = 500
-    max_checkpoints: int = 2
-    random_seed: int = 42
-    resume_checkpoint: str = None
-    negative_samples: int = 5
+    """Model configuration dataclass."""
+    model_base: str = "t5-base"  # Base model name
+    conversation_format: str = "none"  # Format for conversation data
+    low_rank_alpha: int = 16  # Low rank alpha value
+    low_rank_dropout: float = 0.1  # Low rank dropout probability
+    low_rank_rank: int = 64  # Low rank dimensionality
+    target_layers: str = "q_proj,k_proj,v_proj,o_proj,down_proj,up_proj,gate_proj"  # Target layers for optimization
+    nested_quantization: bool = False  # Enable nested quantization
+    four_bit_dtype: str = "float16"  # Data type for 4-bit quantization
+    four_bit_storage_dtype: str = "uint8"  # Storage data type for 4-bit quantization
+    four_bit_quantization: str = "nf4"  # Quantization scheme for 4-bit
+    flash_attention: bool = False  # Enable flash attention
+    peft_low_rank: bool = False  # Enable PEFT low rank
+    eight_bit_quantization: bool = False  # Enable 8-bit quantization
+    four_bit_quantization_enabled: bool = False  # Enable 4-bit quantization
+    reentrant_training: bool = False  # Enable reentrant training
+    unsloth_training: bool = False  # Enable unsloth training
+    triplet_loss_training: bool = True  # Enable triplet loss training
+    dataset: str = "timdettmers/openassistant-guanaco"  # Dataset name
+    append_special_token: bool = False  # Append special token to input
+    add_special_tokens: bool = False  # Add special tokens to input
+    dataset_splits: str = "train,test"  # Dataset splits
+    tokenized_data_path: str = None  # Path to tokenized data
+    output_dir: str = "./results"  # Output directory
+    num_epochs: int = 3  # Number of training epochs
+    train_batch_size: int = 16  # Training batch size
+    eval_batch_size: int = 64  # Evaluation batch size
+    warmup_steps: int = 500  # Warmup steps for optimizer
+    weight_decay: float = 0.01  # Weight decay for optimizer
+    log_dir: str = "./logs"  # Log directory
+    save_steps: int = 500  # Save model every n steps
+    max_checkpoints: int = 2  # Maximum number of checkpoints
+    random_seed: int = 42  # Random seed for reproducibility
+    resume_checkpoint: str = None  # Path to resume training from checkpoint
+    negative_samples: int = 5  # Number of negative samples for triplet loss
 
 class TripletModel(tf.keras.Model):
+    """Triplet loss model."""
     def __init__(self, embedding_dim, vocab_size):
         super().__init__()
-        self.embedding = layers.Embedding(input_dim=vocab_size, output_dim=embedding_dim)
-        self.lstm = layers.LSTM(embedding_dim, return_sequences=True)
-        self.dense = layers.Dense(embedding_dim, activation='relu')
-        self.output_dense = layers.Dense(vocab_size)
+        self.embedding = layers.Embedding(input_dim=vocab_size, output_dim=embedding_dim)  # Input embedding layer
+        self.lstm = layers.LSTM(embedding_dim, return_sequences=True)  # LSTM layer
+        self.dense = layers.Dense(embedding_dim, activation='relu')  # Dense layer
+        self.output_dense = layers.Dense(vocab_size)  # Output dense layer
 
     def call(self, inputs, training=None):
+        """Model forward pass."""
         x = self.embedding(inputs)
         x = self.lstm(x)
         x = self.dense(x)
@@ -60,19 +63,23 @@ class TripletModel(tf.keras.Model):
         return x
 
 class Dataset(tf.data.Dataset):
+    """Custom dataset class."""
     def __init__(self, data, config: ModelConfig):
         self.data = data
         self.config = config
 
     def _shuffle(self):
+        """Shuffle the dataset."""
         np.random.shuffle(self.data)
 
     def _get_batch(self, batch_size):
+        """Get a batch of data."""
         for i in range(0, len(self.data), batch_size):
             batch = self.data[i:i+batch_size]
             yield batch
 
     def _map_fn(self, batch):
+        """Map function for data processing."""
         input_ids = tf.strings.split(batch['input'], sep='').to_tensor(dtype=tf.string)
         labels = tf.strings.split(batch['output'], sep='').to_tensor(dtype=tf.string)
         attention_mask = tf.ones((self.config.train_batch_size, max(map(lambda example: len(example['input']), batch))))
@@ -102,6 +109,7 @@ class Dataset(tf.data.Dataset):
         return len(self.data)
 
 def load_data(file_path: str) -> dict:
+    """Load data from a file."""
     try:
         with open(file_path, 'r') as file:
             return json.load(file)
@@ -110,12 +118,14 @@ def load_data(file_path: str) -> dict:
         return None
 
 def calculate_loss(anchor, positive, negative, margin=2.0) -> tf.Tensor:
+    """Calculate triplet loss."""
     distance_positive = tf.reduce_sum(tf.square(anchor - positive), axis=1)
     distance_negative = tf.reduce_sum(tf.square(anchor - negative), axis=1)
     losses = tf.maximum(distance_positive - distance_negative + margin, 0)
     return tf.reduce_mean(losses)
 
 def train_on_batch(model, optimizer, anchor, positive, negative) -> tf.Tensor:
+    """Train the model on a batch."""
     with tf.GradientTape() as tape:
         anchor_outputs = model(anchor, training=True)
         positive_outputs = model(positive, training=True)
@@ -126,6 +136,7 @@ def train_on_batch(model, optimizer, anchor, positive, negative) -> tf.Tensor:
     return loss
 
 def evaluate(model, dataset) -> tf.Tensor:
+    """Evaluate the model on a dataset."""
     total_loss = 0
     for batch in dataset:
         input_ids = batch['input_ids']
@@ -136,9 +147,11 @@ def evaluate(model, dataset) -> tf.Tensor:
     return total_loss / len(list(dataset))
 
 def save_model(model, config: ModelConfig, epoch: int) -> None:
+    """Save the model at a given epoch."""
     model.save_weights(f"{config.output_dir}/model_{epoch}.h5")
 
 def train(model, optimizer, config: ModelConfig, train_dataset, test_dataset) -> None:
+    """Train the model."""
     for epoch in range(config.num_epochs):
         np.random.shuffle(train_dataset.data)
         total_loss = 0
@@ -154,6 +167,7 @@ def train(model, optimizer, config: ModelConfig, train_dataset, test_dataset) ->
         save_model(model, config, epoch+1)
 
 def load_and_prepare_data(config: ModelConfig) -> tuple:
+    """Load and prepare the data."""
     train_data = load_data("train.json")
     test_data = load_data("test.json")
     train_dataset = Dataset(train_data, config)
@@ -161,11 +175,13 @@ def load_and_prepare_data(config: ModelConfig) -> tuple:
     return train_dataset, test_dataset
 
 def build_and_compile_model(config: ModelConfig) -> tuple:
+    """Build and compile the model."""
     model = TripletModel(embedding_dim=128, vocab_size=1000)
     optimizer = optimizers.Adam(learning_rate=0.001)
     return model, optimizer
 
 def main() -> None:
+    """Main function."""
     config = ModelConfig()
     train_dataset, test_dataset = load_and_prepare_data(config)
     model, optimizer = build_and_compile_model(config)
