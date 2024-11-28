@@ -44,107 +44,89 @@ class ModelConfig:
     resume_checkpoint: str = None
     negative_samples: int = 5
 
-class DataLoader:
-    def __init__(self, config: ModelConfig):
-        self.config = config
+def load_data(file_path: str) -> dict:
+    try:
+        with open(file_path, 'r') as file:
+            return json.load(file)
+    except FileNotFoundError:
+        print(f"File {file_path} not found.")
+        return None
 
-    def load_data(self, file_path: str):
-        try:
-            with open(file_path, 'r') as file:
-                return json.load(file)
-        except FileNotFoundError:
-            print(f"File {file_path} not found.")
-            return None
+def prepare_data(data, config: ModelConfig) -> tf.data.Dataset:
+    dataset = tf.data.Dataset.from_tensor_slices(data)
+    dataset = dataset.shuffle(buffer_size=len(data))
+    if config.conversation_format == "none":
+        dataset = dataset.batch(config.train_batch_size if config.train_batch_size > 0 else len(data))
+    else:
+        dataset = dataset.batch(config.train_batch_size)
+    dataset = dataset.map(lambda x: ({
+        "input_ids": tf.map_fn(lambda example: tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string), x, dtype=tf.string),
+        "labels": tf.map_fn(lambda example: tf.strings.split(example['output'], sep='').to_tensor(dtype=tf.string), x, dtype=tf.string),
+        "attention_mask": tf.ones((config.train_batch_size if config.train_batch_size > 0 else len(data), max(map(lambda example: len(example['input']), x)))),
+        "negative_examples": tf.map_fn(lambda example: tf.map_fn(lambda _: tf.strings.split(tf.strings.reduce_join(tf.random.shuffle(tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string))), sep='').to_tensor(dtype=tf.string), tf.range(config.negative_samples), dtype=tf.string), x, dtype=tf.string)
+    }, tf.zeros((config.train_batch_size if config.train_batch_size > 0 else len(data),))))
+    return dataset
 
-    def prepare_data(self, data):
-        dataset = tf.data.Dataset.from_tensor_slices(data)
-        dataset = dataset.shuffle(buffer_size=len(data))
-        if self.config.conversation_format == "none":
-            dataset = dataset.batch(self.config.train_batch_size if self.config.train_batch_size > 0 else len(data))
-        else:
-            dataset = dataset.batch(self.config.train_batch_size)
-        dataset = dataset.map(lambda x: ({
-            "input_ids": tf.map_fn(lambda example: tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string), x, dtype=tf.string),
-            "labels": tf.map_fn(lambda example: tf.strings.split(example['output'], sep='').to_tensor(dtype=tf.string), x, dtype=tf.string),
-            "attention_mask": tf.ones((self.config.train_batch_size if self.config.train_batch_size > 0 else len(data), max(map(lambda example: len(example['input']), x)))),
-            "negative_examples": tf.map_fn(lambda example: tf.map_fn(lambda _: tf.strings.split(tf.strings.reduce_join(tf.random.shuffle(tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string))), sep='').to_tensor(dtype=tf.string), tf.range(self.config.negative_samples), dtype=tf.string), x, dtype=tf.string)
-        }, tf.zeros((self.config.train_batch_size if self.config.train_batch_size > 0 else len(data),))))
-        return dataset
+def build_model(config: ModelConfig) -> (tf.keras.Model, tf.keras.optimizers.Optimizer):
+    model = tf.keras.Sequential([
+        layers.Embedding(input_dim=1000, output_dim=128),
+        layers.LSTM(128),
+        layers.Dense(128, activation='relu'),
+        layers.Dense(128, activation='relu'),
+        layers.Dense(1000)
+    ])
+    optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
+    return model, optimizer
 
-class ModelBuilder:
-    def __init__(self, config: ModelConfig):
-        self.config = config
+def calculate_loss(anchor, positive, negative, margin=2.0) -> tf.Tensor:
+    distance_positive = tf.reduce_sum(tf.square(anchor - positive), axis=1)
+    distance_negative = tf.reduce_sum(tf.square(anchor - negative), axis=1)
+    losses = tf.maximum(distance_positive - distance_negative + margin, 0)
+    return tf.reduce_mean(losses)
 
-    def build_model(self):
-        model = tf.keras.Sequential([
-            layers.Embedding(input_dim=1000, output_dim=128),
-            layers.LSTM(128),
-            layers.Dense(128, activation='relu'),
-            layers.Dense(128, activation='relu'),
-            layers.Dense(1000)
-        ])
-        optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
-        return model, optimizer
+def train_on_batch(model, optimizer, anchor, positive, negative) -> tf.Tensor:
+    with tf.GradientTape() as tape:
+        anchor_outputs = model(anchor, training=True)
+        positive_outputs = model(positive, training=True)
+        negative_outputs = model(negative, training=True)
+        loss = calculate_loss(anchor_outputs, positive_outputs, negative_outputs)
+    gradients = tape.gradient(loss, model.trainable_variables)
+    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+    return loss
 
-class Trainer:
-    def __init__(self, model, optimizer, config: ModelConfig):
-        self.model = model
-        self.optimizer = optimizer
-        self.config = config
+def evaluate(model, dataset) -> tf.Tensor:
+    total_loss = 0
+    for batch in dataset:
+        input_ids = batch['input_ids']
+        labels = batch['labels']
+        outputs = model(input_ids)
+        loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)(labels, outputs)
+        total_loss += loss
+    return total_loss / len(dataset)
 
-    def calculate_loss(self, anchor, positive, negative, margin=2.0):
-        distance_positive = tf.reduce_sum(tf.square(anchor - positive), axis=1)
-        distance_negative = tf.reduce_sum(tf.square(anchor - negative), axis=1)
-        losses = tf.maximum(distance_positive - distance_negative + margin, 0)
-        return tf.reduce_mean(losses)
+def save_model(model, config: ModelConfig, epoch: int) -> None:
+    model.save_weights(f"{config.output_dir}/model_{epoch}.h5")
 
-    def train_on_batch(self, anchor, positive, negative):
-        with tf.GradientTape() as tape:
-            anchor_outputs = self.model(anchor, training=True)
-            positive_outputs = self.model(positive, training=True)
-            negative_outputs = self.model(negative, training=True)
-            loss = self.calculate_loss(anchor_outputs, positive_outputs, negative_outputs)
-        gradients = tape.gradient(loss, self.model.trainable_variables)
-        self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
-        return loss
-
-    def evaluate(self, dataset):
+def train(model, optimizer, config: ModelConfig, train_dataset, test_dataset) -> None:
+    for epoch in range(config.num_epochs):
         total_loss = 0
-        for batch in dataset:
-            input_ids = batch['input_ids']
-            labels = batch['labels']
-            outputs = self.model(input_ids)
-            loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)(labels, outputs)
+        for batch in train_dataset:
+            anchor = batch['input_ids']
+            positive = batch['labels']
+            negative = batch['negative_examples']
+            loss = train_on_batch(model, optimizer, anchor, positive, negative)
             total_loss += loss
-        return total_loss / len(dataset)
+        print(f"Loss: {total_loss / len(train_dataset)}")
+        test_loss = evaluate(model, test_dataset)
+        print(f"Test Loss: {test_loss}")
+        save_model(model, config, epoch)
 
-    def save_model(self, epoch):
-        self.model.save_weights(f"{self.config.output_dir}/model_{epoch}.h5")
-
-    def train(self, train_dataset, test_dataset):
-        for epoch in range(self.config.num_epochs):
-            total_loss = 0
-            for batch in train_dataset:
-                anchor = batch['input_ids']
-                positive = batch['labels']
-                negative = batch['negative_examples']
-                loss = self.train_on_batch(anchor, positive, negative)
-                total_loss += loss
-            print(f"Loss: {total_loss / len(train_dataset)}")
-            test_loss = self.evaluate(test_dataset)
-            print(f"Test Loss: {test_loss}")
-            self.save_model(epoch)
-
-def main():
+def main() -> None:
     model_config = ModelConfig()
-    data_loader = DataLoader(model_config)
-    train_data = data_loader.prepare_data(data_loader.load_data("train.json"))
-    test_data_loader = DataLoader(model_config)
-    test_data = test_data_loader.prepare_data(test_data_loader.load_data("test.json"))
-    model_builder = ModelBuilder(model_config)
-    model, optimizer = model_builder.build_model()
-    trainer = Trainer(model, optimizer, model_config)
-    trainer.train(train_data, test_data)
+    train_data = prepare_data(load_data("train.json"), model_config)
+    test_data = prepare_data(load_data("test.json"), model_config)
+    model, optimizer = build_model(model_config)
+    train(model, optimizer, model_config, train_data, test_data)
 
 if __name__ == "__main__":
     main()
