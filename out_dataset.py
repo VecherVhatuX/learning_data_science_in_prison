@@ -9,41 +9,33 @@ import random
 from sklearn.model_selection import train_test_split
 from transformers import AutoModel, AutoTokenizer
 
-class Data:
-    @staticmethod
-    def load(path):
-        if path.endswith('.npy'):
-            return np.load(path, allow_pickle=True)
-        else:
-            return json.load(open(path, 'r', encoding='utf-8'))
+def load_data(path):
+    if path.endswith('.npy'):
+        return np.load(path, allow_pickle=True)
+    else:
+        return json.load(open(path, 'r', encoding='utf-8'))
 
-    @staticmethod
-    def load_snippets(folder):
-        return [(os.path.join(folder, f), os.path.join(folder, f, 'snippet.json')) 
-                for f in os.listdir(folder) if os.path.isdir(os.path.join(folder, f))]
+def load_snippets(folder):
+    return [(os.path.join(folder, f), os.path.join(folder, f, 'snippet.json')) 
+            for f in os.listdir(folder) if os.path.isdir(os.path.join(folder, f))]
 
-    @staticmethod
-    def separate_snippets(snippets):
-        bug_snippets = [Data.load(path)['snippet'] for _, path in snippets 
-                        if Data.load(path).get('is_bug', False)]
-        non_bug_snippets = [Data.load(path)['snippet'] for _, path in snippets 
-                            if not Data.load(path).get('is_bug', False)]
-        return bug_snippets, non_bug_snippets
+def separate_snippets(snippets):
+    bug_snippets = [load_data(path)['snippet'] for _, path in snippets 
+                    if load_data(path).get('is_bug', False)]
+    non_bug_snippets = [load_data(path)['snippet'] for _, path in snippets 
+                        if not load_data(path).get('is_bug', False)]
+    return bug_snippets, non_bug_snippets
 
+def create_triplets(num_negatives, instance_id_map, snippets):
+    bug_snippets, non_bug_snippets = separate_snippets(snippets)
+    return [{'anchor': instance_id_map[os.path.basename(folder)], 
+             'positive': positive_doc, 
+             'negative': random.choice(non_bug_snippets)} 
+            for folder, _ in snippets 
+            for positive_doc in bug_snippets 
+            for _ in range(min(num_negatives, len(non_bug_snippets)))]
 
-class Triplet:
-    @staticmethod
-    def create(num_negatives, instance_id_map, snippets):
-        bug_snippets, non_bug_snippets = Data.separate_snippets(snippets)
-        return [{'anchor': instance_id_map[os.path.basename(folder)], 
-                 'positive': positive_doc, 
-                 'negative': random.choice(non_bug_snippets)} 
-                for folder, _ in snippets 
-                for positive_doc in bug_snippets 
-                for _ in range(min(num_negatives, len(non_bug_snippets)))]
-
-
-class Dataset(Dataset):
+class CustomDataset(Dataset):
     def __init__(self, triplets, max_sequence_length):
         self.triplets = triplets
         self.max_sequence_length = max_sequence_length
@@ -88,10 +80,9 @@ class Dataset(Dataset):
     def shuffle(self):
         random.shuffle(self.triplets)
 
-
-class Model(nn.Module):
+class CustomModel(nn.Module):
     def __init__(self, embedding_size, fully_connected_size, dropout_rate):
-        super(Model, self).__init__()
+        super(CustomModel, self).__init__()
         self.bert = AutoModel.from_pretrained('bert-base-uncased')
         self.dropout = nn.Dropout(dropout_rate)
         self.fc1 = nn.Linear(768, fully_connected_size)
@@ -116,27 +107,24 @@ class Model(nn.Module):
 
         return anchor_embedding, positive_embedding, negative_embedding
 
-
-def loss(anchor_embeddings, positive_embeddings, negative_embeddings, device):
+def calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings, device):
     return torch.mean((anchor_embeddings - positive_embeddings) ** 2) + torch.max(torch.mean((anchor_embeddings - negative_embeddings) ** 2) - torch.mean((anchor_embeddings - positive_embeddings) ** 2), torch.tensor(0.0).to(device))
 
-
-def train(model, device, train_loader, optimizer, epochs):
+def train_model(model, device, train_loader, optimizer, epochs):
     model.train()
     for epoch in range(epochs):
         total_loss = 0
         for batch in train_loader:
             batch = {k: v.to(device) for k, v in batch.items()}
             anchor_embeddings, positive_embeddings, negative_embeddings = model(batch)
-            batch_loss = loss(anchor_embeddings, positive_embeddings, negative_embeddings, device)
+            batch_loss = calculate_loss(anchor_embeddings, positive_embeddings, negative_embeddings, device)
             optimizer.zero_grad()
             batch_loss.backward()
             optimizer.step()
             total_loss += batch_loss.item()
         print(f'Epoch {epoch+1}, Loss: {total_loss / len(train_loader)}')
 
-
-def evaluate(model, device, test_loader):
+def evaluate_model(model, device, test_loader):
     model.eval()
     total_correct = 0
     with torch.no_grad():
@@ -149,29 +137,27 @@ def evaluate(model, device, test_loader):
                 total_correct += int(similarity_positive > similarity_negative)
     return total_correct / len(test_loader.dataset)
 
-
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
 
-    instance_id_map = {item['instance_id']: item['problem_statement'] for item in Data.load(dataset_path)}
-    snippets = Data.load_snippets(snippet_folder_path)
-    triplets = Triplet.create(1, instance_id_map, snippets)
+    instance_id_map = {item['instance_id']: item['problem_statement'] for item in load_data(dataset_path)}
+    snippets = load_snippets(snippet_folder_path)
+    triplets = create_triplets(1, instance_id_map, snippets)
     train_triplets, test_triplets = np.array_split(np.array(triplets), 2)
-    train_dataset = Dataset(train_triplets, 512)
-    test_dataset = Dataset(test_triplets, 512)
+    train_dataset = CustomDataset(train_triplets, 512)
+    test_dataset = CustomDataset(test_triplets, 512)
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = Model(128, 64, 0.2)
+    model = CustomModel(128, 64, 0.2)
     model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-5)
 
     for epoch in range(5):
-        train(model, device, train_loader, optimizer, 1)
-    print(f'Test Accuracy: {evaluate(model, device, test_loader)}')
-
+        train_model(model, device, train_loader, optimizer, 1)
+    print(f'Test Accuracy: {evaluate_model(model, device, test_loader)}')
 
 if __name__ == "__main__":
     main()
