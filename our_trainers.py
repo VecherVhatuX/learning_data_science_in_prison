@@ -66,6 +66,15 @@ def similar_embeddings(embeddings, target_embedding, k=5):
     similarities = similarity(embeddings, target_embedding)
     return tf.argsort(-similarities)[:k]
 
+def embedding_visualization(embeddings, labels):
+    import matplotlib.pyplot as plt
+    from sklearn.manifold import TSNE
+    tsne = TSNE(n_components=2)
+    reduced_embeddings = tsne.fit_transform(embeddings)
+    plt.figure(figsize=(8, 8))
+    plt.scatter(reduced_embeddings[:, 0], reduced_embeddings[:, 1], c=labels)
+    plt.show()
+
 # KNN Metrics
 def knn_accuracy(embeddings, labels, k=5):
     return tf.reduce_mean(tf.map_fn(lambda x: tf.reduce_any(tf.equal(labels[x[1:k+1]], labels[x[0]])), (tf.argsort(distance(embeddings, embeddings), axis=1)), tf.float32))
@@ -101,6 +110,7 @@ def validate(model, embeddings, labels, k=5):
     print("Validation KNN Precision:", knn_precision(predicted_embeddings, labels, k))
     print("Validation KNN Recall:", knn_recall(predicted_embeddings, labels, k))
     print("Validation KNN F1-score:", knn_f1(predicted_embeddings, labels, k))
+    embedding_visualization(predicted_embeddings, labels)
 
 def pipeline(learning_rate, batch_size, epochs, num_negatives, embedding_dim, num_features):
     samples = np.random.randint(0, 100, (100, 10))
