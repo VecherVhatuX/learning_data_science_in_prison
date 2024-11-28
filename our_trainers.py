@@ -1,25 +1,22 @@
 import tensorflow as tf
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Embedding, GlobalAveragePooling1D, Flatten, Dense, BatchNormalization, LayerNormalization
-from tensorflow.keras.optimizers import Adam
 import numpy as np
 
-class TripletModel(Model):
+class TripletModel(tf.keras.Model):
     def __init__(self, embedding_dim, num_features):
         super(TripletModel, self).__init__()
-        self.embedding = Embedding(embedding_dim, num_features, input_length=10)
-        self.avg_pool = GlobalAveragePooling1D()
-        self.flatten = Flatten()
-        self.linear = Dense(num_features)
-        self.batch_norm = BatchNormalization()
-        self.instance_norm = LayerNormalization()
+        self.embedding = tf.keras.layers.Embedding(embedding_dim, num_features, input_length=10)
+        self.avg_pool = tf.keras.layers.GlobalAveragePooling1D()
+        self.flatten = tf.keras.layers.Flatten()
+        self.linear = tf.keras.layers.Dense(num_features)
+        self.batch_norm = tf.keras.layers.BatchNormalization()
+        self.instance_norm = tf.keras.layers.LayerNormalization()
 
-    def call(self, x):
+    def call(self, x, training=False):
         x = self.embedding(x)
         x = self.avg_pool(x)
         x = self.flatten(x)
         x = self.linear(x)
-        x = self.batch_norm(x)
+        x = self.batch_norm(x, training=training)
         x = self.instance_norm(x)
         return x
 
@@ -29,7 +26,8 @@ class TripletLoss(tf.keras.layers.Layer):
         super(TripletLoss, self).__init__()
         self.margin = margin
 
-    def call(self, anchor, positive, negative):
+    def call(self, inputs):
+        anchor, positive, negative = inputs
         d_ap = tf.norm(anchor - positive, axis=-1)
         d_an = tf.norm(anchor[:, None] - negative, axis=-1)
         loss = tf.maximum(d_ap - tf.reduce_min(d_an, axis=-1) + self.margin, 0.0)
@@ -54,22 +52,7 @@ class TripletData(tf.data.Dataset):
         anchor_label = self.labels[anchor_idx]
         positive_idx = np.array([np.random.choice(np.where(self.labels == label)[0], size=1)[0] for label in anchor_label])
         negative_idx = np.array([np.random.choice(np.where(self.labels != label)[0], size=self.num_negatives, replace=False) for label in anchor_label])
-        return {
-            'anchor': self.samples[anchor_idx],
-            'positive': self.samples[positive_idx],
-            'negative': self.samples[negative_idx]
-        }
-
-
-class InputData(tf.data.Dataset):
-    def __init__(self, input_ids):
-        self.input_ids = input_ids
-
-    def __len__(self):
-        return len(self.input_ids)
-
-    def __getitem__(self, index):
-        return self.input_ids[index]
+        return (self.samples[anchor_idx], self.samples[positive_idx], self.samples[negative_idx])
 
 
 def save_checkpoint(model, path):
@@ -139,18 +122,23 @@ def knn_f1(embeddings, labels, k=5):
 def train(model, dataset, criterion, optimizer, epochs):
     for epoch in range(epochs):
         for batch in dataset:
+            anchor, positive, negative = batch
             with tf.GradientTape() as tape:
-                anchor_embeddings = model(batch['anchor'], training=True)
-                positive_embeddings = model(batch['positive'], training=True)
-                negative_embeddings = model(batch['negative'], training=True)
-                loss = criterion(anchor_embeddings, positive_embeddings, negative_embeddings)
+                anchor_embeddings = model(anchor, training=True)
+                positive_embeddings = model(positive, training=True)
+                negative_embeddings = model(negative, training=True)
+                loss = criterion((anchor_embeddings, positive_embeddings, negative_embeddings))
             gradients = tape.gradient(loss, model.trainable_variables)
             optimizer.apply_gradients(zip(gradients, model.trainable_variables))
         print(f'Epoch {epoch+1}, Loss: {loss.numpy()}')
 
 
 def evaluate(model, dataset):
-    return model.predict(dataset.samples)
+    embeddings = []
+    for batch in dataset:
+        batch_embeddings = model(batch[0])
+        embeddings.append(batch_embeddings)
+    return tf.concat(embeddings, axis=0)
 
 
 def build_model(embedding_dim, num_features):
@@ -162,15 +150,12 @@ def build_criterion(margin=1.0):
 
 
 def build_optimizer(model, learning_rate):
-    return Adam(learning_rate=learning_rate)
+    return tf.keras.optimizers.Adam(learning_rate=learning_rate)
 
 
 def build_dataset(samples, labels, num_negatives, batch_size, shuffle=True):
-    return TripletData(samples, labels, num_negatives, batch_size, shuffle)
-
-
-def build_input_dataset(input_ids):
-    return InputData(input_ids)
+    dataset = tf.data.Dataset.from_generator(lambda: TripletData(samples, labels, num_negatives, batch_size, shuffle), (tf.int32, tf.int32, tf.int32), (tf.TensorShape([batch_size, 10]), tf.TensorShape([batch_size, 10]), tf.TensorShape([batch_size, num_negatives, 10])))
+    return dataset
 
 
 def main():
@@ -209,7 +194,7 @@ def main():
     cosine_distance = cosine_distance(output, output)
     print(cosine_distance)
 
-    all_embeddings = model.predict(dataset.samples)
+    all_embeddings = model.predict(samples)
     nearest_neighbors = nearest_neighbors(all_embeddings, output, k=5)
     print(nearest_neighbors)
 
