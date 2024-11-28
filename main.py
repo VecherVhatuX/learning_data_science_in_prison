@@ -1,59 +1,86 @@
 import os
 import json
-from dataclasses import dataclass
-from typing import List
+import dataclasses
+import typing
 import tensorflow as tf
 from tensorflow.keras import layers, models, optimizers
 from tensorflow.keras.utils import to_categorical
 import numpy as np
 
-@dataclass
 class ModelConfig:
-    model_base: str = "t5-base"
-    conversation_format: str = "none"
-    low_rank_alpha: int = 16
-    low_rank_dropout: float = 0.1
-    low_rank_rank: int = 64
-    target_layers: str = "q_proj,k_proj,v_proj,o_proj,down_proj,up_proj,gate_proj"
-    nested_quantization: bool = False
-    four_bit_dtype: str = "float16"
-    four_bit_storage_dtype: str = "uint8"
-    four_bit_quantization: str = "nf4"
-    flash_attention: bool = False
-    peft_low_rank: bool = False
-    eight_bit_quantization: bool = False
-    four_bit_quantization_enabled: bool = False
-    reentrant_training: bool = False
-    unsloth_training: bool = False
-    triplet_loss_training: bool = True
-    dataset: str = "timdettmers/openassistant-guanaco"
-    append_special_token: bool = False
-    add_special_tokens: bool = False
-    dataset_splits: str = "train,test"
-    tokenized_data_path: str = None
-    output_dir: str = "./results"
-    num_epochs: int = 3
-    train_batch_size: int = 16
-    eval_batch_size: int = 64
-    warmup_steps: int = 500
-    weight_decay: float = 0.01
-    log_dir: str = "./logs"
-    save_steps: int = 500
-    max_checkpoints: int = 2
-    random_seed: int = 42
-    resume_checkpoint: str = None
-    negative_samples: int = 5
+    def __init__(
+        self,
+        model_base: str = "t5-base",
+        conversation_format: str = "none",
+        low_rank_alpha: int = 16,
+        low_rank_dropout: float = 0.1,
+        low_rank_rank: int = 64,
+        target_layers: str = "q_proj,k_proj,v_proj,o_proj,down_proj,up_proj,gate_proj",
+        nested_quantization: bool = False,
+        four_bit_dtype: str = "float16",
+        four_bit_storage_dtype: str = "uint8",
+        four_bit_quantization: str = "nf4",
+        flash_attention: bool = False,
+        peft_low_rank: bool = False,
+        eight_bit_quantization: bool = False,
+        four_bit_quantization_enabled: bool = False,
+        reentrant_training: bool = False,
+        unsloth_training: bool = False,
+        triplet_loss_training: bool = True,
+        dataset: str = "timdettmers/openassistant-guanaco",
+        append_special_token: bool = False,
+        add_special_tokens: bool = False,
+        dataset_splits: str = "train,test",
+        tokenized_data_path: str = None,
+        output_dir: str = "./results",
+        num_epochs: int = 3,
+        train_batch_size: int = 16,
+        eval_batch_size: int = 64,
+        warmup_steps: int = 500,
+        weight_decay: float = 0.01,
+        log_dir: str = "./logs",
+        save_steps: int = 500,
+        max_checkpoints: int = 2,
+        random_seed: int = 42,
+        resume_checkpoint: str = None,
+        negative_samples: int = 5
+    ):
+        self.model_base = model_base
+        self.conversation_format = conversation_format
+        self.low_rank_alpha = low_rank_alpha
+        self.low_rank_dropout = low_rank_dropout
+        self.low_rank_rank = low_rank_rank
+        self.target_layers = target_layers
+        self.nested_quantization = nested_quantization
+        self.four_bit_dtype = four_bit_dtype
+        self.four_bit_storage_dtype = four_bit_storage_dtype
+        self.four_bit_quantization = four_bit_quantization
+        self.flash_attention = flash_attention
+        self.peft_low_rank = peft_low_rank
+        self.eight_bit_quantization = eight_bit_quantization
+        self.four_bit_quantization_enabled = four_bit_quantization_enabled
+        self.reentrant_training = reentrant_training
+        self.unsloth_training = unsloth_training
+        self.triplet_loss_training = triplet_loss_training
+        self.dataset = dataset
+        self.append_special_token = append_special_token
+        self.add_special_tokens = add_special_tokens
+        self.dataset_splits = dataset_splits
+        self.tokenized_data_path = tokenized_data_path
+        self.output_dir = output_dir
+        self.num_epochs = num_epochs
+        self.train_batch_size = train_batch_size
+        self.eval_batch_size = eval_batch_size
+        self.warmup_steps = warmup_steps
+        self.weight_decay = weight_decay
+        self.log_dir = log_dir
+        self.save_steps = save_steps
+        self.max_checkpoints = max_checkpoints
+        self.random_seed = random_seed
+        self.resume_checkpoint = resume_checkpoint
+        self.negative_samples = negative_samples
 
 def load_data(file_path: str) -> dict:
-    """
-    Loads a JSON file into a Python dictionary.
-    
-    Args:
-        file_path (str): Path to the JSON file to be loaded.
-    
-    Returns:
-        dict: A Python dictionary containing the data from the JSON file.
-    """
     try:
         with open(file_path, 'r') as file:
             return json.load(file)
@@ -62,16 +89,6 @@ def load_data(file_path: str) -> dict:
         return None
 
 def prepare_data(data, config: ModelConfig) -> tf.data.Dataset:
-    """
-    Prepares the input data for training by shuffling, batching, and mapping it.
-    
-    Args:
-        data: Input data to be prepared.
-        config (ModelConfig): Configuration for the model.
-    
-    Returns:
-        tf.data.Dataset: Prepared dataset for training.
-    """
     dataset = tf.data.Dataset.from_tensor_slices(data)
     dataset = dataset.shuffle(buffer_size=len(data))
     if config.conversation_format == "none":
@@ -87,15 +104,6 @@ def prepare_data(data, config: ModelConfig) -> tf.data.Dataset:
     return dataset
 
 def build_model(config: ModelConfig) -> (tf.keras.Model, tf.keras.optimizers.Optimizer):
-    """
-    Builds a neural network model with an embedding layer, two LSTM layers, two dense layers, and an output dense layer.
-    
-    Args:
-        config (ModelConfig): Configuration for the model.
-    
-    Returns:
-        tuple: A tuple containing the built model and the Adam optimizer.
-    """
     model = tf.keras.Sequential([
         layers.Embedding(input_dim=1000, output_dim=128),
         layers.LSTM(128),
@@ -107,37 +115,12 @@ def build_model(config: ModelConfig) -> (tf.keras.Model, tf.keras.optimizers.Opt
     return model, optimizer
 
 def calculate_loss(anchor, positive, negative, margin=2.0) -> tf.Tensor:
-    """
-    Calculates the triplet loss for a given anchor, positive, and negative example.
-    
-    Args:
-        anchor: Anchor example.
-        positive: Positive example.
-        negative: Negative example.
-        margin (float, optional): Margin for the triplet loss. Defaults to 2.0.
-    
-    Returns:
-        tf.Tensor: Triplet loss for the given examples.
-    """
     distance_positive = tf.reduce_sum(tf.square(anchor - positive), axis=1)
     distance_negative = tf.reduce_sum(tf.square(anchor - negative), axis=1)
     losses = tf.maximum(distance_positive - distance_negative + margin, 0)
     return tf.reduce_mean(losses)
 
 def train_on_batch(model, optimizer, anchor, positive, negative) -> tf.Tensor:
-    """
-    Trains the model on a single batch of data using the Adam optimizer and triplet loss.
-    
-    Args:
-        model: Model to be trained.
-        optimizer: Adam optimizer.
-        anchor: Anchor example.
-        positive: Positive example.
-        negative: Negative example.
-    
-    Returns:
-        tf.Tensor: Loss for the given batch.
-    """
     with tf.GradientTape() as tape:
         anchor_outputs = model(anchor, training=True)
         positive_outputs = model(positive, training=True)
@@ -148,16 +131,6 @@ def train_on_batch(model, optimizer, anchor, positive, negative) -> tf.Tensor:
     return loss
 
 def evaluate(model, dataset) -> tf.Tensor:
-    """
-    Evaluates the model on a given dataset using sparse categorical cross-entropy loss.
-    
-    Args:
-        model: Model to be evaluated.
-        dataset: Dataset to be evaluated on.
-    
-    Returns:
-        tf.Tensor: Loss for the given dataset.
-    """
     total_loss = 0
     for batch in dataset:
         input_ids = batch['input_ids']
@@ -168,27 +141,9 @@ def evaluate(model, dataset) -> tf.Tensor:
     return total_loss / len(dataset)
 
 def save_model(model, config: ModelConfig, epoch: int) -> None:
-    """
-    Saves the model weights to a file after each epoch.
-    
-    Args:
-        model: Model to be saved.
-        config (ModelConfig): Configuration for the model.
-        epoch (int): Current epoch number.
-    """
     model.save_weights(f"{config.output_dir}/model_{epoch}.h5")
 
 def train(model, optimizer, config: ModelConfig, train_dataset, test_dataset) -> None:
-    """
-    Trains the model on a given dataset for a specified number of epochs.
-    
-    Args:
-        model: Model to be trained.
-        optimizer: Adam optimizer.
-        config (ModelConfig): Configuration for the model.
-        train_dataset: Dataset to be trained on.
-        test_dataset: Dataset to be evaluated on.
-    """
     for epoch in range(config.num_epochs):
         total_loss = 0
         for batch in train_dataset:
@@ -203,9 +158,6 @@ def train(model, optimizer, config: ModelConfig, train_dataset, test_dataset) ->
         save_model(model, config, epoch)
 
 def main() -> None:
-    """
-    Main function to run the training process.
-    """
     model_config = ModelConfig()
     train_data = prepare_data(load_data("train.json"), model_config)
     test_data = prepare_data(load_data("test.json"), model_config)
