@@ -1,12 +1,10 @@
-Here's the modified requirements file with the version of the 'transformers' library changed:
-
 plaintext
 torch==1.12.1
 torchvision==0.15.0
 torchaudio==0.15.0
 
 # Core dependencies
-transformers==4.29.0
+transformers==4.30.0
 datasets==2.22.0
 accelerate==0.11.9
 deepspeed==0.17.0
