@@ -11,8 +11,6 @@ from transformers import AutoModel, AutoTokenizer
 from functools import partial
 from operator import itemgetter
 
-# Import required libraries for data loading and manipulation
-
 # Data Loading
 def load_data_from_json(path):
     """Loads data from a JSON file."""
@@ -33,7 +31,6 @@ def categorize_snippets(snippets):
                     [snippets, snippets]))
     return bug_snippets[0], non_bug_snippets[0]
 
-# Data Preprocessing
 def generate_triplets(num_negatives, instance_id_map, snippets):
     """Generates triplets for training."""
     bug_snippets, non_bug_snippets = categorize_snippets(snippets)
@@ -44,7 +41,7 @@ def generate_triplets(num_negatives, instance_id_map, snippets):
             for positive_doc in bug_snippets 
             for _ in range(min(num_negatives, len(non_bug_snippets)))]
 
-# Custom Dataset
+# Dataset
 class SnippetDataset(Dataset):
     def __init__(self, triplets, max_sequence_length):
         """Initializes the snippet dataset."""
@@ -149,26 +146,49 @@ def evaluate_triplet_model(model, device, test_loader):
     return total_correct / len(test_loader.dataset)
 
 # Main
+def load_data(dataset_path, snippet_folder_path):
+    instance_id_map = {item['instance_id']: item['problem_statement'] for item in load_data_from_json(dataset_path)}
+    snippets = fetch_snippet_folders(snippet_folder_path)
+    return instance_id_map, snippets
+
+def create_dataset(instance_id_map, snippets, max_sequence_length):
+    triplets = generate_triplets(1, instance_id_map, snippets)
+    return SnippetDataset(triplets, max_sequence_length)
+
+def create_data_loaders(dataset, batch_size, shuffle=False):
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+
+def create_model(embedding_size, fully_connected_size, dropout_rate):
+    return TripletModel(embedding_size, fully_connected_size, dropout_rate)
+
+def create_optimizer(model, lr):
+    return optim.Adam(model.parameters(), lr=lr)
+
+def train(model, device, train_loader, optimizer, epochs):
+    train_triplet_model(model, device, train_loader, optimizer, epochs)
+
+def evaluate(model, device, test_loader):
+    return evaluate_triplet_model(model, device, test_loader)
+
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippet_folder_path = 'datasets/10_10_after_fix_pytest'
 
-    instance_id_map = {item['instance_id']: item['problem_statement'] for item in load_data_from_json(dataset_path)}
-    snippets = fetch_snippet_folders(snippet_folder_path)
+    instance_id_map, snippets = load_data(dataset_path, snippet_folder_path)
     triplets = generate_triplets(1, instance_id_map, snippets)
     train_triplets, test_triplets = np.array_split(np.array(triplets), 2)
     train_dataset = SnippetDataset(train_triplets, 512)
     test_dataset = SnippetDataset(test_triplets, 512)
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    train_loader = create_data_loaders(train_dataset, 32, shuffle=True)
+    test_loader = create_data_loaders(test_dataset, 32, shuffle=False)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = TripletModel(128, 64, 0.2)
+    model = create_model(128, 64, 0.2)
     model.to(device)
-    optimizer = optim.Adam(model.parameters(), lr=1e-5)
+    optimizer = create_optimizer(model, 1e-5)
 
-    train_triplet_model(model, device, train_loader, optimizer, 5)
-    print(f'Test Accuracy: {evaluate_triplet_model(model, device, test_loader)}')
+    train(model, device, train_loader, optimizer, 5)
+    print(f'Test Accuracy: {evaluate(model, device, test_loader)}')
 
 if __name__ == "__main__":
     main()
