@@ -2,10 +2,10 @@ import os
 import json
 import dataclasses
 import typing
-import tensorflow as tf
-from tensorflow.keras import layers, models, optimizers
-from tensorflow.keras.utils import to_categorical
-import numpy as np
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from transformers import AutoModel, AutoTokenizer
 
 @dataclasses.dataclass
 class ModelConfig:
@@ -45,20 +45,20 @@ class ModelConfig:
     resume_checkpoint: str = None  # Path to resume training from checkpoint
     negative_samples: int = 5  # Number of negative samples for triplet loss
 
-class TripletModel(tf.keras.Model):
+class TripletModel(nn.Module):
     """Triplet loss model."""
     def __init__(self, embedding_dim, vocab_size):
         super().__init__()
-        self.embedding = layers.Embedding(input_dim=vocab_size, output_dim=embedding_dim)  # Input embedding layer
-        self.lstm = layers.LSTM(embedding_dim, return_sequences=True)  # LSTM layer
-        self.dense = layers.Dense(embedding_dim, activation='relu')  # Dense layer
-        self.output_dense = layers.Dense(vocab_size)  # Output dense layer
+        self.embedding = nn.Embedding(vocab_size, embedding_dim)  # Input embedding layer
+        self.lstm = nn.LSTM(embedding_dim, embedding_dim, batch_first=True)  # LSTM layer
+        self.dense = nn.Linear(embedding_dim, embedding_dim)  # Dense layer
+        self.output_dense = nn.Linear(embedding_dim, vocab_size)  # Output dense layer
 
-    def call(self, inputs, training=None):
+    def forward(self, inputs):
         """Model forward pass."""
         x = self.embedding(inputs)
-        x = self.lstm(x)
-        x = self.dense(x)
+        x, _ = self.lstm(x)
+        x = torch.relu(self.dense(x[:, -1, :]))
         x = self.output_dense(x)
         return x
 
@@ -71,85 +71,75 @@ def load_data(file_path: str) -> dict:
         print(f"File {file_path} not found.")
         return None
 
-def calculate_loss(anchor, positive, negative, margin=2.0) -> tf.Tensor:
+def calculate_loss(anchor, positive, negative, margin=2.0):
     """Calculate triplet loss."""
-    distance_positive = tf.reduce_sum(tf.square(anchor - positive), axis=1)
-    distance_negative = tf.reduce_sum(tf.square(anchor - negative), axis=1)
-    losses = tf.maximum(distance_positive - distance_negative + margin, 0)
-    return tf.reduce_mean(losses)
+    distance_positive = torch.sum((anchor - positive) ** 2, dim=1)
+    distance_negative = torch.sum((anchor - negative) ** 2, dim=1)
+    losses = torch.clamp(distance_positive - distance_negative + margin, min=0)
+    return torch.mean(losses)
 
-def train_on_batch(model, optimizer, anchor, positive, negative) -> tf.Tensor:
-    """Train the model on a batch."""
-    with tf.GradientTape() as tape:
-        anchor_outputs = model(anchor, training=True)
-        positive_outputs = model(positive, training=True)
-        negative_outputs = model(negative, training=True)
-        loss = calculate_loss(anchor_outputs, positive_outputs, negative_outputs)
-    gradients = tape.gradient(loss, model.trainable_variables)
-    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-    return loss
+class TripletDataset(Dataset):
+    """Triplet dataset class."""
+    def __init__(self, data, config):
+        self.data = data
+        self.config = config
+        self.tokenizer = AutoTokenizer.from_pretrained(config.model_base)
 
-def evaluate(model, dataset) -> tf.Tensor:
-    """Evaluate the model on a dataset."""
-    total_loss = 0
-    for batch in dataset:
-        input_ids = batch['input_ids']
-        labels = batch['labels']
-        outputs = model(input_ids)
-        loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)(labels, outputs)
-        total_loss += loss
-    return total_loss / len(list(dataset))
+    def __len__(self):
+        return len(self.data)
 
-def save_model(model, config: ModelConfig, epoch: int) -> None:
-    """Save the model at a given epoch."""
-    model.save_weights(f"{config.output_dir}/model_{epoch}.h5")
+    def __getitem__(self, index):
+        example = self.data[index]
+        input_ids = self.tokenizer.encode(example['input'], return_tensors='pt').flatten()
+        labels = self.tokenizer.encode(example['output'], return_tensors='pt').flatten()
+        negative_examples = []
+        for _ in range(self.config.negative_samples):
+            negative_example = torch.tensor(self.tokenizer.encode(tf.strings.reduce_join(tf.random.shuffle(self.tokenizer.encode(example['input'], return_tensors='pt').flatten())).numpy(), return_tensors='pt').flatten())
+            negative_examples.append(negative_example)
+        return {
+            'input_ids': input_ids,
+            'labels': labels,
+            'negative_examples': torch.stack(negative_examples)
+        }
 
-def prepare_dataset(data, config: ModelConfig):
-    """Prepare the dataset."""
-    inputs = tf.data.Dataset.from_tensor_slices(data)
-    inputs = inputs.map(lambda example: (
-        {
-            "input_ids": tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string),
-            "labels": tf.strings.split(example['output'], sep='').to_tensor(dtype=tf.string),
-            "attention_mask": tf.ones((config.train_batch_size, max(map(lambda example: len(example['input']), [example])))),
-            "negative_examples": tf.map_fn(
-                lambda example: tf.map_fn(
-                    lambda _: tf.strings.split(tf.strings.reduce_join(tf.random.shuffle(tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string))), sep='').to_tensor(dtype=tf.string),
-                    tf.range(config.negative_samples),
-                    dtype=tf.string
-                ),
-                [example],
-                dtype=tf.string
-            )[0]
-        },
-        tf.zeros((config.train_batch_size,)))
-    )
-    return inputs
-
-def train_model(model, optimizer, config: ModelConfig, train_dataset, test_dataset) -> None:
+def train_model(model, optimizer, config, train_dataset, test_dataset):
     """Train the model."""
+    train_dataloader = DataLoader(train_dataset, batch_size=config.train_batch_size, shuffle=True)
+    test_dataloader = DataLoader(test_dataset, batch_size=config.eval_batch_size, shuffle=False)
     for epoch in range(config.num_epochs):
         total_loss = 0
-        for batch in train_dataset:
-            anchor = batch[0]['input_ids']
-            positive = batch[0]['labels']
-            negative = batch[0]['negative_examples']
-            loss = train_on_batch(model, optimizer, anchor, positive, negative)
-            total_loss += loss
-        print(f"Epoch {epoch+1}, Loss: {total_loss / len(list(train_dataset))}")
-        test_loss = evaluate(model, test_dataset)
-        print(f"Epoch {epoch+1}, Test Loss: {test_loss}")
-        save_model(model, config, epoch+1)
+        for batch in train_dataloader:
+            anchor = batch['input_ids']
+            positive = batch['labels']
+            negative = batch['negative_examples']
+            optimizer.zero_grad()
+            anchor_outputs = model(anchor)
+            positive_outputs = model(positive)
+            negative_outputs = model(negative)
+            loss = calculate_loss(anchor_outputs, positive_outputs, negative_outputs)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+        print(f"Epoch {epoch+1}, Loss: {total_loss / len(train_dataloader)}")
+        test_loss = 0
+        with torch.no_grad():
+            for batch in test_dataloader:
+                input_ids = batch['input_ids']
+                labels = batch['labels']
+                outputs = model(input_ids)
+                loss = torch.nn.CrossEntropyLoss()(outputs, labels)
+                test_loss += loss.item()
+        print(f"Epoch {epoch+1}, Test Loss: {test_loss / len(test_dataloader)}")
 
-def main() -> None:
+def main():
     """Main function."""
     config = ModelConfig()
     train_data = load_data("train.json")
     test_data = load_data("test.json")
-    train_dataset = prepare_dataset(train_data, config)
-    test_dataset = prepare_dataset(test_data, config)
+    train_dataset = TripletDataset(train_data, config)
+    test_dataset = TripletDataset(test_data, config)
     model = TripletModel(embedding_dim=128, vocab_size=1000)
-    optimizer = optimizers.Adam(learning_rate=0.001)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     train_model(model, optimizer, config, train_dataset, test_dataset)
 
 if __name__ == "__main__":
