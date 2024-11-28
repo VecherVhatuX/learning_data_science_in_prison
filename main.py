@@ -60,6 +60,42 @@ class TripletModel(tf.keras.Model):
         x = self.output_dense(x)
         return x
 
+class Dataset:
+    def __init__(self, data, config: ModelConfig):
+        self.data = data
+        self.config = config
+
+    def _shuffle(self):
+        np.random.shuffle(self.data)
+
+    def _get_batch(self, batch_size):
+        for i in range(0, len(self.data), batch_size):
+            batch = self.data[i:i+batch_size]
+            yield batch
+
+    def _map_fn(self, batch):
+        return ({
+            "input_ids": tf.strings.split(batch['input'], sep='').to_tensor(dtype=tf.string),
+            "labels": tf.strings.split(batch['output'], sep='').to_tensor(dtype=tf.string),
+            "attention_mask": tf.ones((self.config.train_batch_size, max(map(lambda example: len(example['input']), [batch])))),
+            "negative_examples": tf.map_fn(lambda example: tf.map_fn(lambda _: tf.strings.split(tf.strings.reduce_join(tf.random.shuffle(tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string))), sep='').to_tensor(dtype=tf.string), tf.range(self.config.negative_samples), dtype=tf.string), [batch], dtype=tf.string)
+        }, tf.zeros((self.config.train_batch_size,)))
+
+    def dataset(self):
+        self._shuffle()
+        dataset = tf.data.Dataset.from_generator(
+            lambda: self._get_batch(self.config.train_batch_size),
+            output_types=(dict, tf.float32),
+            output_shapes=({
+                "input_ids": tf.TensorShape([None, None]),
+                "labels": tf.TensorShape([None, None]),
+                "attention_mask": tf.TensorShape([None, None]),
+                "negative_examples": tf.TensorShape([None, None, None])
+            }, tf.TensorShape([]))
+        )
+        dataset = dataset.map(self._map_fn)
+        return dataset
+
 def load_data(file_path: str) -> dict:
     try:
         with open(file_path, 'r') as file:
@@ -67,19 +103,6 @@ def load_data(file_path: str) -> dict:
     except FileNotFoundError:
         print(f"File {file_path} not found.")
         return None
-
-def prepare_data(data, config: ModelConfig) -> tf.data.Dataset:
-    dataset = tf.data.Dataset.from_tensor_slices(data)
-    dataset = dataset.shuffle(buffer_size=len(data))
-    batch_size = config.train_batch_size if config.train_batch_size > 0 else len(data)
-    dataset = dataset.batch(batch_size)
-    dataset = dataset.map(lambda x: ({
-        "input_ids": tf.strings.split(x['input'], sep='').to_tensor(dtype=tf.string),
-        "labels": tf.strings.split(x['output'], sep='').to_tensor(dtype=tf.string),
-        "attention_mask": tf.ones((batch_size, max(map(lambda example: len(example['input']), [x])))),
-        "negative_examples": tf.map_fn(lambda example: tf.map_fn(lambda _: tf.strings.split(tf.strings.reduce_join(tf.random.shuffle(tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string))), sep='').to_tensor(dtype=tf.string), tf.range(config.negative_samples), dtype=tf.string), [x], dtype=tf.string)
-    }, tf.zeros((batch_size,))))
-    return dataset
 
 def calculate_loss(anchor, positive, negative, margin=2.0) -> tf.Tensor:
     distance_positive = tf.reduce_sum(tf.square(anchor - positive), axis=1)
@@ -113,13 +136,14 @@ def save_model(model, config: ModelConfig, epoch: int) -> None:
 def train(model, optimizer, config: ModelConfig, train_dataset, test_dataset) -> None:
     for epoch in range(config.num_epochs):
         total_loss = 0
-        for batch in train_dataset:
+        dataset = train_dataset.dataset()
+        for batch in dataset:
             anchor = batch['input_ids']
             positive = batch['labels']
             negative = batch['negative_examples']
             loss = train_on_batch(model, optimizer, anchor, positive, negative)
             total_loss += loss
-        print(f"Epoch {epoch+1}, Loss: {total_loss / len(list(train_dataset))}")
+        print(f"Epoch {epoch+1}, Loss: {total_loss / len(list(dataset))}")
         test_loss = evaluate(model, test_dataset)
         print(f"Epoch {epoch+1}, Test Loss: {test_loss}")
         save_model(model, config, epoch+1)
@@ -127,8 +151,8 @@ def train(model, optimizer, config: ModelConfig, train_dataset, test_dataset) ->
 def load_and_prepare_data(config: ModelConfig) -> tuple:
     train_data = load_data("train.json")
     test_data = load_data("test.json")
-    train_dataset = prepare_data(train_data, config)
-    test_dataset = prepare_data(test_data, config)
+    train_dataset = Dataset(train_data, config)
+    test_dataset = Dataset(test_data, config)
     return train_dataset, test_dataset
 
 def build_and_compile_model(config: ModelConfig) -> tuple:
