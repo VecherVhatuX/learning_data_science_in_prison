@@ -139,11 +139,13 @@ def knn_f1(embeddings, labels, k=5):
 def train(model, dataset, criterion, optimizer, epochs):
     for epoch in range(epochs):
         for batch in dataset:
-            anchor_embeddings = model(batch['anchor'])
-            positive_embeddings = model(batch['positive'])
-            negative_embeddings = model(batch['negative'])
-            loss = criterion(anchor_embeddings, positive_embeddings, negative_embeddings)
-            optimizer.minimize(loss, model.trainable_variables)
+            with tf.GradientTape() as tape:
+                anchor_embeddings = model(batch['anchor'], training=True)
+                positive_embeddings = model(batch['positive'], training=True)
+                negative_embeddings = model(batch['negative'], training=True)
+                loss = criterion(anchor_embeddings, positive_embeddings, negative_embeddings)
+            gradients = tape.gradient(loss, model.trainable_variables)
+            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
         print(f'Epoch {epoch+1}, Loss: {loss.numpy()}')
 
 
