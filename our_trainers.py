@@ -64,36 +64,24 @@ def similar_embeddings(embeddings, target_embedding, k=5):
     return tf.argsort(-similarities)[:k]
 
 def knn_accuracy(embeddings, labels, k=5):
-    correct = 0
-    for i in range(len(embeddings)):
-        distances = distance(embeddings, embeddings[i])
-        indices = tf.argsort(distances)[1:k+1]
-        if labels[i] in labels[indices]:
-            correct += 1
-    return correct / len(embeddings)
+    return tf.reduce_mean(tf.map_fn(lambda x: tf.reduce_any(tf.equal(labels[x[1:k+1]], labels[x[0]])), (tf.argsort(distance(embeddings, embeddings), axis=1)), tf.float32))
 
 def knn_precision(embeddings, labels, k=5):
-    precision = 0
-    for i in range(len(embeddings)):
-        distances = distance(embeddings, embeddings[i])
-        indices = tf.argsort(distances)[1:k+1]
-        precision += len(tf.where(labels[indices] == labels[i])) / k
-    return precision / len(embeddings)
+    return tf.reduce_mean(tf.map_fn(lambda x: tf.reduce_sum(tf.equal(labels[x[1:k+1]], labels[x[0]])) / k, (tf.argsort(distance(embeddings, embeddings), axis=1)), tf.float32))
 
 def knn_recall(embeddings, labels, k=5):
-    recall = 0
-    for i in range(len(embeddings)):
-        distances = distance(embeddings, embeddings[i])
-        indices = tf.argsort(distances)[1:k+1]
-        recall += len(tf.where(labels[indices] == labels[i])) / len(tf.where(labels == labels[i]))
-    return recall / len(embeddings)
+    return tf.reduce_mean(tf.map_fn(lambda x: tf.reduce_sum(tf.equal(labels[x[1:k+1]], labels[x[0]])) / tf.reduce_sum(tf.equal(labels, labels[x[0]])), (tf.argsort(distance(embeddings, embeddings), axis=1)), tf.float32))
 
 def knn_f1(embeddings, labels, k=5):
     precision = knn_precision(embeddings, labels, k)
     recall = knn_recall(embeddings, labels, k)
     return 2 * (precision * recall) / (precision + recall)
 
-def train(model, dataset, criterion, optimizer, epochs):
+def build_and_train(embedding_dim, num_features, batch_size, num_negatives, epochs, learning_rate, samples, labels):
+    model = build_model(embedding_dim, num_features)
+    criterion = build_criterion()
+    optimizer = build_optimizer(model, learning_rate)
+    dataset = build_dataset(samples, labels, num_negatives, batch_size)
     for epoch in range(epochs):
         for batch in dataset:
             anchor, positive, negative = batch
@@ -105,13 +93,7 @@ def train(model, dataset, criterion, optimizer, epochs):
             gradients = tape.gradient(loss, model.trainable_variables)
             optimizer.apply_gradients(zip(gradients, model.trainable_variables))
         print(f'Epoch {epoch+1}, Loss: {loss.numpy()}')
-
-def evaluate(model, dataset):
-    embeddings = []
-    for batch in dataset:
-        batch_embeddings = model(batch[0])
-        embeddings.append(batch_embeddings)
-    return tf.concat(embeddings, axis=0)
+    return model
 
 def main():
     np.random.seed(42)
@@ -125,44 +107,24 @@ def main():
     embedding_dim = 101
     num_features = 10
 
-    model = build_model(embedding_dim, num_features)
-    criterion = build_criterion()
-    optimizer = build_optimizer(model, learning_rate)
-    dataset = build_dataset(samples, labels, num_negatives, batch_size)
-
-    train(model, dataset, criterion, optimizer, epochs)
+    model = build_and_train(embedding_dim, num_features, batch_size, num_negatives, epochs, learning_rate, samples, labels)
 
     input_ids = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=np.int32).reshape((1, 10))
     output = model.predict(input_ids)
 
     model.save_weights("triplet_model.h5")
 
-    predicted_embeddings = evaluate(model, dataset)
-    print(predicted_embeddings)
+    predicted_embeddings = model.predict(samples)
 
-    distance = distance(output, output)
-    print(distance)
-
-    similarity = similarity(output, output)
-    print(similarity)
-
-    cosine_distance = cosine_distance(output, output)
-    print(cosine_distance)
-
-    all_embeddings = model.predict(samples)
-    nearest_neighbors = nearest_neighbors(all_embeddings, output, k=5)
-    print(nearest_neighbors)
-
-    similar_embeddings = similar_embeddings(all_embeddings, output, k=5)
-    print(similar_embeddings)
-
-    print("KNN Accuracy:", knn_accuracy(all_embeddings, labels, k=5))
-
-    print("KNN Precision:", knn_precision(all_embeddings, labels, k=5))
-
-    print("KNN Recall:", knn_recall(all_embeddings, labels, k=5))
-
-    print("KNN F1-score:", knn_f1(all_embeddings, labels, k=5))
+    print(distance(output, output))
+    print(similarity(output, output))
+    print(cosine_distance(output, output))
+    print(nearest_neighbors(predicted_embeddings, output, k=5))
+    print(similar_embeddings(predicted_embeddings, output, k=5))
+    print("KNN Accuracy:", knn_accuracy(predicted_embeddings, labels, k=5))
+    print("KNN Precision:", knn_precision(predicted_embeddings, labels, k=5))
+    print("KNN Recall:", knn_recall(predicted_embeddings, labels, k=5))
+    print("KNN F1-score:", knn_f1(predicted_embeddings, labels, k=5))
 
 if __name__ == "__main__":
     main()
