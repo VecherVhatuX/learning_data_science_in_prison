@@ -95,6 +95,13 @@ def train(model, criterion, optimizer, dataset, epochs):
             optimizer.apply_gradients(zip(gradients, model.trainable_variables))
             print(f'Epoch: {epoch+1}, Loss: {loss.numpy()}')
 
+def validate(model, embeddings, labels, k=5):
+    predicted_embeddings = model.predict(embeddings)
+    print("Validation KNN Accuracy:", knn_accuracy(predicted_embeddings, labels, k))
+    print("Validation KNN Precision:", knn_precision(predicted_embeddings, labels, k))
+    print("Validation KNN Recall:", knn_recall(predicted_embeddings, labels, k))
+    print("Validation KNN F1-score:", knn_f1(predicted_embeddings, labels, k))
+
 def pipeline(learning_rate, batch_size, epochs, num_negatives, embedding_dim, num_features):
     samples = np.random.randint(0, 100, (100, 10))
     labels = np.random.randint(0, 2, (100,))
@@ -112,10 +119,7 @@ def pipeline(learning_rate, batch_size, epochs, num_negatives, embedding_dim, nu
     print(cosine_distance(output, output))
     print(nearest_neighbors(predicted_embeddings, output, k=5))
     print(similar_embeddings(predicted_embeddings, output, k=5))
-    print("KNN Accuracy:", knn_accuracy(predicted_embeddings, labels, k=5))
-    print("KNN Precision:", knn_precision(predicted_embeddings, labels, k=5))
-    print("KNN Recall:", knn_recall(predicted_embeddings, labels, k=5))
-    print("KNN F1-score:", knn_f1(predicted_embeddings, labels, k=5))
+    validate(model, samples, labels, k=5)
 
 def main():
     np.random.seed(42)
