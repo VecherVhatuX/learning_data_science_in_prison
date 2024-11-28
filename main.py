@@ -9,7 +9,6 @@ import numpy as np
 
 @dataclass
 class ModelConfig:
-    """Configuration for the model architecture and training process."""
     model_base: str = "t5-base"
     conversation_format: str = "none"
     low_rank_alpha: int = 16
