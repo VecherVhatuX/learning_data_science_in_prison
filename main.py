@@ -45,6 +45,15 @@ class ModelConfig:
     negative_samples: int = 5
 
 def load_data(file_path: str) -> dict:
+    """
+    Loads a JSON file into a Python dictionary.
+    
+    Args:
+        file_path (str): Path to the JSON file to be loaded.
+    
+    Returns:
+        dict: A Python dictionary containing the data from the JSON file.
+    """
     try:
         with open(file_path, 'r') as file:
             return json.load(file)
@@ -53,6 +62,16 @@ def load_data(file_path: str) -> dict:
         return None
 
 def prepare_data(data, config: ModelConfig) -> tf.data.Dataset:
+    """
+    Prepares the input data for training by shuffling, batching, and mapping it.
+    
+    Args:
+        data: Input data to be prepared.
+        config (ModelConfig): Configuration for the model.
+    
+    Returns:
+        tf.data.Dataset: Prepared dataset for training.
+    """
     dataset = tf.data.Dataset.from_tensor_slices(data)
     dataset = dataset.shuffle(buffer_size=len(data))
     if config.conversation_format == "none":
@@ -68,6 +87,15 @@ def prepare_data(data, config: ModelConfig) -> tf.data.Dataset:
     return dataset
 
 def build_model(config: ModelConfig) -> (tf.keras.Model, tf.keras.optimizers.Optimizer):
+    """
+    Builds a neural network model with an embedding layer, two LSTM layers, two dense layers, and an output dense layer.
+    
+    Args:
+        config (ModelConfig): Configuration for the model.
+    
+    Returns:
+        tuple: A tuple containing the built model and the Adam optimizer.
+    """
     model = tf.keras.Sequential([
         layers.Embedding(input_dim=1000, output_dim=128),
         layers.LSTM(128),
@@ -79,12 +107,37 @@ def build_model(config: ModelConfig) -> (tf.keras.Model, tf.keras.optimizers.Opt
     return model, optimizer
 
 def calculate_loss(anchor, positive, negative, margin=2.0) -> tf.Tensor:
+    """
+    Calculates the triplet loss for a given anchor, positive, and negative example.
+    
+    Args:
+        anchor: Anchor example.
+        positive: Positive example.
+        negative: Negative example.
+        margin (float, optional): Margin for the triplet loss. Defaults to 2.0.
+    
+    Returns:
+        tf.Tensor: Triplet loss for the given examples.
+    """
     distance_positive = tf.reduce_sum(tf.square(anchor - positive), axis=1)
     distance_negative = tf.reduce_sum(tf.square(anchor - negative), axis=1)
     losses = tf.maximum(distance_positive - distance_negative + margin, 0)
     return tf.reduce_mean(losses)
 
 def train_on_batch(model, optimizer, anchor, positive, negative) -> tf.Tensor:
+    """
+    Trains the model on a single batch of data using the Adam optimizer and triplet loss.
+    
+    Args:
+        model: Model to be trained.
+        optimizer: Adam optimizer.
+        anchor: Anchor example.
+        positive: Positive example.
+        negative: Negative example.
+    
+    Returns:
+        tf.Tensor: Loss for the given batch.
+    """
     with tf.GradientTape() as tape:
         anchor_outputs = model(anchor, training=True)
         positive_outputs = model(positive, training=True)
@@ -95,6 +148,16 @@ def train_on_batch(model, optimizer, anchor, positive, negative) -> tf.Tensor:
     return loss
 
 def evaluate(model, dataset) -> tf.Tensor:
+    """
+    Evaluates the model on a given dataset using sparse categorical cross-entropy loss.
+    
+    Args:
+        model: Model to be evaluated.
+        dataset: Dataset to be evaluated on.
+    
+    Returns:
+        tf.Tensor: Loss for the given dataset.
+    """
     total_loss = 0
     for batch in dataset:
         input_ids = batch['input_ids']
@@ -105,9 +168,27 @@ def evaluate(model, dataset) -> tf.Tensor:
     return total_loss / len(dataset)
 
 def save_model(model, config: ModelConfig, epoch: int) -> None:
+    """
+    Saves the model weights to a file after each epoch.
+    
+    Args:
+        model: Model to be saved.
+        config (ModelConfig): Configuration for the model.
+        epoch (int): Current epoch number.
+    """
     model.save_weights(f"{config.output_dir}/model_{epoch}.h5")
 
 def train(model, optimizer, config: ModelConfig, train_dataset, test_dataset) -> None:
+    """
+    Trains the model on a given dataset for a specified number of epochs.
+    
+    Args:
+        model: Model to be trained.
+        optimizer: Adam optimizer.
+        config (ModelConfig): Configuration for the model.
+        train_dataset: Dataset to be trained on.
+        test_dataset: Dataset to be evaluated on.
+    """
     for epoch in range(config.num_epochs):
         total_loss = 0
         for batch in train_dataset:
@@ -122,6 +203,9 @@ def train(model, optimizer, config: ModelConfig, train_dataset, test_dataset) ->
         save_model(model, config, epoch)
 
 def main() -> None:
+    """
+    Main function to run the training process.
+    """
     model_config = ModelConfig()
     train_data = prepare_data(load_data("train.json"), model_config)
     test_data = prepare_data(load_data("test.json"), model_config)
