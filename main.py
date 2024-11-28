@@ -102,7 +102,7 @@ def evaluate(model, dataset) -> tf.Tensor:
         outputs = model(input_ids)
         loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)(labels, outputs)
         total_loss += loss
-    return total_loss / len(dataset)
+    return total_loss / len(list(dataset))
 
 def save_model(model, config: ModelConfig, epoch: int) -> None:
     model.save_weights(f"{config.output_dir}/model_{epoch}.h5")
@@ -116,7 +116,7 @@ def train(model, optimizer, config: ModelConfig, train_dataset, test_dataset) ->
             negative = batch['negative_examples']
             loss = train_on_batch(model, optimizer, anchor, positive, negative)
             total_loss += loss
-        print(f"Loss: {total_loss / len(train_dataset)}")
+        print(f"Loss: {total_loss / len(list(train_dataset))}")
         test_loss = evaluate(model, test_dataset)
         print(f"Test Loss: {test_loss}")
         save_model(model, config, epoch)
