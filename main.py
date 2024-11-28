@@ -47,10 +47,10 @@ class ModelConfig:
 class TripletModel(tf.keras.Model):
     def __init__(self, embedding_dim, vocab_size):
         super().__init__()
-        self.embedding = tf.keras.layers.Embedding(input_dim=vocab_size, output_dim=embedding_dim)
-        self.lstm = tf.keras.layers.LSTM(embedding_dim, return_sequences=True)
-        self.dense = tf.keras.layers.Dense(embedding_dim, activation='relu')
-        self.output_dense = tf.keras.layers.Dense(vocab_size)
+        self.embedding = layers.Embedding(input_dim=vocab_size, output_dim=embedding_dim)
+        self.lstm = layers.LSTM(embedding_dim, return_sequences=True)
+        self.dense = layers.Dense(embedding_dim, activation='relu')
+        self.output_dense = layers.Dense(vocab_size)
 
     def call(self, inputs, training=None):
         x = self.embedding(inputs)
@@ -73,16 +73,28 @@ class Dataset:
             yield batch
 
     def _map_fn(self, batch):
+        input_ids = tf.strings.split(batch['input'], sep='').to_tensor(dtype=tf.string)
+        labels = tf.strings.split(batch['output'], sep='').to_tensor(dtype=tf.string)
+        attention_mask = tf.ones((self.config.train_batch_size, max(map(lambda example: len(example['input']), batch))))
+        negative_examples = tf.map_fn(
+            lambda example: tf.map_fn(
+                lambda _: tf.strings.split(tf.strings.reduce_join(tf.random.shuffle(tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string))), sep='').to_tensor(dtype=tf.string),
+                tf.range(self.config.negative_samples),
+                dtype=tf.string
+            ),
+            batch,
+            dtype=tf.string
+        )
         return ({
-            "input_ids": tf.strings.split(batch['input'], sep='').to_tensor(dtype=tf.string),
-            "labels": tf.strings.split(batch['output'], sep='').to_tensor(dtype=tf.string),
-            "attention_mask": tf.ones((self.config.train_batch_size, max(map(lambda example: len(example['input']), batch)))),
-            "negative_examples": tf.map_fn(lambda example: tf.map_fn(lambda _: tf.strings.split(tf.strings.reduce_join(tf.random.shuffle(tf.strings.split(example['input'], sep='').to_tensor(dtype=tf.string))), sep='').to_tensor(dtype=tf.string), tf.range(self.config.negative_samples), dtype=tf.string), batch, dtype=tf.string)
+            "input_ids": input_ids,
+            "labels": labels,
+            "attention_mask": attention_mask,
+            "negative_examples": negative_examples
         }, tf.zeros((self.config.train_batch_size,)))
 
     def dataset(self):
         self._shuffle()
-        dataset = tf.data.Dataset.from_generator(
+        return tf.data.Dataset.from_generator(
             lambda: self._get_batch(self.config.train_batch_size),
             output_types=(dict, tf.float32),
             output_shapes=({
@@ -91,9 +103,7 @@ class Dataset:
                 "attention_mask": tf.TensorShape([None, None]),
                 "negative_examples": tf.TensorShape([None, None, None])
             }, tf.TensorShape([]))
-        )
-        dataset = dataset.map(self._map_fn)
-        return dataset
+        ).map(self._map_fn)
 
 def load_data(file_path: str) -> dict:
     try:
@@ -135,14 +145,13 @@ def save_model(model, config: ModelConfig, epoch: int) -> None:
 def train(model, optimizer, config: ModelConfig, train_dataset, test_dataset) -> None:
     for epoch in range(config.num_epochs):
         total_loss = 0
-        dataset = train_dataset.dataset()
-        for batch in dataset:
+        for batch in train_dataset.dataset():
             anchor = batch['input_ids']
             positive = batch['labels']
             negative = batch['negative_examples']
             loss = train_on_batch(model, optimizer, anchor, positive, negative)
             total_loss += loss
-        print(f"Epoch {epoch+1}, Loss: {total_loss / len(list(dataset))}")
+        print(f"Epoch {epoch+1}, Loss: {total_loss / len(list(train_dataset.dataset()))}")
         test_loss = evaluate(model, test_dataset.dataset())
         print(f"Epoch {epoch+1}, Test Loss: {test_loss}")
         save_model(model, config, epoch+1)
@@ -156,7 +165,7 @@ def load_and_prepare_data(config: ModelConfig) -> tuple:
 
 def build_and_compile_model(config: ModelConfig) -> tuple:
     model = TripletModel(embedding_dim=128, vocab_size=1000)
-    optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
+    optimizer = optimizers.Adam(learning_rate=0.001)
     return model, optimizer
 
 def main() -> None:
