@@ -1,61 +1,51 @@
 import tensorflow as tf
 import numpy as np
 
-# Model
-class TripletModel(tf.keras.Model):
-    def __init__(self, embedding_dim, num_features):
-        super(TripletModel, self).__init__()
-        self.embedding = tf.keras.layers.Embedding(embedding_dim, num_features, input_length=10)
-        self.avg_pool = tf.keras.layers.GlobalAveragePooling1D()
-        self.flatten = tf.keras.layers.Flatten()
-        self.linear = tf.keras.layers.Dense(num_features)
-        self.batch_norm = tf.keras.layers.BatchNormalization()
-        self.instance_norm = tf.keras.layers.LayerNormalization()
+def build_model(embedding_dim, num_features):
+    return tf.keras.Sequential([
+        tf.keras.layers.Embedding(embedding_dim, num_features, input_length=10),
+        tf.keras.layers.GlobalAveragePooling1D(),
+        tf.keras.layers.Flatten(),
+        tf.keras.layers.Dense(num_features),
+        tf.keras.layers.BatchNormalization(),
+        tf.keras.layers.LayerNormalization()
+    ])
 
-    def call(self, x, training=False):
-        x = self.embedding(x)
-        x = self.avg_pool(x)
-        x = self.flatten(x)
-        x = self.linear(x)
-        x = self.batch_norm(x, training=training)
-        x = self.instance_norm(x)
-        return x
-
-# Loss
-class TripletLoss(tf.keras.layers.Layer):
-    def __init__(self, margin=1.0):
-        super(TripletLoss, self).__init__()
-        self.margin = margin
-
-    def call(self, inputs):
-        anchor, positive, negative = inputs
+def build_criterion(margin=1.0):
+    @tf.function
+    def triplet_loss(anchor, positive, negative):
         d_ap = tf.norm(anchor - positive, axis=-1)
         d_an = tf.norm(anchor[:, None] - negative, axis=-1)
-        loss = tf.maximum(d_ap - tf.reduce_min(d_an, axis=-1) + self.margin, 0.0)
+        loss = tf.maximum(d_ap - tf.reduce_min(d_an, axis=-1) + margin, 0.0)
         return tf.reduce_mean(loss)
+    return triplet_loss
 
-# Dataset
-class TripletData(tf.data.Dataset):
-    def __init__(self, samples, labels, num_negatives, batch_size, shuffle=True):
-        self.samples = samples
-        self.labels = labels
-        self.num_negatives = num_negatives
-        self.batch_size = batch_size
-        self.shuffle = shuffle
-        self.indices = np.arange(len(self.samples))
+def build_optimizer(model, learning_rate):
+    return tf.keras.optimizers.Adam(learning_rate=learning_rate)
 
-    def __len__(self):
-        return len(self.samples) // self.batch_size
+def build_dataset(samples, labels, num_negatives, batch_size, shuffle=True):
+    @tf.function
+    def generate_triplets():
+        indices = np.arange(len(samples))
+        if shuffle:
+            np.random.shuffle(indices)
+        for i in range(len(samples) // batch_size):
+            batch_indices = indices[i * batch_size:(i + 1) * batch_size]
+            anchor_idx = np.random.choice(batch_indices, size=batch_size, replace=False)
+            anchor_label = labels[anchor_idx]
+            positive_idx = np.array([np.random.choice(np.where(labels == label)[0], size=1)[0] for label in anchor_label])
+            negative_idx = np.array([np.random.choice(np.where(labels != label)[0], size=num_negatives, replace=False) for label in anchor_label])
+            yield (samples[anchor_idx], samples[positive_idx], samples[negative_idx])
+    return tf.data.Dataset.from_generator(
+        generate_triplets,
+        output_types=(tf.int32, tf.int32, tf.int32),
+        output_shapes=(
+            tf.TensorShape([batch_size, 10]),
+            tf.TensorShape([batch_size, 10]),
+            tf.TensorShape([batch_size, num_negatives, 10])
+        )
+    )
 
-    def __getitem__(self, index):
-        batch_indices = self.indices[index * self.batch_size:(index + 1) * self.batch_size]
-        anchor_idx = np.random.choice(batch_indices, size=self.batch_size, replace=False)
-        anchor_label = self.labels[anchor_idx]
-        positive_idx = np.array([np.random.choice(np.where(self.labels == label)[0], size=1)[0] for label in anchor_label])
-        negative_idx = np.array([np.random.choice(np.where(self.labels != label)[0], size=self.num_negatives, replace=False) for label in anchor_label])
-        return (self.samples[anchor_idx], self.samples[positive_idx], self.samples[negative_idx])
-
-# Metrics
 def distance(embedding1, embedding2):
     return tf.norm(embedding1 - embedding2, axis=-1)
 
@@ -103,7 +93,6 @@ def knn_f1(embeddings, labels, k=5):
     recall = knn_recall(embeddings, labels, k)
     return 2 * (precision * recall) / (precision + recall)
 
-# Training
 def train(model, dataset, criterion, optimizer, epochs):
     for epoch in range(epochs):
         for batch in dataset:
@@ -112,12 +101,11 @@ def train(model, dataset, criterion, optimizer, epochs):
                 anchor_embeddings = model(anchor, training=True)
                 positive_embeddings = model(positive, training=True)
                 negative_embeddings = model(negative, training=True)
-                loss = criterion((anchor_embeddings, positive_embeddings, negative_embeddings))
+                loss = criterion(anchor_embeddings, positive_embeddings, negative_embeddings)
             gradients = tape.gradient(loss, model.trainable_variables)
             optimizer.apply_gradients(zip(gradients, model.trainable_variables))
         print(f'Epoch {epoch+1}, Loss: {loss.numpy()}')
 
-# Evaluation
 def evaluate(model, dataset):
     embeddings = []
     for batch in dataset:
@@ -125,31 +113,6 @@ def evaluate(model, dataset):
         embeddings.append(batch_embeddings)
     return tf.concat(embeddings, axis=0)
 
-# Model builder
-def build_model(embedding_dim, num_features):
-    return TripletModel(embedding_dim, num_features)
-
-# Loss builder
-def build_criterion(margin=1.0):
-    return TripletLoss(margin)
-
-# Optimizer builder
-def build_optimizer(model, learning_rate):
-    return tf.keras.optimizers.Adam(learning_rate=learning_rate)
-
-# Dataset builder
-def build_dataset(samples, labels, num_negatives, batch_size, shuffle=True):
-    return tf.data.Dataset.from_generator(
-        lambda: TripletData(samples, labels, num_negatives, batch_size, shuffle),
-        output_types=(tf.int32, tf.int32, tf.int32),
-        output_shapes=(
-            tf.TensorShape([batch_size, 10]),
-            tf.TensorShape([batch_size, 10]),
-            tf.TensorShape([batch_size, num_negatives, 10])
-        )
-    )
-
-# Main
 def main():
     np.random.seed(42)
 
