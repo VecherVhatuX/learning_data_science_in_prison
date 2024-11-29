@@ -22,7 +22,7 @@ class TripletDataset:
         self.tokenizer.fit_on_texts([item['anchor'] for item in triplets] + [item['positive'] for item in triplets] + [item['negative'] for item in triplets])
         self.vocab_size = len(self.tokenizer.word_index) + 1
 
-    def map_func(self, item):
+    def _map_func(self, item):
         anchor_sequence = self.tokenizer.texts_to_sequences([item['anchor']])[0]
         positive_sequence = self.tokenizer.texts_to_sequences([item['positive']])[0]
         negative_sequence = self.tokenizer.texts_to_sequences([item['negative']])[0]
@@ -33,7 +33,7 @@ class TripletDataset:
 
     def create_dataset(self):
         dataset = tf.data.Dataset.from_tensor_slices(self.triplets)
-        dataset = dataset.map(lambda x: tf.py_function(self.map_func, [x], [tf.int32, tf.int32, tf.int32]), num_parallel_calls=tf.data.AUTOTUNE)
+        dataset = dataset.map(lambda x: tf.py_function(self._map_func, [x], [tf.int32, tf.int32, tf.int32]), num_parallel_calls=tf.data.AUTOTUNE)
         dataset = dataset.batch(self.batch_size)
         return dataset
 
@@ -134,12 +134,12 @@ def train(model, train_dataset, test_dataset, epochs):
             positive_similarity = tf.reduce_sum(tf.multiply(anchor_output, positive_output), axis=1)
             negative_similarity = tf.reduce_sum(tf.multiply(anchor_output, negative_output), axis=1)
             total_correct += tf.reduce_sum((positive_similarity > negative_similarity))
-        accuracy = total_correct / len(test_dataset.create_dataset())
-        print(f'Test Loss: {total_loss/len(test_dataset.create_dataset())}')
+        accuracy = total_correct / len(list(test_dataset.create_dataset()))
+        print(f'Test Loss: {total_loss/len(list(test_dataset.create_dataset()))}')
         print(f'Test Accuracy: {accuracy}')
-        test_losses.append(total_loss/len(test_dataset.create_dataset()))
+        test_losses.append(total_loss/len(list(test_dataset.create_dataset())))
         test_accuracies.append(accuracy)
-        train_accuracies.append(total_correct / len(train_dataset.create_dataset()))
+        train_accuracies.append(total_correct / len(list(train_dataset.create_dataset())))
     return train_losses, test_losses, train_accuracies, test_accuracies
 
 def plot(train_losses, test_losses, train_accuracies, test_accuracies):
