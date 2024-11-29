@@ -5,58 +5,38 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 
-class TripletModel(keras.Model):
-    def __init__(self, embedding_dim, num_features):
-        super(TripletModel, self).__init__()
-        self.embedding = layers.Embedding(embedding_dim, num_features)
-        self.global_average_pooling = layers.GlobalAveragePooling1D()
-        self.flatten = layers.Flatten()
-        self.dense = layers.Dense(num_features)
-        self.batch_normalization = layers.BatchNormalization()
-        self.layer_normalization = layers.LayerNormalization()
+def create_triplet_model(embedding_dim, num_features):
+    return keras.Sequential([
+        layers.Embedding(embedding_dim, num_features),
+        layers.GlobalAveragePooling1D(),
+        layers.Flatten(),
+        layers.Dense(num_features),
+        layers.BatchNormalization(),
+        layers.LayerNormalization()
+    ])
 
-    def call(self, inputs):
-        x = self.embedding(inputs)
-        x = self.global_average_pooling(x)
-        x = self.flatten(x)
-        x = self.dense(x)
-        x = self.batch_normalization(x)
-        x = self.layer_normalization(x)
-        return x
-
-class TripletLoss(keras.losses.Loss):
-    def __init__(self, margin=1.0):
-        super(TripletLoss, self).__init__()
-        self.margin = margin
-
-    def call(self, y_true, y_pred):
+def create_triplet_loss(margin=1.0):
+    def triplet_loss(y_true, y_pred):
         anchor, positive, negative = y_pred
         d_ap = tf.norm(anchor - positive, axis=-1)
         d_an = tf.norm(anchor[:, tf.newaxis, :] - negative, axis=-1)
-        loss = tf.maximum(d_ap - tf.reduce_min(d_an, axis=-1) + self.margin, tf.zeros_like(d_ap))
+        loss = tf.maximum(d_ap - tf.reduce_min(d_an, axis=-1) + margin, tf.zeros_like(d_ap))
         return tf.reduce_mean(loss)
+    return triplet_loss
 
-class TripletDataset(tf.keras.utils.Sequence):
-    def __init__(self, samples, labels, num_negatives, batch_size):
-        self.samples = samples
-        self.labels = labels
-        self.num_negatives = num_negatives
-        self.batch_size = batch_size
+def create_triplet_dataset(samples, labels, num_negatives, batch_size):
+    def generate_batches():
+        while True:
+            anchor_idx = np.random.choice(len(samples), size=batch_size, replace=False)
+            anchor_label = labels[anchor_idx]
+            positive_idx = np.array([np.random.choice(np.where(labels == label)[0], size=1)[0] for label in anchor_label])
+            negative_idx = np.array([np.random.choice(np.where(labels != label)[0], size=num_negatives, replace=False) for label in anchor_label])
+            yield samples[anchor_idx], samples[positive_idx], samples[negative_idx]
+    return generate_batches()
 
-    def __len__(self):
-        return len(self.samples) // self.batch_size
-
-    def __getitem__(self, idx):
-        anchor_idx = np.random.choice(len(self.samples), size=self.batch_size, replace=False)
-        anchor_label = self.labels[anchor_idx]
-        positive_idx = np.array([np.random.choice(np.where(self.labels == label)[0], size=1)[0] for label in anchor_label])
-        negative_idx = np.array([np.random.choice(np.where(self.labels != label)[0], size=self.num_negatives, replace=False) for label in anchor_label])
-        return self.samples[anchor_idx], self.samples[positive_idx], self.samples[negative_idx]
-
-def train(model, dataset, epochs, optimizer):
-    loss_fn = TripletLoss()
+def train(model, dataset, epochs, optimizer, loss_fn):
     for epoch in range(epochs):
-        for batch in dataset:
+        for batch in dataset():
             with tf.GradientTape() as tape:
                 anchor, positive, negative = batch
                 anchor_embeddings = model(anchor)
@@ -87,10 +67,11 @@ def calculate_neighbors(predicted_embeddings, output, k=5):
 def pipeline(learning_rate, batch_size, epochs, num_negatives, embedding_dim, num_features, size):
     samples = np.random.randint(0, 100, (size, 10))
     labels = np.random.randint(0, 2, (size,))
-    model = TripletModel(embedding_dim, num_features)
+    model = create_triplet_model(embedding_dim, num_features)
     optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
-    dataset = TripletDataset(samples, labels, num_negatives, batch_size)
-    train(model, dataset, epochs, optimizer)
+    loss_fn = create_triplet_loss()
+    dataset = create_triplet_dataset(samples, labels, num_negatives, batch_size)
+    train(model, dataset, epochs, optimizer, loss_fn)
     input_ids = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=np.int32).reshape((1, 10))
     output = model(input_ids)
     model.save_weights("triplet_model.h5")
