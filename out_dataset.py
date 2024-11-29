@@ -19,17 +19,15 @@ import matplotlib.pyplot as plt
 def load_data(dataset_path, snippet_folder_path):
     with open(dataset_path, 'r') as f:
         dataset = json.load(f)
-    instance_id_map = {item['instance_id']: item['problem_statement'] for item in dataset}
-    snippet_directories = [(os.path.join(folder, f), os.path.join(folder, f, 'snippet.json')) 
-                           for f in os.listdir(snippet_folder_path) if os.path.isdir(os.path.join(snippet_folder_path, f))]
-    snippets = [(folder, json.load(open(snippet_file))) for folder, snippet_file in snippet_directories]
-    return instance_id_map, snippets
+    return ({item['instance_id']: item['problem_statement'] for item in dataset},
+            [(os.path.join(folder, f), os.path.join(folder, f, 'snippet.json')) 
+             for f in os.listdir(snippet_folder_path) if os.path.isdir(os.path.join(snippet_folder_path, f))])
 
 def create_triplets(instance_id_map, snippets):
     bug_snippets = []
     non_bug_snippets = []
     for _, snippet_file in snippets:
-        snippet_data = snippet_file
+        snippet_data = json.load(open(snippet_file))
         if snippet_data.get('is_bug', False):
             bug_snippets.append(snippet_data['snippet'])
         else:
@@ -44,32 +42,56 @@ def create_triplets(instance_id_map, snippets):
             for _ in range(min(1, len(non_bug_snippets)))]
 
 def create_model(vocab_size, embedding_dim, max_sequence_length):
-    anchor_input = Input(shape=(max_sequence_length,), name='anchor_input')
-    positive_input = Input(shape=(max_sequence_length,), name='positive_input')
-    negative_input = Input(shape=(max_sequence_length,), name='negative_input')
-
-    embedding = Embedding(input_dim=vocab_size, output_dim=embedding_dim)
-
-    anchor_embedding = embedding(anchor_input)
-    positive_embedding = embedding(positive_input)
-    negative_embedding = embedding(negative_input)
-
-    anchor_pooling = GlobalMaxPooling1D()(anchor_embedding)
-    positive_pooling = GlobalMaxPooling1D()(positive_embedding)
-    negative_pooling = GlobalMaxPooling1D()(negative_embedding)
-
-    anchor_dense = Dense(128, activation='relu')(anchor_pooling)
-    positive_dense = Dense(128, activation='relu')(positive_pooling)
-    negative_dense = Dense(128, activation='relu')(negative_pooling)
-
-    model = Model(inputs=[anchor_input, positive_input, negative_input], 
-                  outputs=[anchor_dense, positive_dense, negative_dense])
-
+    def embedding_module(input_dim):
+        input_layer = Input(shape=(max_sequence_length,), name='input')
+        embedding = Embedding(input_dim=input_dim, output_dim=embedding_dim)(input_layer)
+        pooling = GlobalMaxPooling1D()(embedding)
+        dense = Dense(128, activation='relu')(pooling)
+        return Model(inputs=input_layer, outputs=dense)
+    
+    anchor_input = embedding_module(vocab_size)
+    positive_input = embedding_module(vocab_size)
+    negative_input = embedding_module(vocab_size)
+    
+    anchor_output = anchor_input.output
+    positive_output = positive_input.output
+    negative_output = negative_input.output
+    
+    model = Model(inputs=[anchor_input.input, positive_input.input, negative_input.input], 
+                  outputs=[anchor_output, positive_output, negative_output])
+    
     model.compile(optimizer=Adam(lr=1e-5), loss='mean_squared_error')
     return model
 
 def calculate_triplet_loss(anchor_embeddings, positive_embeddings, negative_embeddings):
     return tf.reduce_mean(tf.maximum(0.2 + tf.norm(anchor_embeddings - positive_embeddings, axis=1) - tf.norm(anchor_embeddings - negative_embeddings, axis=1), 0))
+
+def train_data_loader(triplets, batch_size, max_sequence_length):
+    tokenizer = tf.keras.preprocessing.text.Tokenizer()
+    tokenizer.fit_on_texts([item['anchor'] for item in triplets] + [item['positive'] for item in triplets] + [item['negative'] for item in triplets])
+    
+    dataset = [{'anchor_sequence': tf.keras.preprocessing.text.text_to_word_sequence(triplet['anchor']), 
+                'positive_sequence': tf.keras.preprocessing.text.text_to_word_sequence(triplet['positive']), 
+                'negative_sequence': tf.keras.preprocessing.text.text_to_word_sequence(triplet['negative'])} 
+               for triplet in triplets]
+    
+    def generator():
+        for item in dataset:
+            yield {'anchor_sequence': item['anchor_sequence'], 
+                   'positive_sequence': item['positive_sequence'], 
+                   'negative_sequence': item['negative_sequence']}
+    
+    def map_func(item):
+        return {'anchor_sequence': tf.keras.preprocessing.sequence.pad_sequences([item['anchor_sequence']], maxlen=max_sequence_length)[0], 
+                'positive_sequence': tf.keras.preprocessing.sequence.pad_sequences([item['positive_sequence']], maxlen=max_sequence_length)[0], 
+                'negative_sequence': tf.keras.preprocessing.sequence.pad_sequences([item['negative_sequence']], maxlen=max_sequence_length)[0]}
+    
+    dataset = tf.data.Dataset.from_generator(generator, output_types={'anchor_sequence': tf.string, 
+                                                                     'positive_sequence': tf.string, 
+                                                                     'negative_sequence': tf.string})
+    dataset = dataset.map(map_func)
+    dataset = dataset.batch(batch_size)
+    return dataset, len(tokenizer.word_index) + 1
 
 def train(model, train_data_loader, test_data_loader, epochs):
     train_losses = []
@@ -77,12 +99,12 @@ def train(model, train_data_loader, test_data_loader, epochs):
     train_accuracies = []
     test_accuracies = []
     for epoch in range(1, epochs+1):
-        train_data_loader.dataset = tf.data.Dataset.from_tensor_slices(np.random.permutation(train_data_loader.dataset))
+        train_data_loader = train_data_loader.shuffle(buffer_size=1024)
         total_loss = 0
         for batch in train_data_loader:
-            anchor_sequences = tf.keras.preprocessing.sequence.pad_sequences([item['anchor_sequence'] for item in batch], maxlen=512)
-            positive_sequences = tf.keras.preprocessing.sequence.pad_sequences([item['positive_sequence'] for item in batch], maxlen=512)
-            negative_sequences = tf.keras.preprocessing.sequence.pad_sequences([item['negative_sequence'] for item in batch], maxlen=512)
+            anchor_sequences = batch['anchor_sequence']
+            positive_sequences = batch['positive_sequence']
+            negative_sequences = batch['negative_sequence']
             
             with tf.GradientTape() as tape:
                 anchor_output, positive_output, negative_output = model([anchor_sequences, positive_sequences, negative_sequences], training=True)
@@ -96,9 +118,9 @@ def train(model, train_data_loader, test_data_loader, epochs):
         total_loss = 0
         total_correct = 0
         for batch in test_data_loader:
-            anchor_sequences = tf.keras.preprocessing.sequence.pad_sequences([item['anchor_sequence'] for item in batch], maxlen=512)
-            positive_sequences = tf.keras.preprocessing.sequence.pad_sequences([item['positive_sequence'] for item in batch], maxlen=512)
-            negative_sequences = tf.keras.preprocessing.sequence.pad_sequences([item['negative_sequence'] for item in batch], maxlen=512)
+            anchor_sequences = batch['anchor_sequence']
+            positive_sequences = batch['positive_sequence']
+            negative_sequences = batch['negative_sequence']
             
             anchor_output, positive_output, negative_output = model([anchor_sequences, positive_sequences, negative_sequences])
             
@@ -107,12 +129,12 @@ def train(model, train_data_loader, test_data_loader, epochs):
             positive_similarity = tf.reduce_sum(tf.multiply(anchor_output, positive_output), axis=1)
             negative_similarity = tf.reduce_sum(tf.multiply(anchor_output, negative_output), axis=1)
             total_correct += tf.reduce_sum((positive_similarity > negative_similarity))
-        accuracy = total_correct / len(test_data_loader.dataset)
+        accuracy = total_correct / len(test_data_loader)
         print(f'Test Loss: {total_loss/len(test_data_loader)}')
         print(f'Test Accuracy: {accuracy}')
         test_losses.append(total_loss/len(test_data_loader))
         test_accuracies.append(accuracy)
-        train_accuracies.append(total_correct / len(train_data_loader.dataset))
+        train_accuracies.append(total_correct / len(train_data_loader))
     return train_losses, test_losses, train_accuracies, test_accuracies
 
 def plot(train_losses, test_losses, train_accuracies, test_accuracies):
@@ -141,22 +163,10 @@ def main():
     triplets = create_triplets(instance_id_map, snippets)
     train_triplets, test_triplets = np.array_split(np.array(triplets), 2)
     
-    tokenizer = tf.keras.preprocessing.text.Tokenizer()
-    tokenizer.fit_on_texts([item['anchor'] for item in triplets] + [item['positive'] for item in triplets] + [item['negative'] for item in triplets])
+    train_data_loader, vocab_size = train_data_loader(train_triplets, 32, 512)
+    test_data_loader, _ = train_data_loader(test_triplets, 32, 512)
     
-    train_dataset = [{'anchor_sequence': tf.keras.preprocessing.text.text_to_word_sequence(triplet['anchor']), 
-                      'positive_sequence': tf.keras.preprocessing.text.text_to_word_sequence(triplet['positive']), 
-                      'negative_sequence': tf.keras.preprocessing.text.text_to_word_sequence(triplet['negative'])} 
-                     for triplet in train_triplets]
-    test_dataset = [{'anchor_sequence': tf.keras.preprocessing.text.text_to_word_sequence(triplet['anchor']), 
-                     'positive_sequence': tf.keras.preprocessing.text.text_to_word_sequence(triplet['positive']), 
-                     'negative_sequence': tf.keras.preprocessing.text.text_to_word_sequence(triplet['negative'])} 
-                    for triplet in test_triplets]
-    
-    train_data_loader = tf.data.Dataset.from_tensor_slices(train_dataset).batch(32).shuffle(buffer_size=1024)
-    test_data_loader = tf.data.Dataset.from_tensor_slices(test_dataset).batch(32)
-    
-    model = create_model(len(tokenizer.word_index) + 1, 128, 512)
+    model = create_model(vocab_size, 128, 512)
     train_losses, test_losses, train_accuracies, test_accuracies = train(model, train_data_loader, test_data_loader, 5)
     plot(train_losses, test_losses, train_accuracies, test_accuracies)
 
