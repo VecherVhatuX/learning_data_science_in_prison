@@ -51,19 +51,19 @@ class ModelConfig:
 class TripletModel(Model):
     def __init__(self, embedding_dim, vocab_size):
         super().__init__()
-        self.embedding = Embedding(vocab_size, embedding_dim)
-        self.lstm = LSTM(embedding_dim, return_sequences=True)
-        self.dense = Dense(embedding_dim, activation='relu')
-        self.output_dense = Dense(vocab_size)
+        self.embedding_layer = Embedding(vocab_size, embedding_dim)
+        self.lstm_layer = LSTM(embedding_dim, return_sequences=True)
+        self.dense_layer = Dense(embedding_dim, activation='relu')
+        self.output_dense_layer = Dense(vocab_size)
 
     def call(self, inputs):
-        x = self.embedding(inputs)
-        x = self.lstm(x)
-        x = self.dense(x[:, -1, :])
-        x = self.output_dense(x)
+        x = self.embedding_layer(inputs)
+        x = self.lstm_layer(x)
+        x = self.dense_layer(x[:, -1, :])
+        x = self.output_dense_layer(x)
         return x
 
-def load_data(file_path):
+def load_json_data(file_path):
     try:
         with open(file_path, 'r') as file:
             return json.load(file)
@@ -94,20 +94,20 @@ class TripletDataset:
             'negative_examples': tf.stack(negative_examples)
         }
 
-    def to_tf_dataset(self, batch_size):
+    def get_tf_dataset(self, batch_size):
         return tf.data.Dataset.from_tensor_slices([self.__getitem__(i) for i in range(len(self))]).batch(batch_size)
 
 def create_triplet_dataset(data, config, tokenizer):
     return TripletDataset(data, config, tokenizer)
 
-def train_model(model, optimizer, config, train_dataset, test_dataset):
-    checkpoint = ModelCheckpoint("triplet_model.h5", save_best_only=True, verbose=1)
-    tensorboard = TensorBoard(log_dir=config.log_dir, write_graph=True, write_images=True)
-    train_dataset = train_dataset.to_tf_dataset(config.train_batch_size)
-    test_dataset = test_dataset.to_tf_dataset(config.eval_batch_size)
+def train_triplet_model(model, optimizer, config, train_dataset, test_dataset):
+    checkpoint_callback = ModelCheckpoint("triplet_model.h5", save_best_only=True, verbose=1)
+    tensorboard_callback = TensorBoard(log_dir=config.log_dir, write_graph=True, write_images=True)
+    train_data = train_dataset.get_tf_dataset(config.train_batch_size)
+    test_data = test_dataset.get_tf_dataset(config.eval_batch_size)
     for epoch in range(config.num_epochs):
         total_loss = 0
-        for batch in train_dataset:
+        for batch in train_data:
             anchor = batch['input_ids']
             positive = batch['labels']
             negative = batch['negative_examples']
@@ -119,28 +119,28 @@ def train_model(model, optimizer, config, train_dataset, test_dataset):
             gradients = tape.gradient(loss, model.trainable_variables)
             optimizer.apply_gradients(zip(gradients, model.trainable_variables))
             total_loss += loss
-        print(f"Epoch {epoch+1}, Loss: {total_loss / len(train_dataset)}")
+        print(f"Epoch {epoch+1}, Loss: {total_loss / len(train_data)}")
         test_loss = 0
-        for batch in test_dataset:
+        for batch in test_data:
             input_ids = batch['input_ids']
             labels = batch['labels']
             outputs = model(input_ids)
             loss = SparseCategoricalCrossentropy(from_logits=True)(labels, outputs)
             test_loss += loss
-        print(f"Epoch {epoch+1}, Test Loss: {test_loss / len(test_dataset)}")
+        print(f"Epoch {epoch+1}, Test Loss: {test_loss / len(test_data)}")
         model.save("triplet_model.h5")
 
 def main():
     config = ModelConfig()
-    train_data = load_data("train.json")
-    test_data = load_data("test.json")
+    train_data = load_json_data("train.json")
+    test_data = load_json_data("test.json")
     tokenizer = Tokenizer(num_words=1000)
     tokenizer.fit_on_texts([example['input'] for example in train_data] + [example['output'] for example in train_data])
     train_dataset = create_triplet_dataset(train_data, config, tokenizer)
     test_dataset = create_triplet_dataset(test_data, config, tokenizer)
     model = TripletModel(128, 1000)
     optimizer = Adam(lr=0.001)
-    train_model(model, optimizer, config, train_dataset, test_dataset)
+    train_triplet_model(model, optimizer, config, train_dataset, test_dataset)
 
 if __name__ == "__main__":
     main()
