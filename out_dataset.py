@@ -81,6 +81,7 @@ class TripletNetwork:
 
     def train(self, data_loader, epochs):
         for epoch in range(epochs):
+            data_loader.dataset.triplets = np.random.permutation(data_loader.dataset.triplets)
             for batch in data_loader:
                 anchor_input_ids = batch['anchor_input_ids'].to(self.device)
                 positive_input_ids = batch['positive_input_ids'].to(self.device)
