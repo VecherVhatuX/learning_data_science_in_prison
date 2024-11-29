@@ -2,20 +2,23 @@ import json
 import os
 import random
 import numpy as np
-import torch
-from torch.utils.data import Dataset, DataLoader
-import torch.nn as nn
-import torch.optim as optim
-from transformers import BertTokenizer, BertModel
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
+import tensorflow as tf
+from tensorflow.keras.preprocessing.text import Tokenizer
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, Embedding, Dense, Reshape, Flatten
+from tensorflow.keras.layers import GlobalMaxPooling1D, concatenate
+from tensorflow.keras.layers import BatchNormalization
+from tensorflow.keras.layers import Dropout
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.regularizers import l2
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 import matplotlib.pyplot as plt
 
-class TripletDataset(Dataset):
-    def __init__(self, triplets, tokenizer, max_sequence_length):
+class TripletDataset:
+    def __init__(self, triplets, max_sequence_length):
         self.triplets = triplets
-        self.tokenizer = tokenizer
         self.max_sequence_length = max_sequence_length
 
     def __len__(self):
@@ -23,95 +26,75 @@ class TripletDataset(Dataset):
 
     def __getitem__(self, idx):
         triplet = self.triplets[idx]
-        anchor_input_ids = self.tokenizer.encode(
-            triplet['anchor'],
-            max_length=self.max_sequence_length,
-            padding='max_length',
-            truncation=True,
-            return_attention_mask=True,
-            return_tensors='pt',
-        )
-        positive_input_ids = self.tokenizer.encode(
-            triplet['positive'],
-            max_length=self.max_sequence_length,
-            padding='max_length',
-            truncation=True,
-            return_attention_mask=True,
-            return_tensors='pt',
-        )
-        negative_input_ids = self.tokenizer.encode(
-            triplet['negative'],
-            max_length=self.max_sequence_length,
-            padding='max_length',
-            truncation=True,
-            return_attention_mask=True,
-            return_tensors='pt',
-        )
+        anchor_sequence = tf.keras.preprocessing.text.text_to_word_sequence(triplet['anchor'])
+        positive_sequence = tf.keras.preprocessing.text.text_to_word_sequence(triplet['positive'])
+        negative_sequence = tf.keras.preprocessing.text.text_to_word_sequence(triplet['negative'])
         return {
-            'anchor_input_ids': anchor_input_ids['input_ids'].flatten(),
-            'anchor_attention_mask': anchor_input_ids['attention_mask'].flatten(),
-            'positive_input_ids': positive_input_ids['input_ids'].flatten(),
-            'positive_attention_mask': positive_input_ids['attention_mask'].flatten(),
-            'negative_input_ids': negative_input_ids['input_ids'].flatten(),
-            'negative_attention_mask': negative_input_ids['attention_mask'].flatten(),
+            'anchor_sequence': anchor_sequence,
+            'positive_sequence': positive_sequence,
+            'negative_sequence': negative_sequence
         }
 
-class TripletModel(nn.Module):
-    def __init__(self):
-        super(TripletModel, self).__init__()
-        self.bert = BertModel.from_pretrained('bert-base-uncased')
-        self.fc1 = nn.Linear(768, 128)
-        self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(128, 128)
+class TripletModel:
+    def __init__(self, vocab_size, embedding_dim, max_sequence_length):
+        self.vocab_size = vocab_size
+        self.embedding_dim = embedding_dim
+        self.max_sequence_length = max_sequence_length
 
-    def forward(self, input_ids, attention_mask):
-        outputs = self.bert(input_ids, attention_mask=attention_mask)
-        pooled_output = outputs.pooler_output
-        out = self.fc1(pooled_output)
-        out = self.relu(out)
-        out = self.fc2(out)
-        return out
+        self.anchor_input = Input(shape=(self.max_sequence_length,), name='anchor_input')
+        self.positive_input = Input(shape=(self.max_sequence_length,), name='positive_input')
+        self.negative_input = Input(shape=(self.max_sequence_length,), name='negative_input')
+
+        self.embedding = Embedding(input_dim=self.vocab_size, output_dim=self.embedding_dim)
+
+        self.anchor_embedding = self.embedding(self.anchor_input)
+        self.positive_embedding = self.embedding(self.positive_input)
+        self.negative_embedding = self.embedding(self.negative_input)
+
+        self.anchor_pooling = GlobalMaxPooling1D()(self.anchor_embedding)
+        self.positive_pooling = GlobalMaxPooling1D()(self.positive_embedding)
+        self.negative_pooling = GlobalMaxPooling1D()(self.negative_embedding)
+
+        self.anchor_dense = Dense(128, activation='relu')(self.anchor_pooling)
+        self.positive_dense = Dense(128, activation='relu')(self.positive_pooling)
+        self.negative_dense = Dense(128, activation='relu')(self.negative_pooling)
+
+        self.model = Model(inputs=[self.anchor_input, self.positive_input, self.negative_input], 
+                           outputs=[self.anchor_dense, self.positive_dense, self.negative_dense])
+
+    def compile(self, optimizer, loss):
+        self.model.compile(optimizer=optimizer, loss=loss)
 
 class TripletNetwork:
-    def __init__(self, device):
-        self.device = device
-        self.model = TripletModel()
-        self.model.to(self.device)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=1e-5)
-        self.criterion = nn.TripletMarginLoss(margin=0.2)
-        self.scaler = StandardScaler()
-        self.epochs = []
-        self.train_losses = []
-        self.test_losses = []
-        self.train_accuracies = []
-        self.test_accuracies = []
+    def __init__(self, vocab_size, embedding_dim, max_sequence_length):
+        self.vocab_size = vocab_size
+        self.embedding_dim = embedding_dim
+        self.max_sequence_length = max_sequence_length
+        self.model = TripletModel(self.vocab_size, self.embedding_dim, self.max_sequence_length)
+        self.model.compile(optimizer=Adam(lr=1e-5), loss='mean_squared_error')
 
     def calculate_triplet_loss(self, anchor_embeddings, positive_embeddings, negative_embeddings):
-        return self.criterion(anchor_embeddings, positive_embeddings, negative_embeddings)
+        return tf.reduce_mean(tf.maximum(0.2 + tf.norm(anchor_embeddings - positive_embeddings, axis=1) - tf.norm(anchor_embeddings - negative_embeddings, axis=1), 0))
 
     def train(self, train_data_loader, test_data_loader, epochs):
         for epoch in range(1, epochs+1):
             train_data_loader.dataset.triplets = np.random.permutation(train_data_loader.dataset.triplets)
             total_loss = 0
             for batch in train_data_loader:
-                anchor_input_ids = batch['anchor_input_ids'].to(self.device)
-                positive_input_ids = batch['positive_input_ids'].to(self.device)
-                negative_input_ids = batch['negative_input_ids'].to(self.device)
-                anchor_attention_mask = batch['anchor_attention_mask'].to(self.device)
-                positive_attention_mask = batch['positive_attention_mask'].to(self.device)
-                negative_attention_mask = batch['negative_attention_mask'].to(self.device)
+                anchor_sequences = tf.keras.preprocessing.sequence.pad_sequences([item['anchor_sequence'] for item in batch], maxlen=self.max_sequence_length)
+                positive_sequences = tf.keras.preprocessing.sequence.pad_sequences([item['positive_sequence'] for item in batch], maxlen=self.max_sequence_length)
+                negative_sequences = tf.keras.preprocessing.sequence.pad_sequences([item['negative_sequence'] for item in batch], maxlen=self.max_sequence_length)
                 
-                anchor_output = self.model(anchor_input_ids, anchor_attention_mask)
-                positive_output = self.model(positive_input_ids, positive_attention_mask)
-                negative_output = self.model(negative_input_ids, negative_attention_mask)
+                anchor_output, positive_output, negative_output = self.model.predict([anchor_sequences, positive_sequences, negative_sequences])
                 
                 batch_loss = self.calculate_triplet_loss(anchor_output, positive_output, negative_output)
-                self.optimizer.zero_grad()
-                batch_loss.backward()
-                self.optimizer.step()
-                total_loss += batch_loss.item()
-            self.train_losses.append(total_loss/len(train_data_loader))
-            self.epochs.append(epoch)
+                self.model.trainable = True
+                with tf.GradientTape() as tape:
+                    anchor_output, positive_output, negative_output = self.model([anchor_sequences, positive_sequences, negative_sequences], training=True)
+                    batch_loss = self.calculate_triplet_loss(anchor_output, positive_output, negative_output)
+                gradients = tape.gradient(batch_loss, self.model.trainable_variables)
+                self.model.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+                total_loss += batch_loss
             print(f'Epoch {epoch}, Train Loss: {total_loss/len(train_data_loader)}')
             self.test(test_data_loader)
         self.plot()
@@ -119,27 +102,19 @@ class TripletNetwork:
     def test(self, test_data_loader):
         total_loss = 0
         total_correct = 0
-        with torch.no_grad():
-            for batch in test_data_loader:
-                anchor_input_ids = batch['anchor_input_ids'].to(self.device)
-                positive_input_ids = batch['positive_input_ids'].to(self.device)
-                negative_input_ids = batch['negative_input_ids'].to(self.device)
-                anchor_attention_mask = batch['anchor_attention_mask'].to(self.device)
-                positive_attention_mask = batch['positive_attention_mask'].to(self.device)
-                negative_attention_mask = batch['negative_attention_mask'].to(self.device)
-                
-                anchor_output = self.model(anchor_input_ids, anchor_attention_mask)
-                positive_output = self.model(positive_input_ids, positive_attention_mask)
-                negative_output = self.model(negative_input_ids, negative_attention_mask)
-                
-                batch_loss = self.calculate_triplet_loss(anchor_output, positive_output, negative_output)
-                total_loss += batch_loss.item()
-                positive_similarity = torch.sum(torch.multiply(anchor_output, positive_output), axis=1)
-                negative_similarity = torch.sum(torch.multiply(anchor_output, negative_output), axis=1)
-                total_correct += torch.sum((positive_similarity > negative_similarity).int()).item()
+        for batch in test_data_loader:
+            anchor_sequences = tf.keras.preprocessing.sequence.pad_sequences([item['anchor_sequence'] for item in batch], maxlen=self.max_sequence_length)
+            positive_sequences = tf.keras.preprocessing.sequence.pad_sequences([item['positive_sequence'] for item in batch], maxlen=self.max_sequence_length)
+            negative_sequences = tf.keras.preprocessing.sequence.pad_sequences([item['negative_sequence'] for item in batch], maxlen=self.max_sequence_length)
+            
+            anchor_output, positive_output, negative_output = self.model.predict([anchor_sequences, positive_sequences, negative_sequences])
+            
+            batch_loss = self.calculate_triplet_loss(anchor_output, positive_output, negative_output)
+            total_loss += batch_loss
+            positive_similarity = tf.reduce_sum(tf.multiply(anchor_output, positive_output), axis=1)
+            negative_similarity = tf.reduce_sum(tf.multiply(anchor_output, negative_output), axis=1)
+            total_correct += tf.reduce_sum((positive_similarity > negative_similarity))
         accuracy = total_correct / len(test_data_loader.dataset)
-        self.test_losses.append(total_loss/len(test_data_loader))
-        self.test_accuracies.append(accuracy)
         print(f'Test Loss: {total_loss/len(test_data_loader)}')
         print(f'Test Accuracy: {accuracy}')
 
@@ -195,16 +170,16 @@ def main():
     triplets = create_triplets(instance_id_map, snippets)
     train_triplets, test_triplets = np.array_split(np.array(triplets), 2)
     
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+    tokenizer = tf.keras.preprocessing.text.Tokenizer()
+    tokenizer.fit_on_texts([item['anchor'] for item in triplets] + [item['positive'] for item in triplets] + [item['negative'] for item in triplets])
     
-    train_dataset = TripletDataset(train_triplets, tokenizer, 512)
-    test_dataset = TripletDataset(test_triplets, tokenizer, 512)
+    train_dataset = TripletDataset(train_triplets, 512)
+    test_dataset = TripletDataset(test_triplets, 512)
     
-    train_data_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    test_data_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    train_data_loader = tf.data.Dataset.from_tensor_slices(train_dataset).batch(32)
+    test_data_loader = tf.data.Dataset.from_tensor_slices(test_dataset).batch(32)
     
-    network = TripletNetwork(device)
+    network = TripletNetwork(len(tokenizer.word_index) + 1, 128, 512)
     network.train(train_data_loader, test_data_loader, 5)
 
 if __name__ == "__main__":
