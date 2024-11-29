@@ -3,39 +3,27 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 
-class TripletModel(tf.keras.Model):
-    def __init__(self, embedding_dim, num_features):
-        super(TripletModel, self).__init__()
-        self.embedding = tf.keras.layers.Embedding(embedding_dim, num_features)
-        self.global_pool = tf.keras.layers.GlobalAveragePooling1D()
-        self.flatten = tf.keras.layers.Flatten()
-        self.dense = tf.keras.layers.Dense(num_features)
-        self.batch_norm = tf.keras.layers.BatchNormalization()
-        self.layer_norm = tf.keras.layers.LayerNormalization()
+def create_model(embedding_dim, num_features):
+    return tf.keras.Sequential([
+        tf.keras.layers.Embedding(embedding_dim, num_features),
+        tf.keras.layers.GlobalAveragePooling1D(),
+        tf.keras.layers.Flatten(),
+        tf.keras.layers.Dense(num_features),
+        tf.keras.layers.BatchNormalization(),
+        tf.keras.layers.LayerNormalization()
+    ])
 
-    def call(self, inputs):
-        x = self.embedding(inputs)
-        x = self.global_pool(x)
-        x = self.flatten(x)
-        x = self.dense(x)
-        x = self.batch_norm(x)
-        x = self.layer_norm(x)
-        return x
-
-class TripletLoss(tf.keras.losses.Loss):
-    def __init__(self, margin=1.0):
-        super(TripletLoss, self).__init__()
-        self.margin = margin
-
-    def call(self, y_true, y_pred):
+def create_triplet_loss(margin=1.0):
+    def loss(y_true, y_pred):
         anchor, positive, negative = y_pred
         d_ap = tf.norm(anchor - positive, axis=-1)
         d_an = tf.norm(anchor[:, tf.newaxis, :] - negative, axis=-1)
-        loss = tf.maximum(d_ap - tf.reduce_min(d_an, axis=-1) + self.margin, tf.zeros_like(d_ap))
+        loss = tf.maximum(d_ap - tf.reduce_min(d_an, axis=-1) + margin, tf.zeros_like(d_ap))
         return tf.reduce_mean(loss)
+    return loss
 
-class TripletDataset(tf.keras.utils.Sequence):
-    def __init__(self, samples, labels, num_negatives, batch_size, shuffle=True):
+def create_dataset(samples, labels, num_negatives, batch_size, shuffle=True):
+    def __init__(self):
         self.samples = samples
         self.labels = labels
         self.num_negatives = num_negatives
@@ -59,8 +47,15 @@ class TripletDataset(tf.keras.utils.Sequence):
         batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
         return self.samples[batch_indices], self.samples[self.positive_idx], self.samples[self.negative_idx]
 
+    return type('Dataset', (), {
+        '__init__': __init__,
+        '__len__': __len__,
+        'on_epoch_end': on_epoch_end,
+        '__getitem__': __getitem__,
+    })()
+
 def train(model, dataset, epochs, optimizer):
-    loss_fn = TripletLoss()
+    loss_fn = create_triplet_loss()
     for epoch in range(epochs):
         dataset.on_epoch_end()
         for batch in dataset:
@@ -126,9 +121,9 @@ def build_optimizer(model, learning_rate):
 def pipeline(learning_rate, batch_size, epochs, num_negatives, embedding_dim, num_features):
     samples = np.random.randint(0, 100, (100, 10))
     labels = np.random.randint(0, 2, (100,))
-    model = TripletModel(embedding_dim, num_features)
+    model = create_model(embedding_dim, num_features)
     optimizer = build_optimizer(model, learning_rate)
-    dataset = TripletDataset(samples, labels, num_negatives, batch_size)
+    dataset = create_dataset(samples, labels, num_negatives, batch_size)
     train(model, dataset, epochs, optimizer)
     input_ids = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=np.int32).reshape((1, 10))
     output = model(input_ids)
