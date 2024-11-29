@@ -1,6 +1,6 @@
 import os
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict
 import torch
 import torch.nn as nn
@@ -55,14 +55,15 @@ class TripletModel(nn.Module):
         self.dense_layer = nn.Linear(embedding_dim, embedding_dim)
         self.output_dense_layer = nn.Linear(embedding_dim, vocab_size)
 
-    def forward(self, inputs):
-        x = self.embedding_layer(inputs)
+    def forward(self, x):
+        x = self.embedding_layer(x)
         x, _ = self.lstm_layer(x)
         x = self.dense_layer(x[:, -1, :])
+        x = torch.relu(x)
         x = self.output_dense_layer(x)
         return x
 
-    def triplet_loss(self, anchor, positive, negative):
+    def compute_triplet_loss(self, anchor, positive, negative):
         return F.relu(F.pairwise_distance(anchor, positive) - F.pairwise_distance(anchor, negative) + 2.0).mean()
 
 class TripletDataset(Dataset):
@@ -88,7 +89,7 @@ class TripletDataset(Dataset):
             'negative_examples': torch.cat(negative_examples)
         }
 
-def load_json_data(file_path):
+def load_data(file_path):
     try:
         with open(file_path, 'r') as file:
             return json.load(file)
@@ -96,33 +97,37 @@ def load_json_data(file_path):
         print(f"The file {file_path} does not exist.")
         return None
 
-def create_triplet_dataset(data, config, tokenizer):
+def create_dataset(data, config, tokenizer):
     return TripletDataset(data, config, tokenizer)
 
-def train_triplet_model(model, optimizer, scheduler, config, train_dataset, test_dataset):
+def train_model(model, optimizer, scheduler, config, train_dataset, test_dataset):
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model.to(device)
     train_data = DataLoader(train_dataset, batch_size=config.train_batch_size, shuffle=True)
     test_data = DataLoader(test_dataset, batch_size=config.eval_batch_size, shuffle=False)
     for epoch in range(config.num_epochs):
         total_loss = 0
+        model.train()
         for batch in train_data:
-            anchor = batch['input_ids'].squeeze(1)
-            positive = batch['labels'].squeeze(1)
-            negative = batch['negative_examples']
+            anchor = batch['input_ids'].squeeze(1).to(device)
+            positive = batch['labels'].squeeze(1).to(device)
+            negative = batch['negative_examples'].to(device)
             optimizer.zero_grad()
             anchor_outputs = model(anchor)
             positive_outputs = model(positive)
             negative_outputs = model(negative)
-            loss = model.triplet_loss(anchor_outputs, positive_outputs, negative_outputs)
+            loss = model.compute_triplet_loss(anchor_outputs, positive_outputs, negative_outputs)
             loss.backward()
             optimizer.step()
             scheduler.step()
             total_loss += loss.item()
         print(f"Epoch {epoch+1}, Loss: {total_loss / len(train_data)}")
         test_loss = 0
+        model.eval()
         with torch.no_grad():
             for batch in test_data:
-                input_ids = batch['input_ids'].squeeze(1)
-                labels = batch['labels'].squeeze(1)
+                input_ids = batch['input_ids'].squeeze(1).to(device)
+                labels = batch['labels'].squeeze(1).to(device)
                 outputs = model(input_ids)
                 loss = F.cross_entropy(outputs, labels)
                 test_loss += loss.item()
@@ -131,15 +136,15 @@ def train_triplet_model(model, optimizer, scheduler, config, train_dataset, test
 
 def main():
     config = ModelConfig()
-    train_data = load_json_data("train.json")
-    test_data = load_json_data("test.json")
+    train_data = load_data("train.json")
+    test_data = load_data("test.json")
     tokenizer = AutoTokenizer.from_pretrained(config.model_base)
-    train_dataset = create_triplet_dataset(train_data, config, tokenizer)
-    test_dataset = create_triplet_dataset(test_data, config, tokenizer)
+    train_dataset = create_dataset(train_data, config, tokenizer)
+    test_dataset = create_dataset(test_data, config, tokenizer)
     model = TripletModel(128, len(tokenizer))
     optimizer = AdamW(model.parameters(), lr=0.001)
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=config.warmup_steps, num_training_steps=config.num_epochs * len(train_dataset))
-    train_triplet_model(model, optimizer, scheduler, config, train_dataset, test_dataset)
+    train_model(model, optimizer, scheduler, config, train_dataset, test_dataset)
 
 if __name__ == "__main__":
     main()
