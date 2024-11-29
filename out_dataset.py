@@ -16,42 +16,28 @@ from tensorflow.keras.regularizers import l2
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 import matplotlib.pyplot as plt
 
-class Dataset:
+class TripletDataset:
     def __init__(self, triplets, batch_size, max_sequence_length):
         self.triplets = triplets
         self.batch_size = batch_size
         self.max_sequence_length = max_sequence_length
-        self.tokenizer = tf.keras.preprocessing.text.Tokenizer()
+        self.tokenizer = Tokenizer()
         self.tokenizer.fit_on_texts([item['anchor'] for item in triplets] + [item['positive'] for item in triplets] + [item['negative'] for item in triplets])
         self.vocab_size = len(self.tokenizer.word_index) + 1
 
     def map_func(self, item):
-        return {'anchor_sequence': tf.keras.preprocessing.sequence.pad_sequences([item['anchor_sequence']], maxlen=self.max_sequence_length)[0], 
-                'positive_sequence': tf.keras.preprocessing.sequence.pad_sequences([item['positive_sequence']], maxlen=self.max_sequence_length)[0], 
-                'negative_sequence': tf.keras.preprocessing.sequence.pad_sequences([item['negative_sequence']], maxlen=self.max_sequence_length)[0]}
+        anchor_sequence = self.tokenizer.texts_to_sequences([item['anchor']])[0]
+        positive_sequence = self.tokenizer.texts_to_sequences([item['positive']])[0]
+        negative_sequence = self.tokenizer.texts_to_sequences([item['negative']])[0]
+        return {'anchor_sequence': pad_sequences([anchor_sequence], maxlen=self.max_sequence_length)[0], 
+                'positive_sequence': pad_sequences([positive_sequence], maxlen=self.max_sequence_length)[0], 
+                'negative_sequence': pad_sequences([negative_sequence], maxlen=self.max_sequence_length)[0]}
 
     def create_dataset(self):
-        dataset = [{'anchor_sequence': tf.keras.preprocessing.text.text_to_word_sequence(triplet['anchor']), 
-                    'positive_sequence': tf.keras.preprocessing.text.text_to_word_sequence(triplet['positive']), 
-                    'negative_sequence': tf.keras.preprocessing.text.text_to_word_sequence(triplet['negative'])} 
-                   for triplet in self.triplets]
-        
-        def generator():
-            for item in dataset:
-                yield {'anchor_sequence': item['anchor_sequence'], 
-                       'positive_sequence': item['positive_sequence'], 
-                       'negative_sequence': item['negative_sequence']}
-        
-        dataset = tf.data.Dataset.from_generator(generator, output_types={'anchor_sequence': tf.string, 
-                                                                         'positive_sequence': tf.string, 
-                                                                         'negative_sequence': tf.string})
+        dataset = tf.data.Dataset.from_tensor_slices(self.triplets)
         dataset = dataset.map(self.map_func)
         dataset = dataset.batch(self.batch_size)
         return dataset
-
-    def shuffle(self):
-        random.shuffle(self.triplets)
-        return self.create_dataset()
 
 def load_data(dataset_path, snippet_folder_path):
     with open(dataset_path, 'r') as f:
@@ -79,23 +65,27 @@ def create_triplets(instance_id_map, snippets):
             for _ in range(min(1, len(non_bug_snippets)))]
 
 def create_model(vocab_size, embedding_dim, max_sequence_length):
-    def embedding_module(input_dim):
-        input_layer = Input(shape=(max_sequence_length,), name='input')
-        embedding = Embedding(input_dim=input_dim, output_dim=embedding_dim)(input_layer)
-        pooling = GlobalMaxPooling1D()(embedding)
-        dense = Dense(128, activation='relu')(pooling)
-        return Model(inputs=input_layer, outputs=dense)
+    anchor_input = Input(shape=(max_sequence_length,), name='anchor_input')
+    positive_input = Input(shape=(max_sequence_length,), name='positive_input')
+    negative_input = Input(shape=(max_sequence_length,), name='negative_input')
     
-    anchor_input = embedding_module(vocab_size)
-    positive_input = embedding_module(vocab_size)
-    negative_input = embedding_module(vocab_size)
+    embedding = Embedding(input_dim=vocab_size, output_dim=embedding_dim)
+    anchor_embedding = embedding(anchor_input)
+    positive_embedding = embedding(positive_input)
+    negative_embedding = embedding(negative_input)
     
-    anchor_output = anchor_input.output
-    positive_output = positive_input.output
-    negative_output = negative_input.output
+    pooling = GlobalMaxPooling1D()
+    anchor_pooling = pooling(anchor_embedding)
+    positive_pooling = pooling(positive_embedding)
+    negative_pooling = pooling(negative_embedding)
     
-    model = Model(inputs=[anchor_input.input, positive_input.input, negative_input.input], 
-                  outputs=[anchor_output, positive_output, negative_output])
+    dense = Dense(128, activation='relu')
+    anchor_dense = dense(anchor_pooling)
+    positive_dense = dense(positive_pooling)
+    negative_dense = dense(negative_pooling)
+    
+    model = Model(inputs=[anchor_input, positive_input, negative_input], 
+                  outputs=[anchor_dense, positive_dense, negative_dense])
     
     model.compile(optimizer=Adam(lr=1e-5), loss='mean_squared_error')
     return model
@@ -109,7 +99,7 @@ def train(model, train_dataset, test_dataset, epochs):
     train_accuracies = []
     test_accuracies = []
     for epoch in range(1, epochs+1):
-        train_dataset.shuffle()
+        train_dataset = train_dataset.shuffle(1000).batch(32)
         total_loss = 0
         for batch in train_dataset:
             anchor_sequences = batch['anchor_sequence']
@@ -173,10 +163,10 @@ def main():
     triplets = create_triplets(instance_id_map, snippets)
     train_triplets, test_triplets = np.array_split(np.array(triplets), 2)
     
-    train_dataset = Dataset(train_triplets, 32, 512)
+    train_dataset = TripletDataset(train_triplets, 32, 512)
     train_data = train_dataset.create_dataset()
     
-    test_dataset = Dataset(test_triplets, 32, 512)
+    test_dataset = TripletDataset(test_triplets, 32, 512)
     test_data = test_dataset.create_dataset()
     
     model = create_model(train_dataset.vocab_size, 128, 512)
