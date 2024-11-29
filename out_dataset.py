@@ -77,17 +77,13 @@ def train(model, train_data_loader, test_data_loader, epochs):
     train_accuracies = []
     test_accuracies = []
     for epoch in range(1, epochs+1):
-        train_data_loader.dataset.triplets = np.random.permutation(train_data_loader.dataset.triplets)
+        train_data_loader.dataset = tf.data.Dataset.from_tensor_slices(np.random.permutation(train_data_loader.dataset))
         total_loss = 0
         for batch in train_data_loader:
             anchor_sequences = tf.keras.preprocessing.sequence.pad_sequences([item['anchor_sequence'] for item in batch], maxlen=512)
             positive_sequences = tf.keras.preprocessing.sequence.pad_sequences([item['positive_sequence'] for item in batch], maxlen=512)
             negative_sequences = tf.keras.preprocessing.sequence.pad_sequences([item['negative_sequence'] for item in batch], maxlen=512)
             
-            anchor_output, positive_output, negative_output = model.predict([anchor_sequences, positive_sequences, negative_sequences])
-            
-            batch_loss = calculate_triplet_loss(anchor_output, positive_output, negative_output)
-            model.trainable = True
             with tf.GradientTape() as tape:
                 anchor_output, positive_output, negative_output = model([anchor_sequences, positive_sequences, negative_sequences], training=True)
                 batch_loss = calculate_triplet_loss(anchor_output, positive_output, negative_output)
@@ -104,7 +100,7 @@ def train(model, train_data_loader, test_data_loader, epochs):
             positive_sequences = tf.keras.preprocessing.sequence.pad_sequences([item['positive_sequence'] for item in batch], maxlen=512)
             negative_sequences = tf.keras.preprocessing.sequence.pad_sequences([item['negative_sequence'] for item in batch], maxlen=512)
             
-            anchor_output, positive_output, negative_output = model.predict([anchor_sequences, positive_sequences, negative_sequences])
+            anchor_output, positive_output, negative_output = model([anchor_sequences, positive_sequences, negative_sequences])
             
             batch_loss = calculate_triplet_loss(anchor_output, positive_output, negative_output)
             total_loss += batch_loss
@@ -157,7 +153,7 @@ def main():
                      'negative_sequence': tf.keras.preprocessing.text.text_to_word_sequence(triplet['negative'])} 
                     for triplet in test_triplets]
     
-    train_data_loader = tf.data.Dataset.from_tensor_slices(train_dataset).batch(32)
+    train_data_loader = tf.data.Dataset.from_tensor_slices(train_dataset).batch(32).shuffle(buffer_size=1024)
     test_data_loader = tf.data.Dataset.from_tensor_slices(test_dataset).batch(32)
     
     model = create_model(len(tokenizer.word_index) + 1, 128, 512)
