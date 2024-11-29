@@ -33,8 +33,34 @@ class TripletLoss(tf.keras.losses.Loss):
         loss = tf.maximum(d_ap - tf.reduce_min(d_an, axis=-1) + self.margin, tf.zeros_like(d_ap))
         return tf.reduce_mean(loss)
 
+class Dataset:
+    def __init__(self, samples, labels, num_negatives, batch_size, shuffle=True):
+        self.samples = samples
+        self.labels = labels
+        self.num_negatives = num_negatives
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.indices = np.arange(len(samples))
+        self.on_epoch_end()
+
+    def on_epoch_end(self):
+        if self.shuffle:
+            np.random.shuffle(self.indices)
+
+    def __len__(self):
+        return len(self.samples) // self.batch_size
+
+    def __getitem__(self, idx):
+        batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
+        anchor_idx = np.random.choice(batch_indices, size=self.batch_size, replace=False)
+        anchor_label = self.labels[anchor_idx]
+        positive_idx = np.array([np.random.choice(np.where(self.labels == label)[0], size=1)[0] for label in anchor_label])
+        negative_idx = np.array([np.random.choice(np.where(self.labels != label)[0], size=self.num_negatives, replace=False) for label in anchor_label])
+        return self.samples[anchor_idx], self.samples[positive_idx], self.samples[negative_idx]
+
 def train(model, dataset, epochs, optimizer, criterion):
     for epoch in range(epochs):
+        dataset.on_epoch_end()
         for batch in dataset:
             anchor, positive, negative = batch
             with tf.GradientTape() as tape:
@@ -92,20 +118,6 @@ def knn_f1(embeddings, labels, k=5):
     recall = knn_recall(embeddings, labels, k)
     return 2 * (precision * recall) / (precision + recall)
 
-def build_dataset(samples, labels, num_negatives, batch_size, shuffle=True):
-    dataset = []
-    indices = np.arange(len(samples))
-    if shuffle:
-        np.random.shuffle(indices)
-    for i in range(len(samples) // batch_size):
-        batch_indices = indices[i * batch_size:(i + 1) * batch_size]
-        anchor_idx = np.random.choice(batch_indices, size=batch_size, replace=False)
-        anchor_label = labels[anchor_idx]
-        positive_idx = np.array([np.random.choice(np.where(labels == label)[0], size=1)[0] for label in anchor_label])
-        negative_idx = np.array([np.random.choice(np.where(labels != label)[0], size=num_negatives, replace=False) for label in anchor_label])
-        dataset.append((samples[anchor_idx], samples[positive_idx], samples[negative_idx]))
-    return dataset
-
 def build_optimizer(model, learning_rate):
     return tf.keras.optimizers.Adam(learning_rate=learning_rate)
 
@@ -115,7 +127,7 @@ def pipeline(learning_rate, batch_size, epochs, num_negatives, embedding_dim, nu
     model = TripletModel(embedding_dim, num_features)
     criterion = TripletLoss()
     optimizer = build_optimizer(model, learning_rate)
-    dataset = build_dataset(samples, labels, num_negatives, batch_size)
+    dataset = Dataset(samples, labels, num_negatives, batch_size)
     train(model, dataset, epochs, optimizer, criterion)
     input_ids = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=np.int32).reshape((1, 10))
     output = model(input_ids)
