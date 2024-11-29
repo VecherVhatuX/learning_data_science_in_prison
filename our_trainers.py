@@ -1,133 +1,124 @@
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import layers
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
+import random
 
-# Create a model for embedding data into a lower-dimensional space
-def create_triplet_model(embedding_dim, num_features):
-    return keras.Sequential([
-        # Embed input data into a higher-dimensional space
-        layers.Embedding(embedding_dim, num_features, input_length=10),
-        # Reduce spatial dimensions by taking the mean
-        layers.GlobalAveragePooling1D(),
-        # Flatten the output
-        layers.Flatten(),
-        # Reduce dimensionality to the number of features
-        layers.Dense(num_features),
-        # Normalize the output
-        layers.BatchNormalization(),
-        layers.LayerNormalization()
-    ])
+class TripletModel(nn.Module):
+    def __init__(self, embedding_dim, num_features):
+        super(TripletModel, self).__init__()
+        self.embedding = nn.Embedding(embedding_dim, num_features)
+        self.pooling = nn.AdaptiveAvgPool1d(1)
+        self.flatten = nn.Flatten()
+        self.fc = nn.Linear(num_features, num_features)
+        self.bn = nn.BatchNorm1d(num_features)
+        self.ln = nn.LayerNorm(num_features)
 
-# Define a custom loss function for triplet loss
+    def forward(self, x):
+        x = self.embedding(x)
+        x = self.pooling(x.transpose(1, 2)).transpose(1, 2)
+        x = self.flatten(x)
+        x = self.fc(x)
+        x = self.bn(x)
+        x = self.ln(x)
+        return x
+
+class TripletDataset(Dataset):
+    def __init__(self, samples, labels, num_negatives):
+        self.samples = samples
+        self.labels = labels
+        self.num_negatives = num_negatives
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        anchor_idx = idx
+        anchor_label = self.labels[idx]
+        positive_idx = random.choice(np.where(self.labels == anchor_label)[0].tolist())
+        negative_idx = random.sample(np.where(self.labels != anchor_label)[0].tolist(), self.num_negatives)
+        return self.samples[anchor_idx], self.samples[positive_idx], [self.samples[i] for i in negative_idx]
+
 def create_triplet_loss(margin=1.0):
-    def triplet_loss(y_true, y_pred):
-        # Split predictions into anchor, positive, and negative
-        anchor, positive, negative = y_pred
-        # Calculate distances between anchor and positive, and anchor and negative
-        d_ap = tf.norm(anchor - positive, axis=-1)
-        d_an = tf.norm(anchor[:, tf.newaxis, :] - negative, axis=-1)
-        # Calculate the loss
-        loss = tf.maximum(d_ap - tf.reduce_min(d_an, axis=-1) + margin, tf.zeros_like(d_ap))
-        return tf.reduce_mean(loss)
+    def triplet_loss(anchor, positive, negative):
+        d_ap = torch.norm(anchor - positive, dim=1)
+        d_an = torch.norm(anchor.unsqueeze(1) - torch.stack(negative, dim=1), dim=2)
+        loss = torch.maximum(d_ap - torch.min(d_an, dim=1)[0] + margin, torch.zeros_like(d_ap))
+        return torch.mean(loss)
     return triplet_loss
 
-# Create a dataset for training the model
-def create_triplet_dataset(samples, labels, num_negatives, batch_size):
-    def generate_batches():
-        while True:
-            # Randomly select anchor indices
-            anchor_idx = np.random.choice(len(samples), size=batch_size, replace=False)
-            # Get corresponding labels
-            anchor_label = labels[anchor_idx]
-            # Randomly select positive indices
-            positive_idx = np.array([np.random.choice(np.where(labels == label)[0], size=1)[0] for label in anchor_label])
-            # Randomly select negative indices
-            negative_idx = np.array([np.random.choice(np.where(labels != label)[0], size=num_negatives, replace=False) for label in anchor_label])
-            # Yield the batch
-            yield samples[anchor_idx], samples[positive_idx], samples[negative_idx]
-    return generate_batches()
-
-# Train the model
-def train(model, dataset, epochs, optimizer, loss_fn):
+def train(model, device, loader, optimizer, loss_fn, epochs):
     for epoch in range(epochs):
-        for batch in dataset():
-            with tf.GradientTape() as tape:
-                # Unpack the batch
-                anchor, positive, negative = batch
-                # Get embeddings
-                anchor_embeddings = model(anchor)
-                positive_embeddings = model(positive)
-                negative_embeddings = model(negative)
-                # Calculate the loss
-                loss = loss_fn(None, (anchor_embeddings, positive_embeddings, negative_embeddings))
-            # Get gradients
-            gradients = tape.gradient(loss, model.trainable_variables)
-            # Update the model
-            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-            print(f'Epoch: {epoch+1}, Loss: {loss.numpy()}')
+        for batch in loader:
+            anchor, positive, negative = [x.to(device) for x in batch]
+            optimizer.zero_grad()
+            anchor_embeddings = model(anchor)
+            positive_embeddings = model(positive)
+            negative_embeddings = [model(x) for x in negative]
+            loss = loss_fn(anchor_embeddings, positive_embeddings, negative_embeddings)
+            loss.backward()
+            optimizer.step()
+            print(f'Epoch: {epoch+1}, Loss: {loss.item()}')
 
-# Validate the model
-def validate(model, embeddings, labels, k=5):
-    # Get predicted embeddings
-    predicted_embeddings = model(embeddings)
-    # Calculate KNN accuracy, precision, recall, and F1-score
-    print("Validation KNN Accuracy:", knn_accuracy(predicted_embeddings, labels, k))
-    print("Validation KNN Precision:", knn_precision(predicted_embeddings, labels, k))
-    print("Validation KNN Recall:", knn_recall(predicted_embeddings, labels, k))
-    print("Validation KNN F1-score:", knn_f1(predicted_embeddings, labels, k))
-    # Visualize the embeddings
-    embedding_visualization(predicted_embeddings, labels)
+def validate(model, device, samples, labels, k=5):
+    model.eval()
+    with torch.no_grad():
+        predicted_embeddings = model(samples.to(device))
+        predicted_embeddings = predicted_embeddings.cpu().numpy()
+        labels = labels.cpu().numpy()
+        # Calculate KNN accuracy, precision, recall, and F1-score
+        print("Validation KNN Accuracy:", knn_accuracy(predicted_embeddings, labels, k))
+        print("Validation KNN Precision:", knn_precision(predicted_embeddings, labels, k))
+        print("Validation KNN Recall:", knn_recall(predicted_embeddings, labels, k))
+        print("Validation KNN F1-score:", knn_f1(predicted_embeddings, labels, k))
+        # Visualize the embeddings
+        embedding_visualization(predicted_embeddings, labels)
+    model.train()
 
-# Calculate distances between embeddings
 def calculate_distances(output):
-    print(tf.norm(output - output, axis=-1).numpy())
-    print(tf.reduce_sum(output * output, axis=-1) / (tf.norm(output, axis=-1) * tf.norm(output, axis=-1)).numpy())
-    print(1 - tf.reduce_sum(output * output, axis=-1) / (tf.norm(output, axis=-1) * tf.norm(output, axis=-1)).numpy())
+    print(torch.norm(output - output, dim=1).numpy())
+    print(torch.sum(output * output, dim=1) / (torch.norm(output, dim=1) * torch.norm(output, dim=1)).numpy())
+    print(1 - torch.sum(output * output, dim=1) / (torch.norm(output, dim=1) * torch.norm(output, dim=1)).numpy())
 
-# Calculate nearest neighbors
 def calculate_neighbors(predicted_embeddings, output, k=5):
-    print(tf.argsort(tf.norm(predicted_embeddings - output, axis=-1), direction='ASCENDING')[:, :k].numpy())
-    print(tf.argsort(tf.reduce_sum(predicted_embeddings * output, axis=-1) / (tf.norm(predicted_embeddings, axis=-1) * tf.norm(output, axis=-1)), direction='DESCENDING')[:, :k].numpy())
+    print(torch.argsort(torch.norm(predicted_embeddings - output, dim=1), dim=1)[:,:k].numpy())
+    print(torch.argsort(torch.sum(predicted_embeddings * output, dim=1) / (torch.norm(predicted_embeddings, dim=1) * torch.norm(output, dim=1)), dim=1, descending=True)[:,:k].numpy())
 
-# Run the pipeline
 def pipeline(learning_rate, batch_size, epochs, num_negatives, embedding_dim, num_features, size):
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     # Generate random data
-    samples = np.random.randint(0, 100, (size, 10))
-    labels = np.random.randint(0, 2, (size,))
+    samples = torch.from_numpy(np.random.randint(0, 100, (size, 10)))
+    labels = torch.from_numpy(np.random.randint(0, 2, (size,)))
     # Create the model
-    model = create_triplet_model(embedding_dim, num_features)
+    model = TripletModel(embedding_dim, num_features).to(device)
     # Create the optimizer
-    optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     # Create the loss function
     loss_fn = create_triplet_loss()
     # Create the dataset
-    dataset = create_triplet_dataset(samples, labels, num_negatives, batch_size)
+    dataset = TripletDataset(samples, labels, num_negatives)
+    # Create the data loader
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
     # Train the model
-    train(model, dataset, epochs, optimizer, loss_fn)
+    train(model, device, loader, optimizer, loss_fn, epochs)
     # Get a sample input
-    input_ids = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=np.int32).reshape((1, 10))
+    input_ids = torch.tensor([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=torch.int32).reshape((1, 10)).to(device)
     # Get the output
     output = model(input_ids)
     # Save the model
-    model.save_weights("triplet_model.h5")
+    torch.save(model.state_dict(), "triplet_model.pth")
     # Get predicted embeddings
-    predicted_embeddings = model(samples)
+    predicted_embeddings = model(samples.to(device)).cpu().numpy()
     # Calculate distances
     calculate_distances(output)
     # Calculate nearest neighbors
-    calculate_neighbors(predicted_embeddings, output)
+    calculate_neighbors(predicted_embeddings, output.cpu().numpy())
     # Validate the model
-    validate(model, samples, labels)
+    validate(model, device, samples, labels)
 
-# Main function
-def main():
-    np.random.seed(42)
-    pipeline(1e-4, 32, 10, 5, 101, 10, 100)
-
-# Visualize embeddings
 def embedding_visualization(embeddings, labels):
     # Use t-SNE to reduce dimensions
     tsne = TSNE(n_components=2)
@@ -137,23 +128,19 @@ def embedding_visualization(embeddings, labels):
     plt.scatter(reduced_embeddings[:, 0], reduced_embeddings[:, 1], c=labels)
     plt.show()
 
-# Calculate KNN accuracy
 def knn_accuracy(embeddings, labels, k=5):
-    return tf.reduce_mean(tf.cast(tf.reduce_any(tf.equal(labels[tf.argsort(tf.norm(embeddings[:, tf.newaxis] - embeddings, axis=-1), axis=1)[:, 1:k+1]], labels[:, tf.newaxis]), tf.float32), axis=1))
+    return np.mean(np.any(np.equal(labels[np.argsort(np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2), axis=1)[:, 1:k+1]], labels[:, np.newaxis]), axis=1))
 
-# Calculate KNN precision
 def knn_precision(embeddings, labels, k=5):
-    return tf.reduce_mean(tf.reduce_sum(tf.cast(tf.equal(labels[tf.argsort(tf.norm(embeddings[:, tf.newaxis] - embeddings, axis=-1), axis=1)[:, 1:k+1]], labels[:, tf.newaxis]), tf.float32), axis=1) / k)
+    return np.mean(np.sum(np.equal(labels[np.argsort(np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2), axis=1)[:, 1:k+1]], labels[:, np.newaxis]), axis=1) / k)
 
-# Calculate KNN recall
 def knn_recall(embeddings, labels, k=5):
-    return tf.reduce_mean(tf.reduce_sum(tf.cast(tf.equal(labels[tf.argsort(tf.norm(embeddings[:, tf.newaxis] - embeddings, axis=-1), axis=1)[:, 1:k+1]], labels[:, tf.newaxis]), tf.float32), axis=1) / tf.reduce_sum(tf.cast(tf.equal(labels, labels[:, tf.newaxis]), tf.float32), axis=1))
+    return np.mean(np.sum(np.equal(labels[np.argsort(np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2), axis=1)[:, 1:k+1]], labels[:, np.newaxis]), axis=1) / np.sum(np.equal(labels, labels[:, np.newaxis]), axis=1))
 
-# Calculate KNN F1-score
 def knn_f1(embeddings, labels, k=5):
     precision = knn_precision(embeddings, labels, k)
     recall = knn_recall(embeddings, labels, k)
     return 2 * (precision * recall) / (precision + recall)
 
 if __name__ == "__main__":
-    main()
+    pipeline(1e-4, 32, 10, 5, 101, 10, 100)
