@@ -105,23 +105,33 @@ class TripletDataset(Dataset):
         self.data = data
         self.config = config
         self.tokenizer = tokenizer
+        self.indices = list(range(len(data)))
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, index):
-        example = self.data[index]
+        example = self.data[self.indices[index]]
         input_ids = self.tokenizer.encode(example['input'], return_tensors='pt')
         labels = self.tokenizer.encode(example['output'], return_tensors='pt')
         negative_examples = []
         for _ in range(self.config.negative_samples):
-            negative_example = self.tokenizer.encode(self.tokenizer.encode(example['input'], return_tensors='pt').squeeze(0)[torch.randperm(self.tokenizer.encode(example['input'], return_tensors='pt').squeeze(0).shape[0])], return_tensors='pt')
+            negative_index = torch.randint(0, len(self.data), (1,)).item()
+            if negative_index == index:
+                negative_index = (negative_index + 1) % len(self.data)
+            negative_example = self.tokenizer.encode(self.data[negative_index]['input'], return_tensors='pt')
             negative_examples.append(negative_example)
+        negative_examples = torch.cat(negative_examples)
         return {
             'input_ids': input_ids,
             'labels': labels,
-            'negative_examples': torch.cat(negative_examples)
+            'negative_examples': negative_examples
         }
+
+    def on_epoch_end(self):
+        torch.manual_seed(self.config.random_seed)
+        torch.manual_seed(torch.randint(0, 2**32, (1,)).item())
+        self.indices = torch.randperm(len(self.data)).tolist()
 
 def load_data(file_path):
     try:
@@ -137,10 +147,11 @@ def create_dataset(data, config, tokenizer):
 def train_model(model, optimizer, scheduler, config, train_dataset, test_dataset):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
-    train_data = DataLoader(train_dataset, batch_size=config.train_batch_size, shuffle=True)
+    train_data = DataLoader(train_dataset, batch_size=config.train_batch_size, shuffle=False)
     test_data = DataLoader(test_dataset, batch_size=config.eval_batch_size, shuffle=False)
 
     for epoch in range(config.num_epochs):
+        train_dataset.on_epoch_end()
         model.train()
         total_loss = 0
         for batch in train_data:
