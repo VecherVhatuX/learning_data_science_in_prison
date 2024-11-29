@@ -36,7 +36,7 @@ class TripletDataset:
 
     def create_dataset(self):
         dataset = tf.data.Dataset.from_tensor_slices(self.triplets)
-        dataset = dataset.map(self.map_func)
+        dataset = dataset.map(self.map_func, num_parallel_calls=tf.data.AUTOTUNE)
         dataset = dataset.batch(self.batch_size)
         return dataset
 
@@ -85,9 +85,11 @@ def create_model(vocab_size, embedding_dim, max_sequence_length):
     negative_pooling = pooling(negative_embedding)
     
     dense = Dense(128, activation='relu')
-    anchor_dense = dense(anchor_pooling)
-    positive_dense = dense(positive_pooling)
-    negative_dense = dense(negative_pooling)
+    batch_norm = BatchNormalization()
+    dropout = Dropout(0.2)
+    anchor_dense = dropout(batch_norm(dense(anchor_pooling)))
+    positive_dense = dropout(batch_norm(dense(positive_pooling)))
+    negative_dense = dropout(batch_norm(dense(negative_pooling)))
     
     model = Model(inputs=[anchor_input, positive_input, negative_input], 
                   outputs=[anchor_dense, positive_dense, negative_dense])
@@ -105,7 +107,7 @@ def train(model, train_dataset, test_dataset, epochs):
     test_accuracies = []
     for epoch in range(1, epochs+1):
         train_dataset.shuffle_samples()
-        train_data = train_dataset.create_dataset().shuffle(1000).batch(32)
+        train_data = train_dataset.create_dataset().shuffle(1000).batch(32).prefetch(tf.data.AUTOTUNE)
         total_loss = 0
         for batch in train_data:
             anchor_sequences = batch['anchor_sequence']
@@ -123,7 +125,7 @@ def train(model, train_dataset, test_dataset, epochs):
         
         total_loss = 0
         total_correct = 0
-        for batch in test_dataset.create_dataset():
+        for batch in test_dataset.create_dataset().batch(32).prefetch(tf.data.AUTOTUNE):
             anchor_sequences = batch['anchor_sequence']
             positive_sequences = batch['positive_sequence']
             negative_sequences = batch['negative_sequence']
@@ -173,6 +175,12 @@ def main():
     test_dataset = TripletDataset(test_triplets, 32, 512)
     
     model = create_model(train_dataset.vocab_size, 128, 512)
+    checkpoint_path = "training_1/cp.ckpt"
+    checkpoint_dir = os.path.dirname(checkpoint_path)
+    cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_path,
+                                                  save_weights_only=True,
+                                                  verbose=1)
+    early_stopping = EarlyStopping(monitor='val_loss', patience=5, min_delta=0.001)
     train_losses, test_losses, train_accuracies, test_accuracies = train(model, train_dataset, test_dataset, 5)
     plot(train_losses, test_losses, train_accuracies, test_accuracies)
 
