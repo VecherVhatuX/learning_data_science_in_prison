@@ -11,52 +11,52 @@ from transformers import AutoTokenizer, AutoModel
 from transformers.optimization import AdamW, get_linear_schedule_with_warmup
 import random
 
+@dataclass
 class Config:
-    def __init__(self):
-        self.model_base = "t5-base"
-        self.conversation_format = "none"
-        self.low_rank_alpha = 16
-        self.low_rank_dropout = 0.1
-        self.low_rank_rank = 64
-        self.target_layers = "q_proj,k_proj,v_proj,o_proj,down_proj,up_proj,gate_proj"
-        self.nested_quantization = False
-        self.four_bit_dtype = "float16"
-        self.four_bit_storage_dtype = "uint8"
-        self.four_bit_quantization = "nf4"
-        self.flash_attention = False
-        self.peft_low_rank = False
-        self.eight_bit_quantization = False
-        self.four_bit_quantization_enabled = False
-        self.reentrant_training = False
-        self.unsloth_training = False
-        self.triplet_loss_training = True
-        self.dataset = "timdettmers/openassistant-guanaco"
-        self.append_special_token = False
-        self.add_special_tokens = False
-        self.dataset_splits = "train,test"
-        self.tokenized_data_path = None
-        self.output_dir = "./results"
-        self.num_epochs = 3
-        self.train_batch_size = 16
-        self.eval_batch_size = 64
-        self.warmup_steps = 500
-        self.weight_decay = 0.01
-        self.log_dir = "./logs"
-        self.save_steps = 500
-        self.max_checkpoints = 2
-        self.random_seed = 42
-        self.resume_checkpoint = None
-        self.negative_samples = 5
+    model_base: str = "t5-base"
+    conversation_format: str = "none"
+    low_rank_alpha: int = 16
+    low_rank_dropout: float = 0.1
+    low_rank_rank: int = 64
+    target_layers: str = "q_proj,k_proj,v_proj,o_proj,down_proj,up_proj,gate_proj"
+    nested_quantization: bool = False
+    four_bit_dtype: str = "float16"
+    four_bit_storage_dtype: str = "uint8"
+    four_bit_quantization: str = "nf4"
+    flash_attention: bool = False
+    peft_low_rank: bool = False
+    eight_bit_quantization: bool = False
+    four_bit_quantization_enabled: bool = False
+    reentrant_training: bool = False
+    unsloth_training: bool = False
+    triplet_loss_training: bool = True
+    dataset: str = "timdettmers/openassistant-guanaco"
+    append_special_token: bool = False
+    add_special_tokens: bool = False
+    dataset_splits: str = "train,test"
+    tokenized_data_path: str = None
+    output_dir: str = "./results"
+    num_epochs: int = 3
+    train_batch_size: int = 16
+    eval_batch_size: int = 64
+    warmup_steps: int = 500
+    weight_decay: float = 0.01
+    log_dir: str = "./logs"
+    save_steps: int = 500
+    max_checkpoints: int = 2
+    random_seed: int = 42
+    resume_checkpoint: str = None
+    negative_samples: int = 5
 
 class TripletModel(nn.Module):
-    def __init__(self, embedding_dim, vocab_size):
+    def __init__(self, embedding_dim: int, vocab_size: int):
         super().__init__()
         self.embedding_layer = nn.Embedding(vocab_size, embedding_dim)
         self.lstm_layer = nn.LSTM(embedding_dim, embedding_dim, batch_first=True)
         self.dense_layer = nn.Linear(embedding_dim, embedding_dim)
         self.output_dense_layer = nn.Linear(embedding_dim, vocab_size)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.embedding_layer(x)
         x, _ = self.lstm_layer(x)
         x = self.dense_layer(x[:, -1, :])
@@ -64,20 +64,20 @@ class TripletModel(nn.Module):
         x = self.output_dense_layer(x)
         return x
 
-    def compute_triplet_loss(self, anchor, positive, negative):
+    def compute_triplet_loss(self, anchor: torch.Tensor, positive: torch.Tensor, negative: torch.Tensor) -> torch.Tensor:
         return F.relu(F.pairwise_distance(anchor, positive) - F.pairwise_distance(anchor, negative) + 2.0).mean()
 
 class TripletDataset(Dataset):
-    def __init__(self, data, config, tokenizer):
+    def __init__(self, data: Dict, config: Config, tokenizer: AutoTokenizer):
         self.data = data
         self.config = config
         self.tokenizer = tokenizer
         self.indices = list(range(len(data)))
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.data)
 
-    def __getitem__(self, index):
+    def __getitem__(self, index: int) -> Dict:
         example = self.data[self.indices[index]]
         input_ids = self.tokenizer.encode(example['input'], return_tensors='pt')
         labels = self.tokenizer.encode(example['output'], return_tensors='pt')
@@ -95,12 +95,12 @@ class TripletDataset(Dataset):
             'negative_examples': negative_examples
         }
 
-    def on_epoch_end(self):
+    def on_epoch_end(self) -> None:
         random.seed(self.config.random_seed)
         random.seed(random.randint(0, 2**32))
         self.indices = random.sample(range(len(self.data)), len(self.data))
 
-def load_data(file_path):
+def load_data(file_path: str) -> Dict:
     try:
         with open(file_path, 'r') as file:
             return json.load(file)
@@ -108,13 +108,13 @@ def load_data(file_path):
         print(f"The file {file_path} does not exist.")
         return None
 
-def train_model(model, optimizer, scheduler, config, train_dataset, test_dataset):
+def train_model(model: TripletModel, optimizer: AdamW, scheduler, config: Config, train_dataset: TripletDataset, test_dataset: TripletDataset) -> None:
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
     train_data = DataLoader(train_dataset, batch_size=config.train_batch_size, shuffle=False)
     test_data = DataLoader(test_dataset, batch_size=config.eval_batch_size, shuffle=False)
 
-    def train_step(batch):
+    def train_step(batch: Dict) -> float:
         anchor = batch['input_ids'].squeeze(1).to(device)
         positive = batch['labels'].squeeze(1).to(device)
         negative = batch['negative_examples'].to(device)
@@ -129,7 +129,7 @@ def train_model(model, optimizer, scheduler, config, train_dataset, test_dataset
             scheduler.step()
             return loss.item()
 
-    def test_step(batch):
+    def test_step(batch: Dict) -> float:
         input_ids = batch['input_ids'].squeeze(1).to(device)
         labels = batch['labels'].squeeze(1).to(device)
         outputs = model(input_ids)
@@ -146,7 +146,7 @@ def train_model(model, optimizer, scheduler, config, train_dataset, test_dataset
         print(f"Epoch {epoch+1}, Test Loss: {test_loss}")
         torch.save(model.state_dict(), f"triplet_model_epoch_{epoch+1}.pth")
 
-def main():
+def main() -> None:
     config = Config()
     train_data = load_data("train.json")
     test_data = load_data("test.json")
