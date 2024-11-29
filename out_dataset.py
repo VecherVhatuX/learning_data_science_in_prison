@@ -7,10 +7,7 @@ from tensorflow.keras.preprocessing.text import Tokenizer
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input, Embedding, Dense, Reshape, Flatten
-from tensorflow.keras.layers import GlobalMaxPooling1D, concatenate
-from tensorflow.keras.layers import BatchNormalization
-from tensorflow.keras.layers import Dropout
+from tensorflow.keras.layers import Input, Embedding, Dense, Reshape, Flatten, GlobalMaxPooling1D, concatenate, BatchNormalization, Dropout
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.regularizers import l2
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
