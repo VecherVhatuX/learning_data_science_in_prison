@@ -47,6 +47,7 @@ class ModelConfig:
     resume_checkpoint: str = None
     negative_samples: int = 5
 
+
 class TripletModel(nn.Module):
     def __init__(self, embedding_dim, vocab_size):
         super().__init__()
@@ -65,6 +66,7 @@ class TripletModel(nn.Module):
 
     def compute_triplet_loss(self, anchor, positive, negative):
         return F.relu(F.pairwise_distance(anchor, positive) - F.pairwise_distance(anchor, negative) + 2.0).mean()
+
 
 class TripletDataset(Dataset):
     def __init__(self, data, config, tokenizer):
@@ -89,6 +91,7 @@ class TripletDataset(Dataset):
             'negative_examples': torch.cat(negative_examples)
         }
 
+
 def load_data(file_path):
     try:
         with open(file_path, 'r') as file:
@@ -97,33 +100,38 @@ def load_data(file_path):
         print(f"The file {file_path} does not exist.")
         return None
 
+
 def create_dataset(data, config, tokenizer):
     return TripletDataset(data, config, tokenizer)
+
 
 def train_model(model, optimizer, scheduler, config, train_dataset, test_dataset):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
     train_data = DataLoader(train_dataset, batch_size=config.train_batch_size, shuffle=True)
     test_data = DataLoader(test_dataset, batch_size=config.eval_batch_size, shuffle=False)
+
     for epoch in range(config.num_epochs):
-        total_loss = 0
         model.train()
+        total_loss = 0
         for batch in train_data:
             anchor = batch['input_ids'].squeeze(1).to(device)
             positive = batch['labels'].squeeze(1).to(device)
             negative = batch['negative_examples'].to(device)
             optimizer.zero_grad()
-            anchor_outputs = model(anchor)
-            positive_outputs = model(positive)
-            negative_outputs = model(negative)
-            loss = model.compute_triplet_loss(anchor_outputs, positive_outputs, negative_outputs)
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
-            total_loss += loss.item()
+            with torch.set_grad_enabled(True):
+                anchor_outputs = model(anchor)
+                positive_outputs = model(positive)
+                negative_outputs = model(negative)
+                loss = model.compute_triplet_loss(anchor_outputs, positive_outputs, negative_outputs)
+                loss.backward()
+                optimizer.step()
+                scheduler.step()
+                total_loss += loss.item()
         print(f"Epoch {epoch+1}, Loss: {total_loss / len(train_data)}")
-        test_loss = 0
+
         model.eval()
+        test_loss = 0
         with torch.no_grad():
             for batch in test_data:
                 input_ids = batch['input_ids'].squeeze(1).to(device)
@@ -133,6 +141,7 @@ def train_model(model, optimizer, scheduler, config, train_dataset, test_dataset
                 test_loss += loss.item()
         print(f"Epoch {epoch+1}, Test Loss: {test_loss / len(test_data)}")
         torch.save(model.state_dict(), f"triplet_model_epoch_{epoch+1}.pth")
+
 
 def main():
     config = ModelConfig()
@@ -145,6 +154,7 @@ def main():
     optimizer = AdamW(model.parameters(), lr=0.001)
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=config.warmup_steps, num_training_steps=config.num_epochs * len(train_dataset))
     train_model(model, optimizer, scheduler, config, train_dataset, test_dataset)
+
 
 if __name__ == "__main__":
     main()
