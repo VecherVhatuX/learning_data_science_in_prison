@@ -13,43 +13,52 @@ from tensorflow.keras.utils import plot_model
 
 @dataclass
 class ModelConfig:
-    model_base: str = "t5-base"
-    conversation_format: str = "none"
-    low_rank_alpha: int = 16
-    low_rank_dropout: float = 0.1
-    low_rank_rank: int = 64
-    target_layers: str = "q_proj,k_proj,v_proj,o_proj,down_proj,up_proj,gate_proj"
-    nested_quantization: bool = False
-    four_bit_dtype: str = "float16"
-    four_bit_storage_dtype: str = "uint8"
-    four_bit_quantization: str = "nf4"
-    flash_attention: bool = False
-    peft_low_rank: bool = False
-    eight_bit_quantization: bool = False
-    four_bit_quantization_enabled: bool = False
-    reentrant_training: bool = False
-    unsloth_training: bool = False
-    triplet_loss_training: bool = True
-    dataset: str = "timdettmers/openassistant-guanaco"
-    append_special_token: bool = False
-    add_special_tokens: bool = False
-    dataset_splits: str = "train,test"
-    tokenized_data_path: str = None
-    output_dir: str = "./results"
-    num_epochs: int = 3
-    train_batch_size: int = 16
-    eval_batch_size: int = 64
-    warmup_steps: int = 500
-    weight_decay: float = 0.01
-    log_dir: str = "./logs"
-    save_steps: int = 500
-    max_checkpoints: int = 2
-    random_seed: int = 42
-    resume_checkpoint: str = None
-    negative_samples: int = 5
+    """Configuration for the Triplet Model."""
+    model_base: str = "t5-base"  # Base model to use
+    conversation_format: str = "none"  # Format of conversations
+    low_rank_alpha: int = 16  # Alpha value for low-rank approximation
+    low_rank_dropout: float = 0.1  # Dropout rate for low-rank approximation
+    low_rank_rank: int = 64  # Rank for low-rank approximation
+    target_layers: str = "q_proj,k_proj,v_proj,o_proj,down_proj,up_proj,gate_proj"  # Layers to target for low-rank approximation
+    nested_quantization: bool = False  # Whether to use nested quantization
+    four_bit_dtype: str = "float16"  # Data type for 4-bit quantization
+    four_bit_storage_dtype: str = "uint8"  # Storage data type for 4-bit quantization
+    four_bit_quantization: str = "nf4"  # Quantization scheme for 4-bit quantization
+    flash_attention: bool = False  # Whether to use flash attention
+    peft_low_rank: bool = False  # Whether to use PEFT low-rank approximation
+    eight_bit_quantization: bool = False  # Whether to use 8-bit quantization
+    four_bit_quantization_enabled: bool = False  # Whether 4-bit quantization is enabled
+    reentrant_training: bool = False  # Whether to use reentrant training
+    unsloth_training: bool = False  # Whether to use unsloth training
+    triplet_loss_training: bool = True  # Whether to use triplet loss training
+    dataset: str = "timdettmers/openassistant-guanaco"  # Dataset to use
+    append_special_token: bool = False  # Whether to append special token
+    add_special_tokens: bool = False  # Whether to add special tokens
+    dataset_splits: str = "train,test"  # Splits of the dataset
+    tokenized_data_path: str = None  # Path to tokenized data
+    output_dir: str = "./results"  # Output directory
+    num_epochs: int = 3  # Number of epochs
+    train_batch_size: int = 16  # Batch size for training
+    eval_batch_size: int = 64  # Batch size for evaluation
+    warmup_steps: int = 500  # Warmup steps
+    weight_decay: float = 0.01  # Weight decay
+    log_dir: str = "./logs"  # Log directory
+    save_steps: int = 500  # Save steps
+    max_checkpoints: int = 2  # Maximum number of checkpoints
+    random_seed: int = 42  # Random seed
+    resume_checkpoint: str = None  # Resume checkpoint
+    negative_samples: int = 5  # Number of negative samples
 
 class TripletModel(Model):
+    """Triplet model for natural language processing tasks."""
+    
     def __init__(self, embedding_dim, vocab_size):
+        """Initialize the triplet model.
+        
+        Args:
+            embedding_dim (int): Dimension of the embedding layer.
+            vocab_size (int): Size of the vocabulary.
+        """
         super().__init__()
         self.embedding = Embedding(vocab_size, embedding_dim)
         self.lstm = LSTM(embedding_dim, return_sequences=True)
@@ -57,6 +66,14 @@ class TripletModel(Model):
         self.output_dense = Dense(vocab_size)
 
     def call(self, inputs):
+        """Call the model.
+        
+        Args:
+            inputs (tf.Tensor): Input tensor.
+        
+        Returns:
+            tf.Tensor: Output tensor.
+        """
         x = self.embedding(inputs)
         x = self.lstm(x)
         x = self.dense(x[:, -1, :])
@@ -64,6 +81,14 @@ class TripletModel(Model):
         return x
 
 def load_data(file_path: str) -> Dict:
+    """Load data from a JSON file.
+    
+    Args:
+        file_path (str): Path to the JSON file.
+    
+    Returns:
+        Dict: Loaded data.
+    """
     try:
         with open(file_path, 'r') as file:
             return json.load(file)
@@ -72,15 +97,37 @@ def load_data(file_path: str) -> Dict:
         return None
 
 class TripletDataset:
+    """Triplet dataset for natural language processing tasks."""
+    
     def __init__(self, data, config, tokenizer):
+        """Initialize the triplet dataset.
+        
+        Args:
+            data (Dict): Data to use.
+            config (ModelConfig): Configuration to use.
+            tokenizer (Tokenizer): Tokenizer to use.
+        """
         self.data = data
         self.config = config
         self.tokenizer = tokenizer
 
     def __len__(self):
+        """Get the length of the dataset.
+        
+        Returns:
+            int: Length of the dataset.
+        """
         return len(self.data)
 
     def __getitem__(self, index):
+        """Get an item from the dataset.
+        
+        Args:
+            index (int): Index of the item.
+        
+        Returns:
+            Dict: Item from the dataset.
+        """
         example = self.data[index]
         input_ids = self.tokenizer.texts_to_sequences([example['input']])[0]
         labels = self.tokenizer.texts_to_sequences([example['output']])[0]
@@ -95,12 +142,39 @@ class TripletDataset:
         }
 
     def to_tf_dataset(self, batch_size):
+        """Convert the dataset to a TensorFlow dataset.
+        
+        Args:
+            batch_size (int): Batch size.
+        
+        Returns:
+            tf.data.Dataset: TensorFlow dataset.
+        """
         return tf.data.Dataset.from_tensor_slices([self.__getitem__(i) for i in range(len(self))]).batch(batch_size)
 
 def create_triplet_dataset(data, config, tokenizer):
+    """Create a triplet dataset.
+    
+    Args:
+        data (Dict): Data to use.
+        config (ModelConfig): Configuration to use.
+        tokenizer (Tokenizer): Tokenizer to use.
+    
+    Returns:
+        TripletDataset: Triplet dataset.
+    """
     return TripletDataset(data, config, tokenizer)
 
 def train_model(model, optimizer, config, train_dataset, test_dataset):
+    """Train the model.
+    
+    Args:
+        model (TripletModel): Model to train.
+        optimizer (Adam): Optimizer to use.
+        config (ModelConfig): Configuration to use.
+        train_dataset (TripletDataset): Training dataset.
+        test_dataset (TripletDataset): Testing dataset.
+    """
     checkpoint = ModelCheckpoint("triplet_model.h5", save_best_only=True, verbose=1)
     tensorboard = TensorBoard(log_dir=config.log_dir, write_graph=True, write_images=True)
     train_dataset = train_dataset.to_tf_dataset(config.train_batch_size)
@@ -131,6 +205,7 @@ def train_model(model, optimizer, config, train_dataset, test_dataset):
         model.save("triplet_model.h5")
 
 def main():
+    """Main function."""
     config = ModelConfig()
     train_data = load_data("train.json")
     test_data = load_data("test.json")
