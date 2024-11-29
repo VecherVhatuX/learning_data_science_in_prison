@@ -6,34 +6,29 @@ from sklearn.manifold import TSNE
 class TripletModel(tf.keras.Model):
     def __init__(self, embedding_dim, num_features):
         super(TripletModel, self).__init__()
-        self.embedding = tf.keras.layers.Embedding(embedding_dim, num_features)
-        self.avg_pooling = tf.keras.layers.GlobalAveragePooling1D()
-        self.flatten = tf.keras.layers.Flatten()
-        self.dense = tf.keras.layers.Dense(num_features)
-        self.batch_norm = tf.keras.layers.BatchNormalization()
-        self.layer_norm = tf.keras.layers.LayerNormalization()
+        self.model = tf.keras.Sequential([
+            tf.keras.layers.Embedding(embedding_dim, num_features),
+            tf.keras.layers.GlobalAveragePooling1D(),
+            tf.keras.layers.Flatten(),
+            tf.keras.layers.Dense(num_features),
+            tf.keras.layers.BatchNormalization(),
+            tf.keras.layers.LayerNormalization()
+        ])
 
     def call(self, inputs):
-        x = self.embedding(inputs)
-        x = self.avg_pooling(x)
-        x = self.flatten(x)
-        x = self.dense(x)
-        x = self.batch_norm(x)
-        x = self.layer_norm(x)
-        return x
+        return self.model(inputs)
 
-class TripletLoss(tf.keras.losses.Loss):
+class TripletLoss:
     def __init__(self, margin=1.0):
-        super(TripletLoss, self).__init__()
         self.margin = margin
 
-    def call(self, anchor, positive, negative):
+    def __call__(self, anchor, positive, negative):
         d_ap = tf.norm(anchor - positive, axis=-1)
         d_an = tf.norm(anchor[:, tf.newaxis, :] - negative, axis=-1)
         loss = tf.maximum(d_ap - tf.reduce_min(d_an, axis=-1) + self.margin, tf.zeros_like(d_ap))
         return tf.reduce_mean(loss)
 
-class Dataset:
+class Dataset(tf.keras.utils.Sequence):
     def __init__(self, samples, labels, num_negatives, batch_size, shuffle=True):
         self.samples = samples
         self.labels = labels
@@ -41,14 +36,13 @@ class Dataset:
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.indices = np.arange(len(samples))
-        self.on_epoch_end()
+
+    def __len__(self):
+        return len(self.samples) // self.batch_size
 
     def on_epoch_end(self):
         if self.shuffle:
             np.random.shuffle(self.indices)
-
-    def __len__(self):
-        return len(self.samples) // self.batch_size
 
     def __getitem__(self, idx):
         batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
