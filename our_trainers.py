@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 
+# Model creation
 def create_triplet_model(embedding_dim, num_features):
     return keras.Sequential([
         layers.Embedding(embedding_dim, num_features),
@@ -15,6 +16,7 @@ def create_triplet_model(embedding_dim, num_features):
         layers.LayerNormalization()
     ])
 
+# Loss function
 def create_triplet_loss(margin=1.0):
     def triplet_loss(y_true, y_pred):
         anchor, positive, negative = y_pred
@@ -24,6 +26,7 @@ def create_triplet_loss(margin=1.0):
         return tf.reduce_mean(loss)
     return triplet_loss
 
+# Dataset creation
 def create_triplet_dataset(samples, labels, num_negatives, batch_size):
     def generate_batches():
         while True:
@@ -34,6 +37,7 @@ def create_triplet_dataset(samples, labels, num_negatives, batch_size):
             yield samples[anchor_idx], samples[positive_idx], samples[negative_idx]
     return generate_batches()
 
+# Training
 def train(model, dataset, epochs, optimizer, loss_fn):
     for epoch in range(epochs):
         for batch in dataset():
@@ -47,6 +51,7 @@ def train(model, dataset, epochs, optimizer, loss_fn):
             optimizer.apply_gradients(zip(gradients, model.trainable_variables))
             print(f'Epoch: {epoch+1}, Loss: {loss.numpy()}')
 
+# Validation
 def validate(model, embeddings, labels, k=5):
     predicted_embeddings = model(embeddings)
     print("Validation KNN Accuracy:", knn_accuracy(predicted_embeddings, labels, k))
@@ -55,15 +60,18 @@ def validate(model, embeddings, labels, k=5):
     print("Validation KNN F1-score:", knn_f1(predicted_embeddings, labels, k))
     embedding_visualization(predicted_embeddings, labels)
 
+# Distance calculation
 def calculate_distances(output):
     print(tf.norm(output - output, axis=-1).numpy())
     print(tf.reduce_sum(output * output, axis=-1) / (tf.norm(output, axis=-1) * tf.norm(output, axis=-1)).numpy())
     print(1 - tf.reduce_sum(output * output, axis=-1) / (tf.norm(output, axis=-1) * tf.norm(output, axis=-1)).numpy())
 
+# Neighbor calculation
 def calculate_neighbors(predicted_embeddings, output, k=5):
     print(tf.argsort(tf.norm(predicted_embeddings - output, axis=-1), direction='ASCENDING')[:, :k].numpy())
     print(tf.argsort(tf.reduce_sum(predicted_embeddings * output, axis=-1) / (tf.norm(predicted_embeddings, axis=-1) * tf.norm(output, axis=-1)), direction='DESCENDING')[:, :k].numpy())
 
+# Pipeline
 def pipeline(learning_rate, batch_size, epochs, num_negatives, embedding_dim, num_features, size):
     samples = np.random.randint(0, 100, (size, 10))
     labels = np.random.randint(0, 2, (size,))
@@ -80,10 +88,12 @@ def pipeline(learning_rate, batch_size, epochs, num_negatives, embedding_dim, nu
     calculate_neighbors(predicted_embeddings, output)
     validate(model, samples, labels)
 
+# Main
 def main():
     np.random.seed(42)
     pipeline(1e-4, 32, 10, 5, 101, 10, 100)
 
+# Visualization
 def embedding_visualization(embeddings, labels):
     tsne = TSNE(n_components=2)
     reduced_embeddings = tsne.fit_transform(embeddings)
@@ -91,15 +101,19 @@ def embedding_visualization(embeddings, labels):
     plt.scatter(reduced_embeddings[:, 0], reduced_embeddings[:, 1], c=labels)
     plt.show()
 
+# KNN accuracy
 def knn_accuracy(embeddings, labels, k=5):
     return tf.reduce_mean(tf.cast(tf.reduce_any(tf.equal(labels[tf.argsort(tf.norm(embeddings - embeddings, axis=1), axis=1)[:, 1:k+1]], labels[:, tf.newaxis]), tf.float32), axis=1))
 
+# KNN precision
 def knn_precision(embeddings, labels, k=5):
     return tf.reduce_mean(tf.reduce_sum(tf.cast(tf.equal(labels[tf.argsort(tf.norm(embeddings - embeddings, axis=1), axis=1)[:, 1:k+1]], labels[:, tf.newaxis]), tf.float32), axis=1) / k)
 
+# KNN recall
 def knn_recall(embeddings, labels, k=5):
     return tf.reduce_mean(tf.reduce_sum(tf.cast(tf.equal(labels[tf.argsort(tf.norm(embeddings - embeddings, axis=1), axis=1)[:, 1:k+1]], labels[:, tf.newaxis]), tf.float32), axis=1) / tf.reduce_sum(tf.cast(tf.equal(labels, labels[:, tf.newaxis]), tf.float32), axis=1))
 
+# KNN F1-score
 def knn_f1(embeddings, labels, k=5):
     precision = knn_precision(embeddings, labels, k)
     recall = knn_recall(embeddings, labels, k)
