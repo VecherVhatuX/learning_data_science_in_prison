@@ -9,43 +9,44 @@ from torch.utils.data import Dataset, DataLoader
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModel
 from transformers.optimization import AdamW, get_linear_schedule_with_warmup
+import random
 
-@dataclass
-class ModelConfig:
-    model_base: str = "t5-base"
-    conversation_format: str = "none"
-    low_rank_alpha: int = 16
-    low_rank_dropout: float = 0.1
-    low_rank_rank: int = 64
-    target_layers: str = "q_proj,k_proj,v_proj,o_proj,down_proj,up_proj,gate_proj"
-    nested_quantization: bool = False
-    four_bit_dtype: str = "float16"
-    four_bit_storage_dtype: str = "uint8"
-    four_bit_quantization: str = "nf4"
-    flash_attention: bool = False
-    peft_low_rank: bool = False
-    eight_bit_quantization: bool = False
-    four_bit_quantization_enabled: bool = False
-    reentrant_training: bool = False
-    unsloth_training: bool = False
-    triplet_loss_training: bool = True
-    dataset: str = "timdettmers/openassistant-guanaco"
-    append_special_token: bool = False
-    add_special_tokens: bool = False
-    dataset_splits: str = "train,test"
-    tokenized_data_path: str = None
-    output_dir: str = "./results"
-    num_epochs: int = 3
-    train_batch_size: int = 16
-    eval_batch_size: int = 64
-    warmup_steps: int = 500
-    weight_decay: float = 0.01
-    log_dir: str = "./logs"
-    save_steps: int = 500
-    max_checkpoints: int = 2
-    random_seed: int = 42
-    resume_checkpoint: str = None
-    negative_samples: int = 5
+class Config:
+    def __init__(self):
+        self.model_base = "t5-base"
+        self.conversation_format = "none"
+        self.low_rank_alpha = 16
+        self.low_rank_dropout = 0.1
+        self.low_rank_rank = 64
+        self.target_layers = "q_proj,k_proj,v_proj,o_proj,down_proj,up_proj,gate_proj"
+        self.nested_quantization = False
+        self.four_bit_dtype = "float16"
+        self.four_bit_storage_dtype = "uint8"
+        self.four_bit_quantization = "nf4"
+        self.flash_attention = False
+        self.peft_low_rank = False
+        self.eight_bit_quantization = False
+        self.four_bit_quantization_enabled = False
+        self.reentrant_training = False
+        self.unsloth_training = False
+        self.triplet_loss_training = True
+        self.dataset = "timdettmers/openassistant-guanaco"
+        self.append_special_token = False
+        self.add_special_tokens = False
+        self.dataset_splits = "train,test"
+        self.tokenized_data_path = None
+        self.output_dir = "./results"
+        self.num_epochs = 3
+        self.train_batch_size = 16
+        self.eval_batch_size = 64
+        self.warmup_steps = 500
+        self.weight_decay = 0.01
+        self.log_dir = "./logs"
+        self.save_steps = 500
+        self.max_checkpoints = 2
+        self.random_seed = 42
+        self.resume_checkpoint = None
+        self.negative_samples = 5
 
 class TripletModel(nn.Module):
     def __init__(self, embedding_dim, vocab_size):
@@ -82,7 +83,7 @@ class TripletDataset(Dataset):
         labels = self.tokenizer.encode(example['output'], return_tensors='pt')
         negative_examples = []
         for _ in range(self.config.negative_samples):
-            negative_index = torch.randint(0, len(self.data), (1,)).item()
+            negative_index = random.randint(0, len(self.data) - 1)
             if negative_index == index:
                 negative_index = (negative_index + 1) % len(self.data)
             negative_example = self.tokenizer.encode(self.data[negative_index]['input'], return_tensors='pt')
@@ -95,9 +96,9 @@ class TripletDataset(Dataset):
         }
 
     def on_epoch_end(self):
-        torch.manual_seed(self.config.random_seed)
-        torch.manual_seed(torch.randint(0, 2**32, (1,)).item())
-        self.indices = torch.randperm(len(self.data)).tolist()
+        random.seed(self.config.random_seed)
+        random.seed(random.randint(0, 2**32))
+        self.indices = random.sample(range(len(self.data)), len(self.data))
 
 def load_data(file_path):
     try:
@@ -106,9 +107,6 @@ def load_data(file_path):
     except FileNotFoundError:
         print(f"The file {file_path} does not exist.")
         return None
-
-def create_dataset(data, config, tokenizer):
-    return TripletDataset(data, config, tokenizer)
 
 def train_model(model, optimizer, scheduler, config, train_dataset, test_dataset):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -149,12 +147,12 @@ def train_model(model, optimizer, scheduler, config, train_dataset, test_dataset
         torch.save(model.state_dict(), f"triplet_model_epoch_{epoch+1}.pth")
 
 def main():
-    config = ModelConfig()
+    config = Config()
     train_data = load_data("train.json")
     test_data = load_data("test.json")
     tokenizer = AutoTokenizer.from_pretrained(config.model_base)
-    train_dataset = create_dataset(train_data, config, tokenizer)
-    test_dataset = create_dataset(test_data, config, tokenizer)
+    train_dataset = TripletDataset(train_data, config, tokenizer)
+    test_dataset = TripletDataset(test_data, config, tokenizer)
     model = TripletModel(128, len(tokenizer))
     optimizer = AdamW(model.parameters(), lr=0.001)
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=config.warmup_steps, num_training_steps=config.num_epochs * len(train_dataset))
