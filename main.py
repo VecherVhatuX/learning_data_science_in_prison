@@ -153,7 +153,10 @@ class TripletDataset:
     # Get the TensorFlow dataset
     def get_tf_dataset(self, batch_size):
         # Create a dataset from the data
-        return tf.data.Dataset.from_tensor_slices([self.__getitem__(i) for i in range(len(self))]).batch(batch_size)
+        ds = tf.data.Dataset.from_tensor_slices([self.__getitem__(i) for i in range(len(self))])
+        ds = ds.shuffle(buffer_size=len(self))
+        ds = ds.batch(batch_size, drop_remainder=True)
+        return ds.repeat()
 
 # Create a triplet dataset
 def create_triplet_dataset(data, config, tokenizer):
@@ -173,7 +176,7 @@ def train_triplet_model(model, optimizer, config, train_dataset, test_dataset):
         # Initialize total loss
         total_loss = 0
         # Train on each batch
-        for batch in train_data:
+        for batch in train_data.take(len(train_data)):
             # Get the anchor, positive, and negative examples
             anchor = batch['input_ids']
             positive = batch['labels']
@@ -196,7 +199,7 @@ def train_triplet_model(model, optimizer, config, train_dataset, test_dataset):
         print(f"Epoch {epoch+1}, Loss: {total_loss / len(train_data)}")
         # Evaluate on the test dataset
         test_loss = 0
-        for batch in test_data:
+        for batch in test_data.take(len(test_data)):
             # Get the input and labels
             input_ids = batch['input_ids']
             labels = batch['labels']
