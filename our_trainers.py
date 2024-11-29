@@ -84,6 +84,12 @@ def validate_network(model, embeddings, labels, k=5):
     print("Validation KNN F1-score:", knn_f1(predicted_embeddings, labels, k))
     embedding_visualization(predicted_embeddings, labels)
 
+def create_samples(size):
+    return np.random.randint(0, 100, (size, 10))
+
+def create_labels(size):
+    return np.random.randint(0, 2, (size,))
+
 def distance(embedding1, embedding2):
     return tf.norm(embedding1 - embedding2, axis=-1)
 
@@ -125,27 +131,51 @@ def knn_f1(embeddings, labels, k=5):
 def build_optimizer(model, learning_rate):
     return keras.optimizers.Adam(learning_rate=learning_rate)
 
-def pipeline(learning_rate, batch_size, epochs, num_negatives, embedding_dim, num_features):
-    samples = np.random.randint(0, 100, (100, 10))
-    labels = np.random.randint(0, 2, (100,))
-    model = TripletNetwork(embedding_dim, num_features)
-    optimizer = build_optimizer(model, learning_rate)
-    dataset = TripletDataGenerator(samples, labels, num_negatives, batch_size)
+def train(model, dataset, epochs, optimizer):
     train_network(model, dataset, epochs, optimizer)
-    input_ids = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=np.int32).reshape((1, 10))
-    output = model(input_ids)
+
+def validate(model, embeddings, labels, k=5):
+    validate_network(model, embeddings, labels, k)
+
+def test(model, input_ids):
+    return model(input_ids)
+
+def save_model(model):
     model.save_weights("triplet_model.h5")
-    predicted_embeddings = model(samples)
+
+def create_model(embedding_dim, num_features):
+    return TripletNetwork(embedding_dim, num_features)
+
+def create_dataset(samples, labels, num_negatives, batch_size):
+    return TripletDataGenerator(samples, labels, num_negatives, batch_size)
+
+def calculate_distances(output):
     print(distance(output, output).numpy())
     print(similarity(output, output).numpy())
     print(cosine_distance(output, output).numpy())
-    print(nearest_neighbors(predicted_embeddings, output, k=5).numpy())
-    print(similar_embeddings(predicted_embeddings, output, k=5).numpy())
-    validate_network(model, predicted_embeddings, labels, k=5)
+
+def calculate_neighbors(predicted_embeddings, output, k=5):
+    print(nearest_neighbors(predicted_embeddings, output, k).numpy())
+    print(similar_embeddings(predicted_embeddings, output, k).numpy())
+
+def pipeline(learning_rate, batch_size, epochs, num_negatives, embedding_dim, num_features, size):
+    samples = create_samples(size)
+    labels = create_labels(size)
+    model = create_model(embedding_dim, num_features)
+    optimizer = build_optimizer(model, learning_rate)
+    dataset = create_dataset(samples, labels, num_negatives, batch_size)
+    train(model, dataset, epochs, optimizer)
+    input_ids = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=np.int32).reshape((1, 10))
+    output = test(model, input_ids)
+    save_model(model)
+    predicted_embeddings = model(samples)
+    calculate_distances(output)
+    calculate_neighbors(predicted_embeddings, output)
+    validate(model, predicted_embeddings, labels)
 
 def main():
     np.random.seed(42)
-    pipeline(1e-4, 32, 10, 5, 101, 10)
+    pipeline(1e-4, 32, 10, 5, 101, 10, 100)
 
 if __name__ == "__main__":
     main()
