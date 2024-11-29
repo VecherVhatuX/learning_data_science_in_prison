@@ -9,73 +9,73 @@ import numpy as np
 import random
 import tensorflow_text as tft
 
-@dataclass
-class Config:
-    model_base: str = "t5-base"
-    conversation_format: str = "none"
-    low_rank_alpha: int = 16
-    low_rank_dropout: float = 0.1
-    low_rank_rank: int = 64
-    target_layers: str = "q_proj,k_proj,v_proj,o_proj,down_proj,up_proj,gate_proj"
-    nested_quantization: bool = False
-    four_bit_dtype: str = "float16"
-    four_bit_storage_dtype: str = "uint8"
-    four_bit_quantization: str = "nf4"
-    flash_attention: bool = False
-    peft_low_rank: bool = False
-    eight_bit_quantization: bool = False
-    four_bit_quantization_enabled: bool = False
-    reentrant_training: bool = False
-    unsloth_training: bool = False
-    triplet_loss_training: bool = True
-    dataset: str = "timdettmers/openassistant-guanaco"
-    append_special_token: bool = False
-    add_special_tokens: bool = False
-    dataset_splits: str = "train,test"
-    tokenized_data_path: str = None
-    output_dir: str = "./results"
-    num_epochs: int = 3
-    train_batch_size: int = 16
-    eval_batch_size: int = 64
-    warmup_steps: int = 500
-    weight_decay: float = 0.01
-    log_dir: str = "./logs"
-    save_steps: int = 500
-    max_checkpoints: int = 2
-    random_seed: int = 42
-    resume_checkpoint: str = None
-    negative_samples: int = 5
+class ModelConfig:
+    def __init__(self):
+        self.model_base = "t5-base"
+        self.conversation_format = "none"
+        self.low_rank_alpha = 16
+        self.low_rank_dropout = 0.1
+        self.low_rank_rank = 64
+        self.target_layers = "q_proj,k_proj,v_proj,o_proj,down_proj,up_proj,gate_proj"
+        self.nested_quantization = False
+        self.four_bit_dtype = "float16"
+        self.four_bit_storage_dtype = "uint8"
+        self.four_bit_quantization = "nf4"
+        self.flash_attention = False
+        self.peft_low_rank = False
+        self.eight_bit_quantization = False
+        self.four_bit_quantization_enabled = False
+        self.reentrant_training = False
+        self.unsloth_training = False
+        self.triplet_loss_training = True
+        self.dataset = "timdettmers/openassistant-guanaco"
+        self.append_special_token = False
+        self.add_special_tokens = False
+        self.dataset_splits = "train,test"
+        self.tokenized_data_path = None
+        self.output_dir = "./results"
+        self.num_epochs = 3
+        self.train_batch_size = 16
+        self.eval_batch_size = 64
+        self.warmup_steps = 500
+        self.weight_decay = 0.01
+        self.log_dir = "./logs"
+        self.save_steps = 500
+        self.max_checkpoints = 2
+        self.random_seed = 42
+        self.resume_checkpoint = None
+        self.negative_samples = 5
 
-class TripletModel(models.Model):
-    def __init__(self, embedding_dim: int, vocab_size: int):
-        super().__init__()
-        self.embedding_layer = layers.Embedding(vocab_size, embedding_dim)
-        self.lstm_layer = layers.LSTM(embedding_dim, return_sequences=True)
-        self.dense_layer = layers.Dense(embedding_dim, activation='relu')
-        self.output_dense_layer = layers.Dense(vocab_size)
+class TripletModel(tf.keras.Model):
+    def __init__(self, embedding_dim, vocab_size):
+        super(TripletModel, self).__init__()
+        self.embedding = layers.Embedding(vocab_size, embedding_dim)
+        self.lstm = layers.LSTM(embedding_dim, return_sequences=True)
+        self.dense = layers.Dense(embedding_dim, activation='relu')
+        self.output_dense = layers.Dense(vocab_size)
 
-    def call(self, x: tf.Tensor) -> tf.Tensor:
-        x = self.embedding_layer(x)
-        x = self.lstm_layer(x)
-        x = self.dense_layer(x[:, -1, :])
-        x = self.output_dense_layer(x)
+    def call(self, x):
+        x = self.embedding(x)
+        x = self.lstm(x)
+        x = self.dense(x[:, -1, :])
+        x = self.output_dense(x)
         return x
 
-    def compute_triplet_loss(self, anchor: tf.Tensor, positive: tf.Tensor, negative: tf.Tensor) -> tf.Tensor:
+    def compute_triplet_loss(self, anchor, positive, negative):
         return tf.reduce_mean(tf.maximum(tf.reduce_mean((anchor - positive) ** 2) - tf.reduce_mean((anchor - negative) ** 2) + 2.0, 0.0))
 
 class TripletDataset(tf.keras.utils.Sequence):
-    def __init__(self, data: Dict, config: Config, tokenizer):
+    def __init__(self, data, config, tokenizer):
         self.data = data
         self.config = config
         self.tokenizer = tokenizer
         self.indices = list(range(len(data)))
         self.batch_size = config.train_batch_size
 
-    def __len__(self) -> int:
+    def __len__(self):
         return len(self.data) // self.batch_size
 
-    def __getitem__(self, index: int) -> Dict:
+    def __getitem__(self, index):
         input_ids = []
         labels = []
         negative_examples = []
@@ -95,12 +95,12 @@ class TripletDataset(tf.keras.utils.Sequence):
         negative_examples = np.array(negative_examples)
         return input_ids, labels, negative_examples
 
-    def on_epoch_end(self) -> None:
+    def on_epoch_end(self):
         random.seed(self.config.random_seed)
         random.seed(random.randint(0, 2**32))
         self.indices = random.sample(range(len(self.data)), len(self.data))
 
-def load_data(file_path: str) -> Dict:
+def load_data(file_path):
     try:
         with open(file_path, 'r') as file:
             return json.load(file)
@@ -108,28 +108,22 @@ def load_data(file_path: str) -> Dict:
         print(f"The file {file_path} does not exist.")
         return None
 
-def train_model(model: TripletModel, config: Config, train_dataset: TripletDataset, test_dataset: TripletDataset) -> None:
+def train_model(model, config, train_dataset, test_dataset):
     optimizer = optimizers.Adam(learning_rate=0.001)
     model.compile(optimizer=optimizer, loss=model.compute_triplet_loss)
     model.fit(train_dataset, epochs=config.num_epochs, validation_data=test_dataset)
 
-def load_tokenizer() -> tft.BertTokenizer:
+def load_tokenizer():
     return tft.BertTokenizer("bert-base-uncased-vocab.txt", return_special_tokens_mask=True)
 
-def create_model(embedding_dim: int, vocab_size: int) -> TripletModel:
-    return TripletModel(embedding_dim, vocab_size)
-
-def create_dataset(data: Dict, config: Config, tokenizer) -> TripletDataset:
-    return TripletDataset(data, config, tokenizer)
-
-def main() -> None:
-    config = Config()
+def main():
+    config = ModelConfig()
     train_data = load_data("train.json")
     test_data = load_data("test.json")
     tokenizer = load_tokenizer()
-    train_dataset = create_dataset(train_data, config, tokenizer)
-    test_dataset = create_dataset(test_data, config, tokenizer)
-    model = create_model(128, 30522)
+    train_dataset = TripletDataset(train_data, config, tokenizer)
+    test_dataset = TripletDataset(test_data, config, tokenizer)
+    model = TripletModel(128, 30522)
     train_model(model, config, train_dataset, test_dataset)
 
 if __name__ == "__main__":
