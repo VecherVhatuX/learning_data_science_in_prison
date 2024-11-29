@@ -8,6 +8,8 @@ from tensorflow.keras.layers import Embedding, LSTM, Dense
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.losses import SparseCategoricalCrossentropy
 from tensorflow.keras.preprocessing.text import Tokenizer
+from tensorflow.keras.callbacks import ModelCheckpoint, TensorBoard
+from tensorflow.keras.utils import plot_model
 
 @dataclass
 class ModelConfig:
@@ -104,13 +106,18 @@ class TripletDataset:
             'negative_examples': tf.stack(negative_examples)
         }
 
+    def to_tf_dataset(self, batch_size):
+        return tf.data.Dataset.from_tensor_slices([self.__getitem__(i) for i in range(len(self))]).batch(batch_size)
+
 def train_model(model, optimizer, config, train_dataset, test_dataset):
     """Train the model."""
-    train_dataset = tf.data.Dataset.from_tensor_slices([train_dataset.__getitem__(i) for i in range(len(train_dataset))])
-    test_dataset = tf.data.Dataset.from_tensor_slices([test_dataset.__getitem__(i) for i in range(len(test_dataset))])
+    checkpoint = ModelCheckpoint("triplet_model.h5", save_best_only=True, verbose=1)
+    tensorboard = TensorBoard(log_dir=config.log_dir, write_graph=True, write_images=True)
+    train_dataset = train_dataset.to_tf_dataset(config.train_batch_size)
+    test_dataset = test_dataset.to_tf_dataset(config.eval_batch_size)
     for epoch in range(config.num_epochs):
         total_loss = 0
-        for batch in train_dataset.batch(config.train_batch_size):
+        for batch in train_dataset:
             anchor = batch['input_ids']
             positive = batch['labels']
             negative = batch['negative_examples']
@@ -124,13 +131,14 @@ def train_model(model, optimizer, config, train_dataset, test_dataset):
             total_loss += loss
         print(f"Epoch {epoch+1}, Loss: {total_loss / len(train_dataset)}")
         test_loss = 0
-        for batch in test_dataset.batch(config.eval_batch_size):
+        for batch in test_dataset:
             input_ids = batch['input_ids']
             labels = batch['labels']
             outputs = model(input_ids)
             loss = SparseCategoricalCrossentropy(from_logits=True)(labels, outputs)
             test_loss += loss
         print(f"Epoch {epoch+1}, Test Loss: {test_loss / len(test_dataset)}")
+        model.save("triplet_model.h5")
 
 def main():
     """Main function."""
