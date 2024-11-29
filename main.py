@@ -10,43 +10,76 @@ import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModel
 from transformers.optimization import AdamW, get_linear_schedule_with_warmup
 
-@dataclass
 class ModelConfig:
-    model_base: str = "t5-base"
-    conversation_format: str = "none"
-    low_rank_alpha: int = 16
-    low_rank_dropout: float = 0.1
-    low_rank_rank: int = 64
-    target_layers: str = "q_proj,k_proj,v_proj,o_proj,down_proj,up_proj,gate_proj"
-    nested_quantization: bool = False
-    four_bit_dtype: str = "float16"
-    four_bit_storage_dtype: str = "uint8"
-    four_bit_quantization: str = "nf4"
-    flash_attention: bool = False
-    peft_low_rank: bool = False
-    eight_bit_quantization: bool = False
-    four_bit_quantization_enabled: bool = False
-    reentrant_training: bool = False
-    unsloth_training: bool = False
-    triplet_loss_training: bool = True
-    dataset: str = "timdettmers/openassistant-guanaco"
-    append_special_token: bool = False
-    add_special_tokens: bool = False
-    dataset_splits: str = "train,test"
-    tokenized_data_path: str = None
-    output_dir: str = "./results"
-    num_epochs: int = 3
-    train_batch_size: int = 16
-    eval_batch_size: int = 64
-    warmup_steps: int = 500
-    weight_decay: float = 0.01
-    log_dir: str = "./logs"
-    save_steps: int = 500
-    max_checkpoints: int = 2
-    random_seed: int = 42
-    resume_checkpoint: str = None
-    negative_samples: int = 5
-
+    def __init__(self, 
+                model_base: str = "t5-base", 
+                conversation_format: str = "none", 
+                low_rank_alpha: int = 16,
+                low_rank_dropout: float = 0.1,
+                low_rank_rank: int = 64,
+                target_layers: str = "q_proj,k_proj,v_proj,o_proj,down_proj,up_proj,gate_proj",
+                nested_quantization: bool = False,
+                four_bit_dtype: str = "float16",
+                four_bit_storage_dtype: str = "uint8",
+                four_bit_quantization: str = "nf4",
+                flash_attention: bool = False,
+                peft_low_rank: bool = False,
+                eight_bit_quantization: bool = False,
+                four_bit_quantization_enabled: bool = False,
+                reentrant_training: bool = False,
+                unsloth_training: bool = False,
+                triplet_loss_training: bool = True,
+                dataset: str = "timdettmers/openassistant-guanaco",
+                append_special_token: bool = False,
+                add_special_tokens: bool = False,
+                dataset_splits: str = "train,test",
+                tokenized_data_path: str = None,
+                output_dir: str = "./results",
+                num_epochs: int = 3,
+                train_batch_size: int = 16,
+                eval_batch_size: int = 64,
+                warmup_steps: int = 500,
+                weight_decay: float = 0.01,
+                log_dir: str = "./logs",
+                save_steps: int = 500,
+                max_checkpoints: int = 2,
+                random_seed: int = 42,
+                resume_checkpoint: str = None,
+                negative_samples: int = 5):
+        self.model_base = model_base
+        self.conversation_format = conversation_format
+        self.low_rank_alpha = low_rank_alpha
+        self.low_rank_dropout = low_rank_dropout
+        self.low_rank_rank = low_rank_rank
+        self.target_layers = target_layers
+        self.nested_quantization = nested_quantization
+        self.four_bit_dtype = four_bit_dtype
+        self.four_bit_storage_dtype = four_bit_storage_dtype
+        self.four_bit_quantization = four_bit_quantization
+        self.flash_attention = flash_attention
+        self.peft_low_rank = peft_low_rank
+        self.eight_bit_quantization = eight_bit_quantization
+        self.four_bit_quantization_enabled = four_bit_quantization_enabled
+        self.reentrant_training = reentrant_training
+        self.unsloth_training = unsloth_training
+        self.triplet_loss_training = triplet_loss_training
+        self.dataset = dataset
+        self.append_special_token = append_special_token
+        self.add_special_tokens = add_special_tokens
+        self.dataset_splits = dataset_splits
+        self.tokenized_data_path = tokenized_data_path
+        self.output_dir = output_dir
+        self.num_epochs = num_epochs
+        self.train_batch_size = train_batch_size
+        self.eval_batch_size = eval_batch_size
+        self.warmup_steps = warmup_steps
+        self.weight_decay = weight_decay
+        self.log_dir = log_dir
+        self.save_steps = save_steps
+        self.max_checkpoints = max_checkpoints
+        self.random_seed = random_seed
+        self.resume_checkpoint = resume_checkpoint
+        self.negative_samples = negative_samples
 
 class TripletModel(nn.Module):
     def __init__(self, embedding_dim, vocab_size):
@@ -66,7 +99,6 @@ class TripletModel(nn.Module):
 
     def compute_triplet_loss(self, anchor, positive, negative):
         return F.relu(F.pairwise_distance(anchor, positive) - F.pairwise_distance(anchor, negative) + 2.0).mean()
-
 
 class TripletDataset(Dataset):
     def __init__(self, data, config, tokenizer):
@@ -91,7 +123,6 @@ class TripletDataset(Dataset):
             'negative_examples': torch.cat(negative_examples)
         }
 
-
 def load_data(file_path):
     try:
         with open(file_path, 'r') as file:
@@ -100,10 +131,8 @@ def load_data(file_path):
         print(f"The file {file_path} does not exist.")
         return None
 
-
 def create_dataset(data, config, tokenizer):
     return TripletDataset(data, config, tokenizer)
-
 
 def train_model(model, optimizer, scheduler, config, train_dataset, test_dataset):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -142,7 +171,6 @@ def train_model(model, optimizer, scheduler, config, train_dataset, test_dataset
         print(f"Epoch {epoch+1}, Test Loss: {test_loss / len(test_data)}")
         torch.save(model.state_dict(), f"triplet_model_epoch_{epoch+1}.pth")
 
-
 def main():
     config = ModelConfig()
     train_data = load_data("train.json")
@@ -154,7 +182,6 @@ def main():
     optimizer = AdamW(model.parameters(), lr=0.001)
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=config.warmup_steps, num_training_steps=config.num_epochs * len(train_dataset))
     train_model(model, optimizer, scheduler, config, train_dataset, test_dataset)
-
 
 if __name__ == "__main__":
     main()
