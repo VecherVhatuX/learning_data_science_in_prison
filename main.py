@@ -75,6 +75,22 @@ def load_data(file_path: str) -> Dict:
         print(f"File {file_path} not found.")
         return None
 
+def create_tokenizer(num_words):
+    """Create a tokenizer."""
+    return Tokenizer(num_words=num_words)
+
+def fit_tokenizer(tokenizer, texts):
+    """Fit the tokenizer on the given texts."""
+    tokenizer.fit_on_texts(texts)
+
+def create_model(embedding_dim, vocab_size):
+    """Create the TripletModel."""
+    return TripletModel(embedding_dim, vocab_size)
+
+def create_optimizer(lr):
+    """Create the Adam optimizer."""
+    return Adam(lr=lr)
+
 def calculate_loss(anchor, positive, negative, margin=2.0):
     """Calculate triplet loss."""
     distance_positive = tf.reduce_sum(tf.square(anchor - positive), axis=1)
@@ -108,6 +124,10 @@ class TripletDataset:
 
     def to_tf_dataset(self, batch_size):
         return tf.data.Dataset.from_tensor_slices([self.__getitem__(i) for i in range(len(self))]).batch(batch_size)
+
+def create_triplet_dataset(data, config, tokenizer):
+    """Create the TripletDataset."""
+    return TripletDataset(data, config, tokenizer)
 
 def train_model(model, optimizer, config, train_dataset, test_dataset):
     """Train the model."""
@@ -145,13 +165,13 @@ def main():
     config = ModelConfig()
     train_data = load_data("train.json")
     test_data = load_data("test.json")
-    tokenizer = Tokenizer(num_words=1000)
-    tokenizer.fit_on_texts([example['input'] for example in train_data])
-    tokenizer.fit_on_texts([example['output'] for example in train_data])
-    train_dataset = TripletDataset(train_data, config, tokenizer)
-    test_dataset = TripletDataset(test_data, config, tokenizer)
-    model = TripletModel(embedding_dim=128, vocab_size=1000)
-    optimizer = Adam(lr=0.001)
+    tokenizer = create_tokenizer(1000)
+    fit_tokenizer(tokenizer, [example['input'] for example in train_data])
+    fit_tokenizer(tokenizer, [example['output'] for example in train_data])
+    train_dataset = create_triplet_dataset(train_data, config, tokenizer)
+    test_dataset = create_triplet_dataset(test_data, config, tokenizer)
+    model = create_model(128, 1000)
+    optimizer = create_optimizer(0.001)
     train_model(model, optimizer, config, train_dataset, test_dataset)
 
 if __name__ == "__main__":
