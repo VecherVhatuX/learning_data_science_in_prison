@@ -8,7 +8,7 @@ from sklearn.manifold import TSNE
 # Model creation
 def create_triplet_model(embedding_dim, num_features):
     return keras.Sequential([
-        layers.Embedding(embedding_dim, num_features),
+        layers.Embedding(embedding_dim, num_features, input_length=10),
         layers.GlobalAveragePooling1D(),
         layers.Flatten(),
         layers.Dense(num_features),
@@ -103,15 +103,15 @@ def embedding_visualization(embeddings, labels):
 
 # KNN accuracy
 def knn_accuracy(embeddings, labels, k=5):
-    return tf.reduce_mean(tf.cast(tf.reduce_any(tf.equal(labels[tf.argsort(tf.norm(embeddings - embeddings, axis=1), axis=1)[:, 1:k+1]], labels[:, tf.newaxis]), tf.float32), axis=1))
+    return tf.reduce_mean(tf.cast(tf.reduce_any(tf.equal(labels[tf.argsort(tf.norm(embeddings[:, tf.newaxis] - embeddings, axis=-1), axis=1)[:, 1:k+1]], labels[:, tf.newaxis]), tf.float32), axis=1))
 
 # KNN precision
 def knn_precision(embeddings, labels, k=5):
-    return tf.reduce_mean(tf.reduce_sum(tf.cast(tf.equal(labels[tf.argsort(tf.norm(embeddings - embeddings, axis=1), axis=1)[:, 1:k+1]], labels[:, tf.newaxis]), tf.float32), axis=1) / k)
+    return tf.reduce_mean(tf.reduce_sum(tf.cast(tf.equal(labels[tf.argsort(tf.norm(embeddings[:, tf.newaxis] - embeddings, axis=-1), axis=1)[:, 1:k+1]], labels[:, tf.newaxis]), tf.float32), axis=1) / k)
 
 # KNN recall
 def knn_recall(embeddings, labels, k=5):
-    return tf.reduce_mean(tf.reduce_sum(tf.cast(tf.equal(labels[tf.argsort(tf.norm(embeddings - embeddings, axis=1), axis=1)[:, 1:k+1]], labels[:, tf.newaxis]), tf.float32), axis=1) / tf.reduce_sum(tf.cast(tf.equal(labels, labels[:, tf.newaxis]), tf.float32), axis=1))
+    return tf.reduce_mean(tf.reduce_sum(tf.cast(tf.equal(labels[tf.argsort(tf.norm(embeddings[:, tf.newaxis] - embeddings, axis=-1), axis=1)[:, 1:k+1]], labels[:, tf.newaxis]), tf.float32), axis=1) / tf.reduce_sum(tf.cast(tf.equal(labels, labels[:, tf.newaxis]), tf.float32), axis=1))
 
 # KNN F1-score
 def knn_f1(embeddings, labels, k=5):
