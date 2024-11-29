@@ -74,10 +74,18 @@ class TripletModel(Model):
         Returns:
             tf.Tensor: Output tensor.
         """
+        # Embed the input tensor
         x = self.embedding(inputs)
+        
+        # Apply LSTM layer
         x = self.lstm(x)
+        
+        # Apply dense layer with ReLU activation
         x = self.dense(x[:, -1, :])
+        
+        # Apply final dense layer
         x = self.output_dense(x)
+        
         return x
 
 def load_data(file_path: str) -> Dict:
@@ -93,7 +101,7 @@ def load_data(file_path: str) -> Dict:
         with open(file_path, 'r') as file:
             return json.load(file)
     except FileNotFoundError:
-        print(f"File {file_path} not found.")
+        print(f"The file {file_path} does not exist.")
         return None
 
 class TripletDataset:
@@ -128,13 +136,21 @@ class TripletDataset:
         Returns:
             Dict: Item from the dataset.
         """
+        # Get the example at the specified index
         example = self.data[index]
+        
+        # Convert the input text to a sequence of tokens
         input_ids = self.tokenizer.texts_to_sequences([example['input']])[0]
+        
+        # Convert the output text to a sequence of tokens
         labels = self.tokenizer.texts_to_sequences([example['output']])[0]
+        
+        # Generate negative examples by shuffling the input text
         negative_examples = []
         for _ in range(self.config.negative_samples):
             negative_example = tf.constant(self.tokenizer.texts_to_sequences([tf.strings.reduce_join(tf.random.shuffle(self.tokenizer.texts_to_sequences([example['input']])[0])).numpy()])[0])
             negative_examples.append(negative_example)
+        
         return {
             'input_ids': input_ids,
             'labels': labels,
@@ -175,10 +191,17 @@ def train_model(model, optimizer, config, train_dataset, test_dataset):
         train_dataset (TripletDataset): Training dataset.
         test_dataset (TripletDataset): Testing dataset.
     """
+    # Create a checkpoint callback
     checkpoint = ModelCheckpoint("triplet_model.h5", save_best_only=True, verbose=1)
+    
+    # Create a tensorboard callback
     tensorboard = TensorBoard(log_dir=config.log_dir, write_graph=True, write_images=True)
+    
+    # Convert the datasets to TensorFlow datasets
     train_dataset = train_dataset.to_tf_dataset(config.train_batch_size)
     test_dataset = test_dataset.to_tf_dataset(config.eval_batch_size)
+    
+    # Train the model
     for epoch in range(config.num_epochs):
         total_loss = 0
         for batch in train_dataset:
@@ -194,6 +217,8 @@ def train_model(model, optimizer, config, train_dataset, test_dataset):
             optimizer.apply_gradients(zip(gradients, model.trainable_variables))
             total_loss += loss
         print(f"Epoch {epoch+1}, Loss: {total_loss / len(train_dataset)}")
+        
+        # Evaluate the model
         test_loss = 0
         for batch in test_dataset:
             input_ids = batch['input_ids']
@@ -202,19 +227,34 @@ def train_model(model, optimizer, config, train_dataset, test_dataset):
             loss = SparseCategoricalCrossentropy(from_logits=True)(labels, outputs)
             test_loss += loss
         print(f"Epoch {epoch+1}, Test Loss: {test_loss / len(test_dataset)}")
+        
+        # Save the model
         model.save("triplet_model.h5")
 
 def main():
     """Main function."""
+    # Create a model configuration
     config = ModelConfig()
+    
+    # Load the data
     train_data = load_data("train.json")
     test_data = load_data("test.json")
+    
+    # Create a tokenizer
     tokenizer = Tokenizer(num_words=1000)
     tokenizer.fit_on_texts([example['input'] for example in train_data] + [example['output'] for example in train_data])
+    
+    # Create the datasets
     train_dataset = create_triplet_dataset(train_data, config, tokenizer)
     test_dataset = create_triplet_dataset(test_data, config, tokenizer)
+    
+    # Create the model
     model = TripletModel(128, 1000)
+    
+    # Create the optimizer
     optimizer = Adam(lr=0.001)
+    
+    # Train the model
     train_model(model, optimizer, config, train_dataset, test_dataset)
 
 if __name__ == "__main__":
