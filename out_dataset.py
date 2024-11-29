@@ -7,6 +7,10 @@ from torch.utils.data import Dataset, DataLoader
 import torch.nn as nn
 import torch.optim as optim
 from transformers import BertTokenizer, BertModel
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+import matplotlib.pyplot as plt
 
 class TripletDataset(Dataset):
     def __init__(self, triplets, tokenizer, max_sequence_length):
@@ -75,14 +79,21 @@ class TripletNetwork:
         self.model.to(self.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=1e-5)
         self.criterion = nn.TripletMarginLoss(margin=0.2)
+        self.scaler = StandardScaler()
+        self.epochs = []
+        self.train_losses = []
+        self.test_losses = []
+        self.train_accuracies = []
+        self.test_accuracies = []
 
     def calculate_triplet_loss(self, anchor_embeddings, positive_embeddings, negative_embeddings):
         return self.criterion(anchor_embeddings, positive_embeddings, negative_embeddings)
 
-    def train(self, data_loader, epochs):
-        for epoch in range(epochs):
-            data_loader.dataset.triplets = np.random.permutation(data_loader.dataset.triplets)
-            for batch in data_loader:
+    def train(self, train_data_loader, test_data_loader, epochs):
+        for epoch in range(1, epochs+1):
+            train_data_loader.dataset.triplets = np.random.permutation(train_data_loader.dataset.triplets)
+            total_loss = 0
+            for batch in train_data_loader:
                 anchor_input_ids = batch['anchor_input_ids'].to(self.device)
                 positive_input_ids = batch['positive_input_ids'].to(self.device)
                 negative_input_ids = batch['negative_input_ids'].to(self.device)
@@ -98,12 +109,18 @@ class TripletNetwork:
                 self.optimizer.zero_grad()
                 batch_loss.backward()
                 self.optimizer.step()
-                print(f'Epoch {epoch+1}, Batch Loss: {batch_loss.item()}')
+                total_loss += batch_loss.item()
+            self.train_losses.append(total_loss/len(train_data_loader))
+            self.epochs.append(epoch)
+            print(f'Epoch {epoch}, Train Loss: {total_loss/len(train_data_loader)}')
+            self.test(test_data_loader)
+        self.plot()
 
-    def evaluate(self, data_loader):
+    def test(self, test_data_loader):
+        total_loss = 0
         total_correct = 0
         with torch.no_grad():
-            for batch in data_loader:
+            for batch in test_data_loader:
                 anchor_input_ids = batch['anchor_input_ids'].to(self.device)
                 positive_input_ids = batch['positive_input_ids'].to(self.device)
                 negative_input_ids = batch['negative_input_ids'].to(self.device)
@@ -115,10 +132,34 @@ class TripletNetwork:
                 positive_output = self.model(positive_input_ids, positive_attention_mask)
                 negative_output = self.model(negative_input_ids, negative_attention_mask)
                 
+                batch_loss = self.calculate_triplet_loss(anchor_output, positive_output, negative_output)
+                total_loss += batch_loss.item()
                 positive_similarity = torch.sum(torch.multiply(anchor_output, positive_output), axis=1)
                 negative_similarity = torch.sum(torch.multiply(anchor_output, negative_output), axis=1)
                 total_correct += torch.sum((positive_similarity > negative_similarity).int()).item()
-        return total_correct / len(data_loader.dataset)
+        accuracy = total_correct / len(test_data_loader.dataset)
+        self.test_losses.append(total_loss/len(test_data_loader))
+        self.test_accuracies.append(accuracy)
+        print(f'Test Loss: {total_loss/len(test_data_loader)}')
+        print(f'Test Accuracy: {accuracy}')
+
+    def plot(self):
+        plt.figure(figsize=(10, 5))
+        plt.subplot(1, 2, 1)
+        plt.plot(self.epochs, self.train_losses, label='Train Loss')
+        plt.plot(self.epochs, self.test_losses, label='Test Loss')
+        plt.title('Loss')
+        plt.xlabel('Epochs')
+        plt.ylabel('Loss')
+        plt.legend()
+        plt.subplot(1, 2, 2)
+        plt.plot(self.epochs, self.train_accuracies, label='Train Accuracy')
+        plt.plot(self.epochs, self.test_accuracies, label='Test Accuracy')
+        plt.title('Accuracy')
+        plt.xlabel('Epochs')
+        plt.ylabel('Accuracy')
+        plt.legend()
+        plt.show()
 
 def load_data(dataset_path, snippet_folder_path):
     dataset = json.load(open(dataset_path))
@@ -164,8 +205,7 @@ def main():
     test_data_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
     
     network = TripletNetwork(device)
-    network.train(train_data_loader, 5)
-    print(f'Test Accuracy: {network.evaluate(test_data_loader)}')
+    network.train(train_data_loader, test_data_loader, 5)
 
 if __name__ == "__main__":
     main()
