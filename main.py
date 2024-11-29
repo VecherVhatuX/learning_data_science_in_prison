@@ -2,239 +2,139 @@ import os
 import json
 from dataclasses import dataclass
 from typing import Dict
-import tensorflow as tf
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Embedding, LSTM, Dense
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.losses import SparseCategoricalCrossentropy
-from tensorflow.keras.preprocessing.text import Tokenizer
-from tensorflow.keras.callbacks import ModelCheckpoint, TensorBoard
-from tensorflow.keras.utils import plot_model
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+import torch.nn.functional as F
+from transformers import AutoTokenizer, AutoModel
+from transformers.optimization import AdamW, get_linear_schedule_with_warmup
 
 @dataclass
 class ModelConfig:
-    # Base parameters for the model architecture
     model_base: str = "t5-base"
     conversation_format: str = "none"
     low_rank_alpha: int = 16
-    # Rate of dropout for low-rank approximation
     low_rank_dropout: float = 0.1
-    # Rank value for low-rank approximation
     low_rank_rank: int = 64
-    # Layers targeted for low-rank approximation
     target_layers: str = "q_proj,k_proj,v_proj,o_proj,down_proj,up_proj,gate_proj"
-    # Enable nested quantization flag
     nested_quantization: bool = False
-    # Data type for 4-bit quantization
     four_bit_dtype: str = "float16"
-    # Storage data type for 4-bit quantization
     four_bit_storage_dtype: str = "uint8"
-    # Algorithm for 4-bit quantization
     four_bit_quantization: str = "nf4"
-    # Enable flash attention flag
     flash_attention: bool = False
-    # Enable PEFT low-rank approximation flag
     peft_low_rank: bool = False
-    # Enable 8-bit quantization flag
     eight_bit_quantization: bool = False
-    # Enable 4-bit quantization flag
     four_bit_quantization_enabled: bool = False
-    # Enable reentrant training flag
     reentrant_training: bool = False
-    # Enable unsloth training flag
     unsloth_training: bool = False
-    # Enable triplet loss training flag
     triplet_loss_training: bool = True
-    # Dataset name
     dataset: str = "timdettmers/openassistant-guanaco"
-    # Append special token flag
     append_special_token: bool = False
-    # Add special tokens flag
     add_special_tokens: bool = False
-    # Dataset splits
     dataset_splits: str = "train,test"
-    # Path to tokenized data
     tokenized_data_path: str = None
-    # Output directory
     output_dir: str = "./results"
-    # Number of training epochs
     num_epochs: int = 3
-    # Batch size for training
     train_batch_size: int = 16
-    # Batch size for evaluation
     eval_batch_size: int = 64
-    # Warmup steps for training
     warmup_steps: int = 500
-    # Weight decay value
     weight_decay: float = 0.01
-    # Log directory
     log_dir: str = "./logs"
-    # Save steps for checkpointing
     save_steps: int = 500
-    # Maximum number of checkpoints
     max_checkpoints: int = 2
-    # Random seed value
     random_seed: int = 42
-    # Resume checkpoint path
     resume_checkpoint: str = None
-    # Number of negative samples for training
     negative_samples: int = 5
 
-class TripletModel(Model):
-    # Initialize the model with embedding dimension and vocabulary size
+class TripletModel(nn.Module):
     def __init__(self, embedding_dim, vocab_size):
         super().__init__()
-        # Embedding layer for input processing
-        self.embedding_layer = Embedding(vocab_size, embedding_dim)
-        # LSTM layer for sequence processing
-        self.lstm_layer = LSTM(embedding_dim, return_sequences=True)
-        # Dense layer for feature transformation
-        self.dense_layer = Dense(embedding_dim, activation='relu')
-        # Output dense layer for prediction
-        self.output_dense_layer = Dense(vocab_size)
+        self.embedding_layer = nn.Embedding(vocab_size, embedding_dim)
+        self.lstm_layer = nn.LSTM(embedding_dim, embedding_dim, batch_first=True)
+        self.dense_layer = nn.Linear(embedding_dim, embedding_dim)
+        self.output_dense_layer = nn.Linear(embedding_dim, vocab_size)
 
-    # Define the forward pass through the model
-    def call(self, inputs):
-        # Embed the input sequence
+    def forward(self, inputs):
         x = self.embedding_layer(inputs)
-        # Process the sequence through the LSTM layer
-        x = self.lstm_layer(x)
-        # Transform the features through the dense layer
+        x, _ = self.lstm_layer(x)
         x = self.dense_layer(x[:, -1, :])
-        # Generate the output prediction
         x = self.output_dense_layer(x)
         return x
 
-# Load JSON data from a file
-def load_json_data(file_path):
-    try:
-        # Open the file and load the JSON data
-        with open(file_path, 'r') as file:
-            return json.load(file)
-    except FileNotFoundError:
-        # Print an error message if the file does not exist
-        print(f"The file {file_path} does not exist.")
-        return None
-
-# Define a dataset class for triplet data
-class TripletDataset:
-    # Initialize the dataset with data, config, and tokenizer
+class TripletDataset(Dataset):
     def __init__(self, data, config, tokenizer):
         self.data = data
         self.config = config
         self.tokenizer = tokenizer
 
-    # Get the length of the dataset
     def __len__(self):
         return len(self.data)
 
-    # Get an item from the dataset
     def __getitem__(self, index):
-        # Get the example from the data
         example = self.data[index]
-        # Tokenize the input sequence
-        input_ids = self.tokenizer.texts_to_sequences([example['input']])[0]
-        # Tokenize the output sequence
-        labels = self.tokenizer.texts_to_sequences([example['output']])[0]
-        # Create negative examples by shuffling the input sequence
+        input_ids = self.tokenizer.encode(example['input'], return_tensors='pt')
+        labels = self.tokenizer.encode(example['output'], return_tensors='pt')
         negative_examples = []
         for _ in range(self.config.negative_samples):
-            negative_example = tf.constant(self.tokenizer.texts_to_sequences([tf.strings.reduce_join(tf.random.shuffle(self.tokenizer.texts_to_sequences([example['input']])[0])).numpy()])[0])
+            negative_example = self.tokenizer.encode(tf.strings.reduce_join(tf.random.shuffle(self.tokenizer.encode(example['input'], return_tensors='pt'))).numpy(), return_tensors='pt')
             negative_examples.append(negative_example)
-        # Return the input, labels, and negative examples
         return {
             'input_ids': input_ids,
             'labels': labels,
-            'negative_examples': tf.stack(negative_examples)
+            'negative_examples': torch.cat(negative_examples)
         }
 
-    # Get the TensorFlow dataset
-    def get_tf_dataset(self, batch_size):
-        # Create a dataset from the data
-        ds = tf.data.Dataset.from_tensor_slices([self.__getitem__(i) for i in range(len(self))])
-        # Shuffle the dataset
-        ds = ds.shuffle(buffer_size=len(self))
-        # Batch the dataset
-        ds = ds.batch(batch_size, drop_remainder=True)
-        # Repeat the dataset
-        return ds.repeat()
+def load_json_data(file_path):
+    try:
+        with open(file_path, 'r') as file:
+            return json.load(file)
+    except FileNotFoundError:
+        print(f"The file {file_path} does not exist.")
+        return None
 
-# Create a triplet dataset
 def create_triplet_dataset(data, config, tokenizer):
     return TripletDataset(data, config, tokenizer)
 
-# Train the triplet model
 def train_triplet_model(model, optimizer, config, train_dataset, test_dataset):
-    # Create checkpoint and TensorBoard callbacks
-    checkpoint_callback = ModelCheckpoint("triplet_model.h5", save_best_only=True, verbose=1)
-    tensorboard_callback = TensorBoard(log_dir=config.log_dir, write_graph=True, write_images=True)
-    # Get the training and testing datasets
-    train_data = train_dataset.get_tf_dataset(config.train_batch_size)
-    test_data = test_dataset.get_tf_dataset(config.eval_batch_size)
-    # Train the model
+    train_data = DataLoader(train_dataset, batch_size=config.train_batch_size, shuffle=True)
+    test_data = DataLoader(test_dataset, batch_size=config.eval_batch_size, shuffle=False)
     for epoch in range(config.num_epochs):
-        # Initialize total loss
         total_loss = 0
-        # Train on each batch
-        for batch in train_data.take(len(train_data)):
-            # Get the anchor, positive, and negative examples
-            anchor = batch['input_ids']
-            positive = batch['labels']
+        for batch in train_data:
+            anchor = batch['input_ids'].squeeze(1)
+            positive = batch['labels'].squeeze(1)
             negative = batch['negative_examples']
-            # Create a gradient tape
-            with tf.GradientTape() as tape:
-                # Pass the anchor, positive, and negative examples through the model
-                anchor_outputs = model(anchor)
-                positive_outputs = model(positive)
-                negative_outputs = model(negative)
-                # Calculate the loss
-                loss = tf.reduce_mean(tf.maximum(tf.reduce_sum(tf.square(anchor_outputs - positive_outputs), axis=1) - tf.reduce_sum(tf.square(anchor_outputs - negative_outputs), axis=1) + 2.0, 0))
-            # Get the gradients
-            gradients = tape.gradient(loss, model.trainable_variables)
-            # Apply the gradients
-            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-            # Add the loss to the total loss
-            total_loss += loss
-        # Print the total loss
+            optimizer.zero_grad()
+            anchor_outputs = model(anchor)
+            positive_outputs = model(positive)
+            negative_outputs = model(negative)
+            loss = F.relu(F.pairwise_distance(anchor_outputs, positive_outputs) - F.pairwise_distance(anchor_outputs, negative_outputs) + 2.0).mean()
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
         print(f"Epoch {epoch+1}, Loss: {total_loss / len(train_data)}")
-        # Evaluate on the test dataset
         test_loss = 0
-        for batch in test_data.take(len(test_data)):
-            # Get the input and labels
-            input_ids = batch['input_ids']
-            labels = batch['labels']
-            # Pass the input through the model
-            outputs = model(input_ids)
-            # Calculate the loss
-            loss = SparseCategoricalCrossentropy(from_logits=True)(labels, outputs)
-            # Add the loss to the total test loss
-            test_loss += loss
-        # Print the total test loss
+        with torch.no_grad():
+            for batch in test_data:
+                input_ids = batch['input_ids'].squeeze(1)
+                labels = batch['labels'].squeeze(1)
+                outputs = model(input_ids)
+                loss = F.cross_entropy(outputs, labels)
+                test_loss += loss.item()
         print(f"Epoch {epoch+1}, Test Loss: {test_loss / len(test_data)}")
-        # Save the model
-        model.save("triplet_model.h5")
+        torch.save(model.state_dict(), "triplet_model.pth")
 
-# Main function
 def main():
-    # Create a model config
     config = ModelConfig()
-    # Load the training and testing data
     train_data = load_json_data("train.json")
     test_data = load_json_data("test.json")
-    # Create a tokenizer
-    tokenizer = Tokenizer(num_words=1000)
-    # Fit the tokenizer on the data
-    tokenizer.fit_on_texts([example['input'] for example in train_data] + [example['output'] for example in train_data])
-    # Create the training and testing datasets
+    tokenizer = AutoTokenizer.from_pretrained(config.model_base)
     train_dataset = create_triplet_dataset(train_data, config, tokenizer)
     test_dataset = create_triplet_dataset(test_data, config, tokenizer)
-    # Create the model
-    model = TripletModel(128, 1000)
-    # Create the optimizer
-    optimizer = Adam(lr=0.001)
-    # Train the model
+    model = TripletModel(128, len(tokenizer))
+    optimizer = AdamW(model.parameters(), lr=0.001)
     train_triplet_model(model, optimizer, config, train_dataset, test_dataset)
 
-# Run the main function
 if __name__ == "__main__":
     main()
