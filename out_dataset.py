@@ -33,7 +33,7 @@ class TripletDataset:
 
     def create_dataset(self):
         dataset = tf.data.Dataset.from_tensor_slices(self.triplets)
-        dataset = dataset.map(self.map_func, num_parallel_calls=tf.data.AUTOTUNE)
+        dataset = dataset.map(lambda x: tf.py_function(self.map_func, [x], [tf.int32, tf.int32, tf.int32]), num_parallel_calls=tf.data.AUTOTUNE)
         dataset = dataset.batch(self.batch_size)
         return dataset
 
@@ -107,9 +107,9 @@ def train(model, train_dataset, test_dataset, epochs):
         train_data = train_dataset.create_dataset().shuffle(1000).batch(32).prefetch(tf.data.AUTOTUNE)
         total_loss = 0
         for batch in train_data:
-            anchor_sequences = batch['anchor_sequence']
-            positive_sequences = batch['positive_sequence']
-            negative_sequences = batch['negative_sequence']
+            anchor_sequences = batch['anchor_sequence'].numpy()
+            positive_sequences = batch['positive_sequence'].numpy()
+            negative_sequences = batch['negative_sequence'].numpy()
             
             with tf.GradientTape() as tape:
                 anchor_output, positive_output, negative_output = model([anchor_sequences, positive_sequences, negative_sequences], training=True)
@@ -123,9 +123,9 @@ def train(model, train_dataset, test_dataset, epochs):
         total_loss = 0
         total_correct = 0
         for batch in test_dataset.create_dataset().batch(32).prefetch(tf.data.AUTOTUNE):
-            anchor_sequences = batch['anchor_sequence']
-            positive_sequences = batch['positive_sequence']
-            negative_sequences = batch['negative_sequence']
+            anchor_sequences = batch['anchor_sequence'].numpy()
+            positive_sequences = batch['positive_sequence'].numpy()
+            negative_sequences = batch['negative_sequence'].numpy()
             
             anchor_output, positive_output, negative_output = model([anchor_sequences, positive_sequences, negative_sequences])
             
