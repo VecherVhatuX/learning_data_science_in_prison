@@ -44,12 +44,12 @@ class TripletDataset(Dataset):
             return_tensors='pt',
         )
         return {
-            'anchor_input_ids': anchor_input_ids['input_ids'][0],
-            'anchor_attention_mask': anchor_input_ids['attention_mask'][0],
-            'positive_input_ids': positive_input_ids['input_ids'][0],
-            'positive_attention_mask': positive_input_ids['attention_mask'][0],
-            'negative_input_ids': negative_input_ids['input_ids'][0],
-            'negative_attention_mask': negative_input_ids['attention_mask'][0],
+            'anchor_input_ids': anchor_input_ids['input_ids'].flatten(),
+            'anchor_attention_mask': anchor_input_ids['attention_mask'].flatten(),
+            'positive_input_ids': positive_input_ids['input_ids'].flatten(),
+            'positive_attention_mask': positive_input_ids['attention_mask'].flatten(),
+            'negative_input_ids': negative_input_ids['input_ids'].flatten(),
+            'negative_attention_mask': negative_input_ids['attention_mask'].flatten(),
         }
 
 class TripletModel(nn.Module):
@@ -72,6 +72,7 @@ class TripletNetwork:
     def __init__(self, device):
         self.device = device
         self.model = TripletModel()
+        self.model.to(self.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=1e-5)
         self.criterion = nn.TripletMarginLoss(margin=0.2)
 
@@ -158,8 +159,8 @@ def main():
     train_dataset = TripletDataset(train_triplets, tokenizer, 512)
     test_dataset = TripletDataset(test_triplets, tokenizer, 512)
     
-    train_data_loader = DataLoader(train_dataset, batch_size=32)
-    test_data_loader = DataLoader(test_dataset, batch_size=32)
+    train_data_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    test_data_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
     
     network = TripletNetwork(device)
     network.train(train_data_loader, 5)
