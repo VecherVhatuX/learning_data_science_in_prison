@@ -13,17 +13,17 @@ from tensorflow.keras.utils import plot_model
 
 @dataclass
 class ModelConfig:
-    # Base model architecture
+    # Base parameters for the model architecture
     model_base: str = "t5-base"
     conversation_format: str = "none"
     low_rank_alpha: int = 16
-    # Dropout rate for low-rank approximation
+    # Rate of dropout for low-rank approximation
     low_rank_dropout: float = 0.1
-    # Rank for low-rank approximation
+    # Rank value for low-rank approximation
     low_rank_rank: int = 64
-    # Target layers for low-rank approximation
+    # Layers targeted for low-rank approximation
     target_layers: str = "q_proj,k_proj,v_proj,o_proj,down_proj,up_proj,gate_proj"
-    # Flag for nested quantization
+    # Enable nested quantization flag
     nested_quantization: bool = False
     # Data type for 4-bit quantization
     four_bit_dtype: str = "float16"
@@ -31,25 +31,25 @@ class ModelConfig:
     four_bit_storage_dtype: str = "uint8"
     # Algorithm for 4-bit quantization
     four_bit_quantization: str = "nf4"
-    # Flag for flash attention
+    # Enable flash attention flag
     flash_attention: bool = False
-    # Flag for PEFT low-rank approximation
+    # Enable PEFT low-rank approximation flag
     peft_low_rank: bool = False
-    # Flag for 8-bit quantization
+    # Enable 8-bit quantization flag
     eight_bit_quantization: bool = False
-    # Flag for 4-bit quantization
+    # Enable 4-bit quantization flag
     four_bit_quantization_enabled: bool = False
-    # Flag for reentrant training
+    # Enable reentrant training flag
     reentrant_training: bool = False
-    # Flag for unsloth training
+    # Enable unsloth training flag
     unsloth_training: bool = False
-    # Flag for triplet loss training
+    # Enable triplet loss training flag
     triplet_loss_training: bool = True
     # Dataset name
     dataset: str = "timdettmers/openassistant-guanaco"
-    # Flag for appending special token
+    # Append special token flag
     append_special_token: bool = False
-    # Flag for adding special tokens
+    # Add special tokens flag
     add_special_tokens: bool = False
     # Dataset splits
     dataset_splits: str = "train,test"
@@ -57,62 +57,62 @@ class ModelConfig:
     tokenized_data_path: str = None
     # Output directory
     output_dir: str = "./results"
-    # Number of epochs
+    # Number of training epochs
     num_epochs: int = 3
     # Batch size for training
     train_batch_size: int = 16
     # Batch size for evaluation
     eval_batch_size: int = 64
-    # Warmup steps
+    # Warmup steps for training
     warmup_steps: int = 500
-    # Weight decay
+    # Weight decay value
     weight_decay: float = 0.01
     # Log directory
     log_dir: str = "./logs"
-    # Save steps
+    # Save steps for checkpointing
     save_steps: int = 500
-    # Maximum checkpoints
+    # Maximum number of checkpoints
     max_checkpoints: int = 2
-    # Random seed
+    # Random seed value
     random_seed: int = 42
-    # Resume checkpoint
+    # Resume checkpoint path
     resume_checkpoint: str = None
-    # Number of negative samples
+    # Number of negative samples for training
     negative_samples: int = 5
 
 class TripletModel(Model):
     # Initialize the model with embedding dimension and vocabulary size
     def __init__(self, embedding_dim, vocab_size):
         super().__init__()
-        # Embedding layer
+        # Embedding layer for input processing
         self.embedding_layer = Embedding(vocab_size, embedding_dim)
-        # LSTM layer
+        # LSTM layer for sequence processing
         self.lstm_layer = LSTM(embedding_dim, return_sequences=True)
-        # Dense layer
+        # Dense layer for feature transformation
         self.dense_layer = Dense(embedding_dim, activation='relu')
-        # Output dense layer
+        # Output dense layer for prediction
         self.output_dense_layer = Dense(vocab_size)
 
-    # Define the forward pass
+    # Define the forward pass through the model
     def call(self, inputs):
-        # Embed the input
+        # Embed the input sequence
         x = self.embedding_layer(inputs)
-        # Pass through LSTM layer
+        # Process the sequence through the LSTM layer
         x = self.lstm_layer(x)
-        # Pass through dense layer
+        # Transform the features through the dense layer
         x = self.dense_layer(x[:, -1, :])
-        # Output the result
+        # Generate the output prediction
         x = self.output_dense_layer(x)
         return x
 
-# Load JSON data from file
+# Load JSON data from a file
 def load_json_data(file_path):
     try:
-        # Open the file and load the data
+        # Open the file and load the JSON data
         with open(file_path, 'r') as file:
             return json.load(file)
     except FileNotFoundError:
-        # Print error message and return None
+        # Print an error message if the file does not exist
         print(f"The file {file_path} does not exist.")
         return None
 
@@ -132,16 +132,14 @@ class TripletDataset:
     def __getitem__(self, index):
         # Get the example from the data
         example = self.data[index]
-        # Tokenize the input
+        # Tokenize the input sequence
         input_ids = self.tokenizer.texts_to_sequences([example['input']])[0]
-        # Tokenize the output
+        # Tokenize the output sequence
         labels = self.tokenizer.texts_to_sequences([example['output']])[0]
-        # Create negative examples
+        # Create negative examples by shuffling the input sequence
         negative_examples = []
         for _ in range(self.config.negative_samples):
-            # Shuffle the input and tokenize it
             negative_example = tf.constant(self.tokenizer.texts_to_sequences([tf.strings.reduce_join(tf.random.shuffle(self.tokenizer.texts_to_sequences([example['input']])[0])).numpy()])[0])
-            # Add the negative example to the list
             negative_examples.append(negative_example)
         # Return the input, labels, and negative examples
         return {
@@ -154,13 +152,15 @@ class TripletDataset:
     def get_tf_dataset(self, batch_size):
         # Create a dataset from the data
         ds = tf.data.Dataset.from_tensor_slices([self.__getitem__(i) for i in range(len(self))])
+        # Shuffle the dataset
         ds = ds.shuffle(buffer_size=len(self))
+        # Batch the dataset
         ds = ds.batch(batch_size, drop_remainder=True)
+        # Repeat the dataset
         return ds.repeat()
 
 # Create a triplet dataset
 def create_triplet_dataset(data, config, tokenizer):
-    # Return the dataset
     return TripletDataset(data, config, tokenizer)
 
 # Train the triplet model
