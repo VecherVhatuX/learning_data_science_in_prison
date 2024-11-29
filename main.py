@@ -9,7 +9,6 @@ import numpy as np
 import random
 import tensorflow_text as tft
 
-# Config class
 @dataclass
 class Config:
     model_base: str = "t5-base"
@@ -47,7 +46,6 @@ class Config:
     resume_checkpoint: str = None
     negative_samples: int = 5
 
-# Model class
 class TripletModel(models.Model):
     def __init__(self, embedding_dim: int, vocab_size: int):
         super().__init__()
@@ -66,7 +64,6 @@ class TripletModel(models.Model):
     def compute_triplet_loss(self, anchor: tf.Tensor, positive: tf.Tensor, negative: tf.Tensor) -> tf.Tensor:
         return tf.reduce_mean(tf.maximum(tf.reduce_mean((anchor - positive) ** 2) - tf.reduce_mean((anchor - negative) ** 2) + 2.0, 0.0))
 
-# Dataset class
 class TripletDataset(tf.keras.utils.Sequence):
     def __init__(self, data: Dict, config: Config, tokenizer):
         self.data = data
@@ -103,7 +100,6 @@ class TripletDataset(tf.keras.utils.Sequence):
         random.seed(random.randint(0, 2**32))
         self.indices = random.sample(range(len(self.data)), len(self.data))
 
-# Data loading function
 def load_data(file_path: str) -> Dict:
     try:
         with open(file_path, 'r') as file:
@@ -112,25 +108,20 @@ def load_data(file_path: str) -> Dict:
         print(f"The file {file_path} does not exist.")
         return None
 
-# Model training function
 def train_model(model: TripletModel, config: Config, train_dataset: TripletDataset, test_dataset: TripletDataset) -> None:
     optimizer = optimizers.Adam(learning_rate=0.001)
     model.compile(optimizer=optimizer, loss=model.compute_triplet_loss)
     model.fit(train_dataset, epochs=config.num_epochs, validation_data=test_dataset)
 
-# Tokenizer loading function
 def load_tokenizer() -> tft.BertTokenizer:
     return tft.BertTokenizer("bert-base-uncased-vocab.txt", return_special_tokens_mask=True)
 
-# Model creation function
 def create_model(embedding_dim: int, vocab_size: int) -> TripletModel:
     return TripletModel(embedding_dim, vocab_size)
 
-# Dataset creation function
 def create_dataset(data: Dict, config: Config, tokenizer) -> TripletDataset:
     return TripletDataset(data, config, tokenizer)
 
-# Main function
 def main() -> None:
     config = Config()
     train_data = load_data("train.json")
