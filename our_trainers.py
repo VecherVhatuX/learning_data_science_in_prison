@@ -50,7 +50,7 @@ def create_triplet_loss(margin=1.0):
         return torch.mean(loss)
     return triplet_loss
 
-def train_model(model, device, loader, optimizer, loss_fn, epochs):
+def train(model, device, loader, optimizer, loss_fn, epochs):
     model.train()
     for epoch in range(epochs):
         for batch in loader:
@@ -64,7 +64,7 @@ def train_model(model, device, loader, optimizer, loss_fn, epochs):
             optimizer.step()
             print(f'Epoch: {epoch+1}, Loss: {loss.item()}')
 
-def validate_model(model, device, samples, labels, k=5):
+def validate(model, device, samples, labels, k=5):
     model.eval()
     with torch.no_grad():
         predicted_embeddings = model(samples.to(device))
@@ -108,8 +108,8 @@ def calculate_distances(output):
     print(1 - torch.sum(output * output, dim=1) / (torch.norm(output, dim=1) * torch.norm(output, dim=1)).numpy())
 
 def calculate_neighbors(predicted_embeddings, output, k=5):
-    print(torch.argsort(torch.norm(predicted_embeddings - output, dim=1), dim=1)[:,:k].numpy())
-    print(torch.argsort(torch.sum(predicted_embeddings * output, dim=1) / (torch.norm(predicted_embeddings, dim=1) * torch.norm(output, dim=1)), dim=1, descending=True)[:,:k].numpy())
+    print(torch.argsort(torch.norm(torch.tensor(predicted_embeddings) - output, dim=1), dim=1)[:,:k].numpy())
+    print(torch.argsort(torch.sum(torch.tensor(predicted_embeddings) * output, dim=1) / (torch.norm(torch.tensor(predicted_embeddings), dim=1) * torch.norm(output, dim=1)), dim=1, descending=True)[:,:k].numpy())
 
 def embedding_visualization(embeddings, labels):
     tsne = TSNE(n_components=2)
@@ -140,14 +140,14 @@ def pipeline(learning_rate, batch_size, epochs, num_negatives, embedding_dim, nu
     model = create_model(embedding_dim, num_features, device)
     optimizer = create_optimizer(model, learning_rate)
     loss_fn = create_loss_function()
-    train_model(model, device, loader, optimizer, loss_fn, epochs)
+    train(model, device, loader, optimizer, loss_fn, epochs)
     input_ids = torch.tensor([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=torch.int32).reshape((1, 10)).to(device)
     output = model(input_ids)
     save_model(model, "triplet_model.pth")
     predicted_embeddings = get_predicted_embeddings(model, samples, device)
     calculate_distances(output)
     calculate_neighbors(predicted_embeddings, output.cpu().numpy())
-    validate_model(model, device, samples, labels)
+    validate(model, device, samples, labels)
 
 if __name__ == "__main__":
     pipeline(1e-4, 32, 10, 5, 101, 10, 100)
