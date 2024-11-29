@@ -62,6 +62,9 @@ class TripletModel(nn.Module):
         x = self.output_dense_layer(x)
         return x
 
+    def triplet_loss(self, anchor, positive, negative):
+        return F.relu(F.pairwise_distance(anchor, positive) - F.pairwise_distance(anchor, negative) + 2.0).mean()
+
 class TripletDataset(Dataset):
     def __init__(self, data, config, tokenizer):
         self.data = data
@@ -77,7 +80,7 @@ class TripletDataset(Dataset):
         labels = self.tokenizer.encode(example['output'], return_tensors='pt')
         negative_examples = []
         for _ in range(self.config.negative_samples):
-            negative_example = self.tokenizer.encode(tf.strings.reduce_join(tf.random.shuffle(self.tokenizer.encode(example['input'], return_tensors='pt'))).numpy(), return_tensors='pt')
+            negative_example = self.tokenizer.encode(self.tokenizer.encode(example['input'], return_tensors='pt').squeeze(0)[torch.randperm(self.tokenizer.encode(example['input'], return_tensors='pt').squeeze(0).shape[0])], return_tensors='pt')
             negative_examples.append(negative_example)
         return {
             'input_ids': input_ids,
@@ -96,7 +99,7 @@ def load_json_data(file_path):
 def create_triplet_dataset(data, config, tokenizer):
     return TripletDataset(data, config, tokenizer)
 
-def train_triplet_model(model, optimizer, config, train_dataset, test_dataset):
+def train_triplet_model(model, optimizer, scheduler, config, train_dataset, test_dataset):
     train_data = DataLoader(train_dataset, batch_size=config.train_batch_size, shuffle=True)
     test_data = DataLoader(test_dataset, batch_size=config.eval_batch_size, shuffle=False)
     for epoch in range(config.num_epochs):
@@ -109,9 +112,10 @@ def train_triplet_model(model, optimizer, config, train_dataset, test_dataset):
             anchor_outputs = model(anchor)
             positive_outputs = model(positive)
             negative_outputs = model(negative)
-            loss = F.relu(F.pairwise_distance(anchor_outputs, positive_outputs) - F.pairwise_distance(anchor_outputs, negative_outputs) + 2.0).mean()
+            loss = model.triplet_loss(anchor_outputs, positive_outputs, negative_outputs)
             loss.backward()
             optimizer.step()
+            scheduler.step()
             total_loss += loss.item()
         print(f"Epoch {epoch+1}, Loss: {total_loss / len(train_data)}")
         test_loss = 0
@@ -123,7 +127,7 @@ def train_triplet_model(model, optimizer, config, train_dataset, test_dataset):
                 loss = F.cross_entropy(outputs, labels)
                 test_loss += loss.item()
         print(f"Epoch {epoch+1}, Test Loss: {test_loss / len(test_data)}")
-        torch.save(model.state_dict(), "triplet_model.pth")
+        torch.save(model.state_dict(), f"triplet_model_epoch_{epoch+1}.pth")
 
 def main():
     config = ModelConfig()
@@ -134,7 +138,8 @@ def main():
     test_dataset = create_triplet_dataset(test_data, config, tokenizer)
     model = TripletModel(128, len(tokenizer))
     optimizer = AdamW(model.parameters(), lr=0.001)
-    train_triplet_model(model, optimizer, config, train_dataset, test_dataset)
+    scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=config.warmup_steps, num_training_steps=config.num_epochs * len(train_dataset))
+    train_triplet_model(model, optimizer, scheduler, config, train_dataset, test_dataset)
 
 if __name__ == "__main__":
     main()
