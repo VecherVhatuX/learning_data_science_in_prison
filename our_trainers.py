@@ -97,7 +97,7 @@ def pipeline(learning_rate, batch_size, epochs, num_negatives, embedding_dim, nu
     predicted_embeddings = model(samples)
     calculate_distances(output)
     calculate_neighbors(predicted_embeddings, output)
-    validate(model, predicted_embeddings, labels)
+    validate(model, samples, labels)
 
 def main():
     np.random.seed(42)
@@ -105,7 +105,7 @@ def main():
 
 def embedding_visualization(embeddings, labels):
     tsne = TSNE(n_components=2)
-    reduced_embeddings = tsne.fit_transform(embeddings.numpy())
+    reduced_embeddings = tsne.fit_transform(embeddings)
     plt.figure(figsize=(8, 8))
     plt.scatter(reduced_embeddings[:, 0], reduced_embeddings[:, 1], c=labels)
     plt.show()
