@@ -27,8 +27,7 @@ class Dataset:
         return self.get_positive_and_negative_samples()
 
 def get_env_info(inputs: str) -> str:
-    env_info = os.environ
-    return f"Current environment variables: {dict(env_info)}\n{inputs}"
+    return f"Current environment variables: {dict(os.environ)}\n{inputs}"
 
 def install_dependencies(inputs: str) -> str:
     try:
