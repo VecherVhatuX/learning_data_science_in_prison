@@ -17,9 +17,10 @@ class Dataset:
         random.shuffle(self.samples)
 
     def get_positive_and_negative_samples(self):
-        positive_samples = [s for s in self.samples if s['label'] == 1]
-        negative_samples = [s for s in self.samples if s['label'] == 0]
-        return positive_samples, negative_samples
+        return (
+            [s for s in self.samples if s['label'] == 1],
+            [s for s in self.samples if s['label'] == 0]
+        )
 
     def next_epoch(self):
         self.epochs += 1
@@ -34,7 +35,7 @@ def install_dependencies(inputs: str) -> str:
         subprocess.run(f"pip install {inputs}", shell=True, check=True)
         return f"Successfully installed {inputs}."
     except subprocess.CalledProcessError as error:
-        return f"Error installing {inputs}: {str(error)}"
+        return f"Error installing {inputs}: {error}"
 
 def run_shell_command(command: str) -> tuple:
     try:
