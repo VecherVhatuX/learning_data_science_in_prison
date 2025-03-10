@@ -128,6 +128,9 @@ def evaluate_triplet_model(model, test_loader):
 def initialize_tokenizer():
     return BertTokenizer.from_pretrained("bert-base-uncased")
 
+def save_model(model, path):
+    torch.save(model.state_dict(), path)
+
 def main():
     config = Config()
     train_data = read_json("train.json")
@@ -140,6 +143,7 @@ def main():
     model = TripletNet(128, 30522)
     train_triplet_model(model, config, train_loader)
     evaluate_triplet_model(model, test_loader)
+    save_model(model, os.path.join(config.results_directory, "triplet_model.pth"))
 
 if __name__ == "__main__":
     main()
