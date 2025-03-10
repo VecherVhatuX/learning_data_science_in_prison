@@ -6,106 +6,121 @@ import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 import random
 
-class TripletModel(nn.Module):
-    def __init__(self, embedding_dim, num_features):
-        super(TripletModel, self).__init__()
-        self.embedding = nn.Embedding(embedding_dim, num_features)
-        self.pooling = nn.AdaptiveAvgPool1d(1)
-        self.fc = nn.Linear(num_features, num_features)
-        self.bn = nn.BatchNorm1d(num_features)
-        self.ln = nn.LayerNorm(num_features)
+
+class Embedder(nn.Module):
+    def __init__(self, embedding_size, feature_size):
+        super(Embedder, self).__init__()
+        self.embedding_layer = nn.Embedding(embedding_size, feature_size)
+        self.pooling_layer = nn.AdaptiveAvgPool1d(1)
+        self.fc_layer = nn.Linear(feature_size, feature_size)
+        self.batch_norm = nn.BatchNorm1d(feature_size)
+        self.layer_norm = nn.LayerNorm(feature_size)
 
     def forward(self, x):
-        x = self.embedding(x)
-        x = self.pooling(x.transpose(1, 2)).squeeze(-1)
-        x = self.fc(x)
-        x = self.bn(x)
-        x = self.ln(x)
+        x = self.embedding_layer(x)
+        x = self.pooling_layer(x.transpose(1, 2)).squeeze(-1)
+        x = self.fc_layer(x)
+        x = self.batch_norm(x)
+        x = self.layer_norm(x)
         return x
 
-def get_triplet(anchor, anchor_label, labels, num_negatives):
-    positive_idx = random.choice(np.where(labels == anchor_label.item())[0].tolist())
-    negative_idx = random.sample(np.where(labels != anchor_label.item())[0].tolist(), num_negatives)
+
+def sample_triplet(anchor, anchor_label, labels, n_negatives):
+    pos_indices = np.where(labels == anchor_label.item())[0]
+    positive_idx = random.choice(pos_indices.tolist())
+    negative_indices = random.sample(np.where(labels != anchor_label.item())[0].tolist(), n_negatives)
     positive = labels[positive_idx]
-    negatives = [labels[i] for i in negative_idx]
+    negatives = [labels[i] for i in negative_indices]
     return anchor, positive, negatives
 
-class TripletDataset(torch.utils.data.Dataset):
-    def __init__(self, samples, labels, num_negatives):
+
+class TripletDataSet(torch.utils.data.Dataset):
+    def __init__(self, samples, labels, n_negatives):
         self.samples = samples
         self.labels = labels
-        self.num_negatives = num_negatives
+        self.n_negatives = n_negatives
 
     def __len__(self):
         return len(self.samples)
 
-    def __getitem__(self, idx):
-        anchor = self.samples[idx]
-        anchor_label = self.labels[idx]
-        return get_triplet(anchor, anchor_label, self.labels, self.num_negatives)
+    def __getitem__(self, index):
+        anchor = self.samples[index]
+        anchor_label = self.labels[index]
+        return sample_triplet(anchor, anchor_label, self.labels, self.n_negatives)
 
-def triplet_loss(margin=1.0):
-    def loss(anchor, positive, negatives):
-        d_ap = torch.norm(anchor - positive, dim=1)
-        d_an = torch.norm(anchor.unsqueeze(1) - torch.stack(negatives), dim=2)
-        loss = torch.max(d_ap - d_an.min(dim=1)[0] + margin, torch.tensor(0.0, device=anchor.device))
-        return loss.mean()
-    return loss
 
-def train_model(model, dataset, epochs):
-    optimizer = optim.Adam(model.parameters())
-    criterion = triplet_loss()
-    model.train()
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=True)
+def create_triplet_loss(margin=1.0):
+    def loss_function(anchor, positive, negatives):
+        distance_ap = torch.norm(anchor - positive, dim=1)
+        distance_an = torch.norm(anchor.unsqueeze(1) - torch.stack(negatives), dim=2)
+        loss_value = torch.max(distance_ap - distance_an.min(dim=1)[0] + margin, torch.tensor(0.0, device=anchor.device))
+        return loss_value.mean()
+    return loss_function
 
-    for epoch in range(epochs):
-        for anchors, positives, negatives in dataloader:
+
+def train(embedding_model, dataset, num_epochs):
+    optimizer = optim.Adam(embedding_model.parameters())
+    loss_fn = create_triplet_loss()
+    embedding_model.train()
+    data_loader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=True)
+
+    for epoch in range(num_epochs):
+        for anchors, positives, negatives in data_loader:
             optimizer.zero_grad()
-            anchor_embeddings = model(anchors)
-            positive_embeddings = model(positives)
-            negative_embeddings = [model(neg) for neg in negatives]
-            loss = criterion(anchor_embeddings, positive_embeddings, negative_embeddings)
-            loss.backward()
+            anchor_embeds = embedding_model(anchors)
+            positive_embeds = embedding_model(positives)
+            negative_embeds = [embedding_model(neg) for neg in negatives]
+            loss_value = loss_fn(anchor_embeds, positive_embeds, negative_embeds)
+            loss_value.backward()
             optimizer.step()
 
-def validate_model(model, samples, labels, k=5):
-    model.eval()
-    with torch.no_grad():
-        predicted_embeddings = model(torch.tensor(samples)).numpy()
-        print("Validation KNN Accuracy:", knn_accuracy(predicted_embeddings, labels, k))
-        print("Validation KNN Precision:", knn_precision(predicted_embeddings, labels, k))
-        print("Validation KNN Recall:", knn_recall(predicted_embeddings, labels, k))
-        print("Validation KNN F1-score:", knn_f1(predicted_embeddings, labels, k))
-        visualize_embeddings(predicted_embeddings, labels)
 
-def generate_data(size):
+def validate(embedding_model, samples, labels, k=5):
+    embedding_model.eval()
+    with torch.no_grad():
+        embeddings = embedding_model(torch.tensor(samples)).numpy()
+        print("Validation KNN Accuracy:", knn_accuracy(embeddings, labels, k))
+        print("Validation KNN Precision:", knn_precision(embeddings, labels, k))
+        print("Validation KNN Recall:", knn_recall(embeddings, labels, k))
+        print("Validation KNN F1-score:", knn_f1(embeddings, labels, k))
+        plot_embeddings(embeddings, labels)
+
+
+def generate_random_data(size):
     return np.random.randint(0, 100, (size, 10)), np.random.randint(0, 2, (size,))
 
-def create_dataset(samples, labels, num_negatives):
-    return TripletDataset(samples, labels, num_negatives)
 
-def create_model(embedding_dim, num_features):
-    return TripletModel(embedding_dim, num_features)
+def initialize_dataset(samples, labels, n_negatives):
+    return TripletDataSet(samples, labels, n_negatives)
 
-def save_model(model, path):
-    torch.save(model.state_dict(), path)
 
-def get_predicted_embeddings(model, samples):
+def initialize_model(embedding_size, feature_size):
+    return Embedder(embedding_size, feature_size)
+
+
+def save_model_to_file(model, file_path):
+    torch.save(model.state_dict(), file_path)
+
+
+def get_embeddings(model, samples):
     with torch.no_grad():
         return model(torch.tensor(samples)).numpy()
 
-def visualize_embeddings(embeddings, labels):
-    tsne = TSNE(n_components=2)
-    reduced_embeddings = tsne.fit_transform(embeddings)
+
+def plot_embeddings(embeddings, labels):
+    tsne_model = TSNE(n_components=2)
+    reduced_embeds = tsne_model.fit_transform(embeddings)
     plt.figure(figsize=(8, 8))
-    plt.scatter(reduced_embeddings[:, 0], reduced_embeddings[:, 1], c=labels)
+    plt.scatter(reduced_embeds[:, 0], reduced_embeds[:, 1], c=labels)
     plt.colorbar()
     plt.show()
+
 
 def knn_accuracy(embeddings, labels, k=5):
     distances = np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2)
     nearest_indices = np.argsort(distances, axis=1)[:, 1:k+1]
     return np.mean(np.any(labels[nearest_indices] == labels[:, np.newaxis], axis=1))
+
 
 def knn_precision(embeddings, labels, k=5):
     distances = np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2)
@@ -113,27 +128,31 @@ def knn_precision(embeddings, labels, k=5):
     true_positive = np.sum(labels[nearest_indices] == labels[:, np.newaxis], axis=1)
     return np.mean(true_positive / k)
 
+
 def knn_recall(embeddings, labels, k=5):
     distances = np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2)
     nearest_indices = np.argsort(distances, axis=1)[:, 1:k+1]
     true_positive = np.sum(labels[nearest_indices] == labels[:, np.newaxis], axis=1)
     return np.mean(true_positive / np.sum(labels == labels[:, np.newaxis], axis=1))
 
+
 def knn_f1(embeddings, labels, k=5):
     precision = knn_precision(embeddings, labels, k)
     recall = knn_recall(embeddings, labels, k)
     return 2 * (precision * recall) / (precision + recall)
 
-def run_pipeline(learning_rate, batch_size, epochs, num_negatives, embedding_dim, num_features, size):
-    samples, labels = generate_data(size)
-    dataset = create_dataset(samples, labels, num_negatives)
-    model = create_model(embedding_dim, num_features)
-    train_model(model, dataset, epochs)
+
+def run_pipeline(learning_rate, batch_size, num_epochs, n_negatives, embedding_size, feature_size, data_size):
+    samples, labels = generate_random_data(data_size)
+    dataset = initialize_dataset(samples, labels, n_negatives)
+    model = initialize_model(embedding_size, feature_size)
+    train(model, dataset, num_epochs)
     input_ids = torch.tensor([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]).reshape((1, 10))
     output = model(input_ids)
-    save_model(model, "triplet_model.pth")
-    predicted_embeddings = get_predicted_embeddings(model, samples)
-    validate_model(model, samples, labels)
+    save_model_to_file(model, "triplet_model.pth")
+    predicted_embeddings = get_embeddings(model, samples)
+    validate(model, samples, labels)
+
 
 if __name__ == "__main__":
     run_pipeline(1e-4, 32, 10, 5, 101, 10, 100)
