@@ -10,7 +10,7 @@ console = Console()
 def get_env_info(inputs: str) -> str:
     """Retrieve and display current environment variables."""
     env_info = os.environ
-    return f"Current environment variables: {env_info}\n{inputs}"
+    return f"Current environment variables: {dict(env_info)}\n{inputs}"
 
 def install_dependencies(inputs: str) -> str:
     """Install missing packages based on input."""
