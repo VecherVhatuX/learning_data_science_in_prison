@@ -90,6 +90,9 @@ class TripletData(Dataset):
         random.seed(self.config.seed)
         random.shuffle(self.indices)
 
+    def epoch_shuffle(self):
+        self.shuffle_indices()
+
 def read_json(file_path):
     try:
         with open(file_path, 'r') as f:
@@ -138,8 +141,13 @@ def main():
     tokenizer = initialize_tokenizer()
     train_dataset = TripletData(train_data, config, tokenizer)
     test_dataset = TripletData(test_data, config, tokenizer)
-    train_loader = DataLoader(train_dataset, batch_size=config.batch_size_train, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=config.batch_size_train, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=config.batch_size_eval, shuffle=False)
+    
+    for epoch in range(config.num_epochs):
+        train_dataset.epoch_shuffle()
+        train_loader = DataLoader(train_dataset, batch_size=config.batch_size_train, shuffle=False)
+        
     model = TripletNet(128, 30522)
     train_triplet_model(model, config, train_loader)
     evaluate_triplet_model(model, test_loader)
