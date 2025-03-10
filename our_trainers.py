@@ -1,113 +1,76 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 import random
 
-class TripletModel(nn.Module):
+class TripletModel(keras.Model):
     def __init__(self, embedding_dim, num_features):
         super(TripletModel, self).__init__()
-        self.embedding = nn.Embedding(embedding_dim, num_features)
-        self.pooling = nn.AdaptiveAvgPool1d(1)
-        self.flatten = nn.Flatten()
-        self.fc = nn.Linear(num_features, num_features)
-        self.bn = nn.BatchNorm1d(num_features)
-        self.ln = nn.LayerNorm(num_features)
+        self.embedding = layers.Embedding(embedding_dim, num_features)
+        self.pooling = layers.GlobalAveragePooling1D()
+        self.fc = layers.Dense(num_features, activation='relu')
+        self.bn = layers.BatchNormalization()
+        self.ln = layers.LayerNormalization()
 
-    def forward(self, x):
+    def call(self, x):
         x = self.embedding(x)
-        x = self.pooling(x.transpose(1, 2)).transpose(1, 2)
-        x = self.flatten(x)
+        x = self.pooling(x)
         x = self.fc(x)
         x = self.bn(x)
         x = self.ln(x)
         return x
 
-class TripletDataset(Dataset):
-    def __init__(self, samples, labels, num_negatives):
-        self.samples = samples
-        self.labels = labels
-        self.num_negatives = num_negatives
+class TripletDataset(tf.data.Dataset):
+    def __new__(cls, samples, labels, num_negatives):
+        dataset = tf.data.Dataset.from_tensor_slices((samples, labels))
+        return dataset.map(lambda sample, label: cls.get_triplet(sample, label, labels, num_negatives))
 
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        anchor_idx = idx
-        anchor_label = self.labels[idx]
-        positive_idx = random.choice(np.where(self.labels == anchor_label)[0].tolist())
-        negative_idx = random.sample(np.where(self.labels != anchor_label)[0].tolist(), self.num_negatives)
-        return self.samples[anchor_idx], self.samples[positive_idx], [self.samples[i] for i in negative_idx]
+    @staticmethod
+    def get_triplet(anchor, anchor_label, labels, num_negatives):
+        positive_idx = random.choice(np.where(labels == anchor_label.numpy())[0].tolist())
+        negative_idx = random.sample(np.where(labels != anchor_label.numpy())[0].tolist(), num_negatives)
+        positive = labels[positive_idx]
+        negatives = [labels[i] for i in negative_idx]
+        return anchor, positive, negatives
 
 def create_triplet_loss(margin=1.0):
-    def triplet_loss(anchor, positive, negative):
-        d_ap = torch.norm(anchor - positive, dim=1)
-        d_an = torch.norm(anchor.unsqueeze(1) - torch.stack(negative, dim=1), dim=2)
-        loss = torch.maximum(d_ap - torch.min(d_an, dim=1)[0] + margin, torch.zeros_like(d_ap))
-        return torch.mean(loss)
+    def triplet_loss(y_true, y_pred):
+        anchor, positive, negative = y_pred
+        d_ap = tf.norm(anchor - positive, axis=1)
+        d_an = tf.norm(anchor[:, tf.newaxis] - tf.stack(negative, axis=1), axis=2)
+        loss = tf.maximum(d_ap - tf.reduce_min(d_an, axis=1) + margin, 0.0)
+        return tf.reduce_mean(loss)
     return triplet_loss
 
-def train_model(model, device, loader, optimizer, loss_fn, epochs):
-    model.train()
-    for epoch in range(epochs):
-        for batch in loader:
-            anchor, positive, negative = [x.to(device) for x in batch]
-            optimizer.zero_grad()
-            anchor_embeddings = model(anchor)
-            positive_embeddings = model(positive)
-            negative_embeddings = [model(x) for x in negative]
-            loss = loss_fn(anchor_embeddings, positive_embeddings, negative_embeddings)
-            loss.backward()
-            optimizer.step()
-            print(f'Epoch: {epoch+1}, Loss: {loss.item()}')
+def train_model(model, dataset, epochs):
+    model.compile(optimizer=keras.optimizers.Adam(), loss=create_triplet_loss())
+    model.fit(dataset.batch(32), epochs=epochs)
 
-def validate_model(model, device, samples, labels, k=5):
-    model.eval()
-    with torch.no_grad():
-        predicted_embeddings = model(samples.to(device))
-        predicted_embeddings = predicted_embeddings.cpu().numpy()
-        labels = labels.cpu().numpy()
-        print("Validation KNN Accuracy:", knn_accuracy(predicted_embeddings, labels, k))
-        print("Validation KNN Precision:", knn_precision(predicted_embeddings, labels, k))
-        print("Validation KNN Recall:", knn_recall(predicted_embeddings, labels, k))
-        print("Validation KNN F1-score:", knn_f1(predicted_embeddings, labels, k))
-        visualize_embeddings(predicted_embeddings, labels)
+def validate_model(model, samples, labels, k=5):
+    predicted_embeddings = model(samples).numpy()
+    print("Validation KNN Accuracy:", knn_accuracy(predicted_embeddings, labels, k))
+    print("Validation KNN Precision:", knn_precision(predicted_embeddings, labels, k))
+    print("Validation KNN Recall:", knn_recall(predicted_embeddings, labels, k))
+    print("Validation KNN F1-score:", knn_f1(predicted_embeddings, labels, k))
+    visualize_embeddings(predicted_embeddings, labels)
 
 def generate_data(size):
-    return torch.from_numpy(np.random.randint(0, 100, (size, 10))), torch.from_numpy(np.random.randint(0, 2, (size,)))
+    return np.random.randint(0, 100, (size, 10)), np.random.randint(0, 2, (size,))
 
 def create_dataset(samples, labels, num_negatives):
     return TripletDataset(samples, labels, num_negatives)
 
-def create_data_loader(dataset, batch_size):
-    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
-def create_model(embedding_dim, num_features, device):
-    return TripletModel(embedding_dim, num_features).to(device)
-
-def create_optimizer(model, learning_rate):
-    return optim.Adam(model.parameters(), lr=learning_rate)
-
-def create_loss_function():
-    return create_triplet_loss()
+def create_model(embedding_dim, num_features):
+    return TripletModel(embedding_dim, num_features)
 
 def save_model(model, path):
-    torch.save(model.state_dict(), path)
+    model.save_weights(path)
 
-def get_predicted_embeddings(model, samples, device):
-    return model(samples.to(device)).cpu().numpy()
-
-def calculate_distances(output):
-    print(torch.norm(output - output, dim=1).numpy())
-    print(torch.sum(output * output, dim=1) / (torch.norm(output, dim=1) * torch.norm(output, dim=1)).numpy())
-    print(1 - torch.sum(output * output, dim=1) / (torch.norm(output, dim=1) * torch.norm(output, dim=1)).numpy())
-
-def calculate_neighbors(predicted_embeddings, output, k=5):
-    print(torch.argsort(torch.norm(torch.tensor(predicted_embeddings) - output, dim=1), dim=1)[:, :k].numpy())
-    print(torch.argsort(torch.sum(torch.tensor(predicted_embeddings) * output, dim=1) / (torch.norm(torch.tensor(predicted_embeddings), dim=1) * torch.norm(output, dim=1)), dim=1, descending=True)[:, :k].numpy())
+def get_predicted_embeddings(model, samples):
+    return model(samples).numpy()
 
 def visualize_embeddings(embeddings, labels):
     tsne = TSNE(n_components=2)
@@ -131,21 +94,15 @@ def knn_f1(embeddings, labels, k=5):
     return 2 * (precision * recall) / (precision + recall)
 
 def run_pipeline(learning_rate, batch_size, epochs, num_negatives, embedding_dim, num_features, size):
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     samples, labels = generate_data(size)
     dataset = create_dataset(samples, labels, num_negatives)
-    loader = create_data_loader(dataset, batch_size)
-    model = create_model(embedding_dim, num_features, device)
-    optimizer = create_optimizer(model, learning_rate)
-    loss_fn = create_loss_function()
-    train_model(model, device, loader, optimizer, loss_fn, epochs)
-    input_ids = torch.tensor([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=torch.int32).reshape((1, 10)).to(device)
+    model = create_model(embedding_dim, num_features)
+    train_model(model, dataset, epochs)
+    input_ids = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]).reshape((1, 10))
     output = model(input_ids)
-    save_model(model, "triplet_model.pth")
-    predicted_embeddings = get_predicted_embeddings(model, samples, device)
-    calculate_distances(output)
-    calculate_neighbors(predicted_embeddings, output.cpu().numpy())
-    validate_model(model, device, samples, labels)
+    save_model(model, "triplet_model.h5")
+    predicted_embeddings = get_predicted_embeddings(model, samples)
+    validate_model(model, samples, labels)
 
 if __name__ == "__main__":
     run_pipeline(1e-4, 32, 10, 5, 101, 10, 100)
