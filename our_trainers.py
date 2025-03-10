@@ -7,31 +7,32 @@ from sklearn.manifold import TSNE
 import random
 
 
-class Embedder(nn.Module):
-    def __init__(self, embedding_size, feature_size):
-        super(Embedder, self).__init__()
-        self.embedding_layer = nn.Embedding(embedding_size, feature_size)
-        self.pooling_layer = nn.AdaptiveAvgPool1d(1)
-        self.fc_layer = nn.Linear(feature_size, feature_size)
-        self.batch_norm = nn.BatchNorm1d(feature_size)
-        self.layer_norm = nn.LayerNorm(feature_size)
+def create_embedder(embedding_size, feature_size):
+    class Embedder(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embedding_layer = nn.Embedding(embedding_size, feature_size)
+            self.pooling_layer = nn.AdaptiveAvgPool1d(1)
+            self.fc_layer = nn.Linear(feature_size, feature_size)
+            self.batch_norm = nn.BatchNorm1d(feature_size)
+            self.layer_norm = nn.LayerNorm(feature_size)
 
-    def forward(self, x):
-        x = self.embedding_layer(x)
-        x = self.pooling_layer(x.transpose(1, 2)).squeeze(-1)
-        x = self.fc_layer(x)
-        x = self.batch_norm(x)
-        x = self.layer_norm(x)
-        return x
+        def forward(self, x):
+            x = self.embedding_layer(x)
+            x = self.pooling_layer(x.transpose(1, 2)).squeeze(-1)
+            x = self.fc_layer(x)
+            x = self.batch_norm(x)
+            x = self.layer_norm(x)
+            return x
+
+    return Embedder()
 
 
 def sample_triplet(anchor, anchor_label, labels, n_negatives):
     pos_indices = np.where(labels == anchor_label.item())[0]
     positive_idx = random.choice(pos_indices.tolist())
     negative_indices = random.sample(np.where(labels != anchor_label.item())[0].tolist(), n_negatives)
-    positive = labels[positive_idx]
-    negatives = [labels[i] for i in negative_indices]
-    return anchor, positive, negatives
+    return anchor, labels[positive_idx], [labels[i] for i in negative_indices]
 
 
 class TripletDataSet(torch.utils.data.Dataset):
@@ -58,7 +59,7 @@ def create_triplet_loss(margin=1.0):
     return loss_function
 
 
-def train(embedding_model, dataset, num_epochs):
+def train_model(embedding_model, dataset, num_epochs):
     optimizer = optim.Adam(embedding_model.parameters())
     loss_fn = create_triplet_loss()
     embedding_model.train()
@@ -75,7 +76,7 @@ def train(embedding_model, dataset, num_epochs):
             optimizer.step()
 
 
-def validate(embedding_model, samples, labels, k=5):
+def validate_model(embedding_model, samples, labels, k=5):
     embedding_model.eval()
     with torch.no_grad():
         embeddings = embedding_model(torch.tensor(samples)).numpy()
@@ -94,11 +95,7 @@ def initialize_dataset(samples, labels, n_negatives):
     return TripletDataSet(samples, labels, n_negatives)
 
 
-def initialize_model(embedding_size, feature_size):
-    return Embedder(embedding_size, feature_size)
-
-
-def save_model_to_file(model, file_path):
+def save_model(model, file_path):
     torch.save(model.state_dict(), file_path)
 
 
@@ -145,13 +142,13 @@ def knn_f1(embeddings, labels, k=5):
 def run_pipeline(learning_rate, batch_size, num_epochs, n_negatives, embedding_size, feature_size, data_size):
     samples, labels = generate_random_data(data_size)
     dataset = initialize_dataset(samples, labels, n_negatives)
-    model = initialize_model(embedding_size, feature_size)
-    train(model, dataset, num_epochs)
+    model = create_embedder(embedding_size, feature_size)
+    train_model(model, dataset, num_epochs)
     input_ids = torch.tensor([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]).reshape((1, 10))
     output = model(input_ids)
-    save_model_to_file(model, "triplet_model.pth")
+    save_model(model, "triplet_model.pth")
     predicted_embeddings = get_embeddings(model, samples)
-    validate(model, samples, labels)
+    validate_model(model, samples, labels)
 
 
 if __name__ == "__main__":
