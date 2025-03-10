@@ -1,10 +1,10 @@
 import os
 import json
 import random
-import torch
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-from transformers import BertTokenizer
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras import layers, models
+from transformers import T5Tokenizer
 
 class Config:
     def __init__(self):
@@ -43,25 +43,26 @@ class Config:
         self.checkpoint_resume_path = None
         self.negative_samples_per_batch = 5
 
-class TripletNet(nn.Module):
+class TripletNet(models.Model):
     def __init__(self, embedding_dim, vocab_size):
         super(TripletNet, self).__init__()
-        self.embedding_layer = nn.Embedding(vocab_size, embedding_dim)
-        self.lstm_layer = nn.LSTM(embedding_dim, batch_first=True)
-        self.fc_layer = nn.Linear(embedding_dim, embedding_dim)
-        self.output_layer = nn.Linear(embedding_dim, vocab_size)
+        self.embedding_layer = layers.Embedding(vocab_size, embedding_dim)
+        self.lstm_layer = layers.LSTM(embedding_dim, return_sequences=True)
+        self.fc_layer = layers.Dense(embedding_dim)
+        self.output_layer = layers.Dense(vocab_size)
 
-    def forward(self, input_tensor):
+    def call(self, input_tensor):
         embedded = self.embedding_layer(input_tensor)
-        lstm_out, _ = self.lstm_layer(embedded)
+        lstm_out = self.lstm_layer(embedded)
         dense_out = self.fc_layer(lstm_out[:, -1, :])
         output = self.output_layer(dense_out)
         return output
 
     def calculate_triplet_loss(self, anchor, positive, negative):
-        return torch.mean(torch.clamp(torch.mean((anchor - positive) ** 2) - torch.mean((anchor - negative) ** 2) + 2.0, min=0.0))
+        return tf.reduce_mean(tf.maximum(tf.reduce_mean(tf.square(anchor - positive), axis=-1) - 
+                                          tf.reduce_mean(tf.square(anchor - negative), axis=-1) + 2.0, 0.0))
 
-class TripletData(Dataset):
+class TripletData(tf.keras.utils.Sequence):
     def __init__(self, data, config, tokenizer):
         self.data = data
         self.config = config
@@ -76,7 +77,7 @@ class TripletData(Dataset):
         input_ids, labels, negative_exs = zip(*[
             self.prepare_example(index * self.batch_size + i) for i in range(self.batch_size)
         ])
-        return (torch.tensor(input_ids), torch.tensor(labels), torch.tensor(negative_exs))
+        return (np.array(input_ids), np.array(labels), np.array(negative_exs))
 
     def prepare_example(self, idx):
         example = self.data[idx]
@@ -104,36 +105,26 @@ def read_json(file_path):
         return None
 
 def train_triplet_model(model, config, train_loader):
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-    model.train()
-    for epoch in range(config.num_epochs):
-        for input_ids, labels, negative_exs in train_loader:
-            optimizer.zero_grad()
-            loss = model.calculate_triplet_loss(
-                model(input_ids),
-                model(labels),
-                model(negative_exs)
-            )
-            loss.backward()
-            optimizer.step()
-        print(f"Completed Epoch: {epoch + 1}/{config.num_epochs}")
+    optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
+    model.compile(optimizer=optimizer, loss=model.calculate_triplet_loss)
+    model.fit(train_loader, epochs=config.num_epochs)
 
 def evaluate_triplet_model(model, test_loader):
-    model.eval()
-    total_loss = sum(
-        model.calculate_triplet_loss(
+    total_loss = 0
+    for input_ids, labels, negative_exs in test_loader:
+        loss = model.calculate_triplet_loss(
             model(input_ids),
             model(labels),
             model(negative_exs)
-        ).item() for input_ids, labels, negative_exs in test_loader
-    )
+        )
+        total_loss += loss.numpy()
     print(f"Test Loss Average: {total_loss / len(test_loader):.4f}")
 
 def initialize_tokenizer():
-    return BertTokenizer.from_pretrained("bert-base-uncased")
+    return T5Tokenizer.from_pretrained("t5-base")
 
 def save_model(model, path):
-    torch.save(model.state_dict(), path)
+    model.save_weights(path)
 
 def main():
     config = Config()
@@ -142,17 +133,15 @@ def main():
     tokenizer = initialize_tokenizer()
     train_dataset = TripletData(train_data, config, tokenizer)
     test_dataset = TripletData(test_data, config, tokenizer)
-    train_loader = DataLoader(train_dataset, batch_size=config.batch_size_train, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=config.batch_size_eval, shuffle=False)
 
     model = TripletNet(128, 30522)
+    
     for _ in range(config.num_epochs):
         train_dataset.epoch_shuffle()
-        train_loader = DataLoader(train_dataset, batch_size=config.batch_size_train, shuffle=False)
-        
-    train_triplet_model(model, config, train_loader)
-    evaluate_triplet_model(model, test_loader)
-    save_model(model, os.path.join(config.results_directory, "triplet_model.pth"))
+    
+    train_triplet_model(model, config, train_dataset)
+    evaluate_triplet_model(model, test_dataset)
+    save_model(model, os.path.join(config.results_directory, "triplet_model.h5"))
 
 if __name__ == "__main__":
     main()
