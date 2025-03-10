@@ -17,8 +17,8 @@ class Dataset:
         random.shuffle(self.samples)
 
     def get_positive_and_negative_samples(self):
-        positives = [s for s in self.samples if s['label'] == 1]
-        negatives = [s for s in self.samples if s['label'] == 0]
+        positives = list(filter(lambda s: s['label'] == 1, self.samples))
+        negatives = list(filter(lambda s: s['label'] == 0, self.samples))
         return positives, negatives
 
     def next_epoch(self):
@@ -30,18 +30,17 @@ def get_env_info(inputs: str) -> str:
     return f"Current environment variables: {dict(os.environ)}\n{inputs}"
 
 def install_dependencies(inputs: str) -> str:
-    try:
-        subprocess.run(f"pip install {inputs}", shell=True, check=True)
-        return f"Successfully installed {inputs}."
-    except subprocess.CalledProcessError as error:
-        return f"Error installing {inputs}: {error}"
+    return subprocess.run(
+        f"pip install {inputs}",
+        shell=True,
+        check=True,
+        text=True,
+        capture_output=True
+    ).stdout
 
 def run_shell_command(command: str) -> tuple:
-    try:
-        result = subprocess.run(command, shell=True, text=True, capture_output=True)
-        return result.stdout, result.stderr
-    except Exception as error:
-        return None, str(error)
+    result = subprocess.run(command, shell=True, text=True, capture_output=True)
+    return result.stdout, result.stderr
 
 def setup_tools() -> list:
     return [
