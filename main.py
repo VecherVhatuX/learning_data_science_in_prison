@@ -2,14 +2,11 @@ import os
 import json
 import random
 import numpy as np
-from dataclasses import dataclass
-from typing import Dict
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from transformers import BertTokenizer
 
-# Class to hold various parameters for model configuration
 class ModelConfig:
     def __init__(self):
         self.model_base = "t5-base"
@@ -47,7 +44,6 @@ class ModelConfig:
         self.resume_checkpoint = None
         self.negative_samples = 5
 
-# Definition of the triplet model structure
 class TripletModel(nn.Module):
     def __init__(self, embedding_dim, vocab_size):
         super(TripletModel, self).__init__()
@@ -66,7 +62,6 @@ class TripletModel(nn.Module):
     def compute_triplet_loss(self, anchor, positive, negative):
         return torch.mean(torch.clamp(torch.mean((anchor - positive) ** 2) - torch.mean((anchor - negative) ** 2) + 2.0, min=0.0))
 
-# Class to handle the dataset for triplet samples
 class TripletDataset(Dataset):
     def __init__(self, data, config, tokenizer):
         self.data = data
@@ -88,19 +83,15 @@ class TripletDataset(Dataset):
             input_ids.append(self.tokenizer.encode(example['input'], max_length=512, padding='max_length', truncation=True))
             labels.append(self.tokenizer.encode(example['output'], max_length=512, padding='max_length', truncation=True))
             for _ in range(self.config.negative_samples):
-                negative_index = random.randint(0, len(self.data) - 1)
-                if negative_index == example_index:
-                    negative_index = (negative_index + 1) % len(self.data)
+                negative_index = random.choice([j for j in range(len(self.data)) if j != example_index])
                 negative_example = self.tokenizer.encode(self.data[negative_index]['input'], max_length=512, padding='max_length', truncation=True)
                 negative_examples.append(negative_example)
         return (torch.tensor(input_ids), torch.tensor(labels), torch.tensor(negative_examples))
 
     def on_epoch_end(self):
         random.seed(self.config.random_seed)
-        random.seed(random.randint(0, 2**32))
         self.indices = random.sample(range(len(self.data)), len(self.data))
 
-# Function to read data from a JSON file
 def load_data(file_path):
     try:
         with open(file_path, 'r') as file:
@@ -109,8 +100,7 @@ def load_data(file_path):
         print(f"The file {file_path} does not exist.")
         return None
 
-# Function to train the neural network model
-def train_model(model, config, train_loader, test_loader):
+def train_model(model, config, train_loader):
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     model.train()
     for epoch in range(config.num_epochs):
@@ -124,11 +114,9 @@ def train_model(model, config, train_loader, test_loader):
             optimizer.step()
         print(f"Epoch {epoch + 1}/{config.num_epochs} completed.")
 
-# Function to initialize the tokenizer
 def load_tokenizer():
     return BertTokenizer.from_pretrained("bert-base-uncased")
 
-# Main function to execute the script
 def main():
     config = ModelConfig()
     train_data = load_data("train.json")
@@ -139,7 +127,7 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=config.train_batch_size, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=config.eval_batch_size, shuffle=False)
     model = TripletModel(128, 30522)
-    train_model(model, config, train_loader, test_loader)
+    train_model(model, config, train_loader)
 
 if __name__ == "__main__":
     main()
