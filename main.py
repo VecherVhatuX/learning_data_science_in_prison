@@ -114,6 +114,19 @@ def train_model(model, config, train_loader):
             optimizer.step()
         print(f"Epoch {epoch + 1}/{config.num_epochs} completed.")
 
+def evaluate_model(model, test_loader):
+    model.eval()
+    total_loss = 0
+    with torch.no_grad():
+        for input_ids, labels, negative_examples in test_loader:
+            anchor = model(input_ids)
+            positive = model(labels)
+            negative = model(negative_examples)
+            loss = model.compute_triplet_loss(anchor, positive, negative)
+            total_loss += loss.item()
+    average_loss = total_loss / len(test_loader)
+    print(f"Average Test Loss: {average_loss:.4f}")
+
 def load_tokenizer():
     return BertTokenizer.from_pretrained("bert-base-uncased")
 
@@ -128,6 +141,7 @@ def main():
     test_loader = DataLoader(test_dataset, batch_size=config.eval_batch_size, shuffle=False)
     model = TripletModel(128, 30522)
     train_model(model, config, train_loader)
+    evaluate_model(model, test_loader)
 
 if __name__ == "__main__":
     main()
