@@ -19,13 +19,9 @@ def load_json_data(data_path, folder_path):
              for f in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, f))])
 
 def generate_triplets(instance_map, snippets):
-    bug_snippets, non_bug_snippets = [], []
-    for _, snippet_file in snippets:
-        snippet_content = json.load(open(snippet_file))
-        (bug_snippets if snippet_content.get('is_bug', False) else non_bug_snippets).append(snippet_content['snippet'])
-    
-    bug_snippets = [s for s in bug_snippets if s]
-    non_bug_snippets = [s for s in non_bug_snippets if s]
+    bug_snippets, non_bug_snippets = zip(*(map(lambda snippet_file: json.load(open(snippet_file)), snippets)))
+    bug_snippets = [s['snippet'] for s in bug_snippets if s.get('is_bug', False) and s['snippet']]
+    non_bug_snippets = [s['snippet'] for s in non_bug_snippets if not s.get('is_bug', False) and s['snippet']]
     
     return create_triplet_structure(instance_map, snippets, bug_snippets, non_bug_snippets)
 
@@ -42,13 +38,9 @@ class TripletDataset:
         self.batch_size = batch_size
         self.max_length = max_length
         self.tokenizer = Tokenizer()
-        self._fit_tokenizer()
-        self.epoch_counter = 0
-
-    def _fit_tokenizer(self):
-        texts = self._collect_texts()
-        self.tokenizer.fit_on_texts(texts)
+        self.tokenizer.fit_on_texts(self._collect_texts())
         self.vocab_size = len(self.tokenizer.word_index) + 1
+        self.epoch_counter = 0
 
     def _collect_texts(self):
         return [item['anchor'] for item in self.triplet_data] + \
@@ -83,33 +75,25 @@ def build_model(vocab_size, embed_dim, seq_length):
     return model
 
 def create_model_inputs(seq_length):
-    anchor_input = Input(shape=(seq_length,), name='anchor_input')
-    positive_input = Input(shape=(seq_length,), name='positive_input')
-    negative_input = Input(shape=(seq_length,), name='negative_input')
-    return anchor_input, positive_input, negative_input
+    return (Input(shape=(seq_length,), name='anchor_input'),
+            Input(shape=(seq_length,), name='positive_input'),
+            Input(shape=(seq_length,), name='negative_input'))
 
 def create_embedding_layers(anchor_input, positive_input, negative_input, vocab_size, embed_dim):
     embedding_layer = Embedding(input_dim=vocab_size, output_dim=embed_dim)
-    anchor_embedded = embedding_layer(anchor_input)
-    positive_embedded = embedding_layer(positive_input)
-    negative_embedded = embedding_layer(negative_input)
-    return anchor_embedded, positive_embedded, negative_embedded
+    return (embedding_layer(anchor_input),
+            embedding_layer(positive_input),
+            embedding_layer(negative_input))
 
 def create_dense_layers(anchor_embedded, positive_embedded, negative_embedded):
     pooling_layer = GlobalMaxPooling1D()
-    anchor_pooled = pooling_layer(anchor_embedded)
-    positive_pooled = pooling_layer(positive_embedded)
-    negative_pooled = pooling_layer(negative_embedded)
-
     dense_layer = Dense(128, activation='relu')
     batch_norm_layer = BatchNormalization()
     dropout_layer = Dropout(0.2)
 
-    anchor_dense = dropout_layer(batch_norm_layer(dense_layer(anchor_pooled)))
-    positive_dense = dropout_layer(batch_norm_layer(dense_layer(positive_pooled)))
-    negative_dense = dropout_layer(batch_norm_layer(dense_layer(negative_pooled)))
-
-    return anchor_dense, positive_dense, negative_dense
+    return (dropout_layer(batch_norm_layer(dense_layer(pooling_layer(anchor_embedded)))),
+            dropout_layer(batch_norm_layer(dense_layer(pooling_layer(positive_embedded)))),
+            dropout_layer(batch_norm_layer(dense_layer(pooling_layer(negative_embedded)))))
 
 def triplet_loss(anchor_embeds, positive_embeds, negative_embeds):
     return tf.reduce_mean(tf.maximum(0.2 + tf.norm(anchor_embeds - positive_embeds, axis=1) - 
