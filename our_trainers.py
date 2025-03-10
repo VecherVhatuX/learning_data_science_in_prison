@@ -43,6 +43,12 @@ class TripletDataset(torch.utils.data.Dataset):
         anchor_label = self.labels[index]
         return get_triplet(anchor, anchor_label, self.labels, self.n_negatives)
 
+    def shuffle(self):
+        indices = np.arange(len(self.samples))
+        np.random.shuffle(indices)
+        self.samples = self.samples[indices]
+        self.labels = self.labels[indices]
+
 
 def triplet_loss_fn(margin=1.0):
     def loss(anchor, positive, negatives):
@@ -60,6 +66,7 @@ def train(embedding_model, dataset, num_epochs):
     loader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=True)
 
     for epoch in range(num_epochs):
+        dataset.shuffle()  # Shuffle dataset at the beginning of each epoch
         for anchors, positives, negatives in loader:
             optimizer.zero_grad()
             anchor_embeds = embedding_model(anchors)
@@ -109,20 +116,20 @@ def display_embeddings(embeddings, labels):
 
 def calculate_knn_accuracy(embeddings, labels, k=5):
     distances = np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2)
-    nearest_indices = np.argsort(distances, axis=1)[:, 1:k+1]
+    nearest_indices = np.argsort(distances, axis=1)[:, 1:k + 1]
     return np.mean(np.any(labels[nearest_indices] == labels[:, np.newaxis], axis=1))
 
 
 def calculate_knn_precision(embeddings, labels, k=5):
     distances = np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2)
-    nearest_indices = np.argsort(distances, axis=1)[:, 1:k+1]
+    nearest_indices = np.argsort(distances, axis=1)[:, 1:k + 1]
     true_positive = np.sum(labels[nearest_indices] == labels[:, np.newaxis], axis=1)
     return np.mean(true_positive / k)
 
 
 def calculate_knn_recall(embeddings, labels, k=5):
     distances = np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2)
-    nearest_indices = np.argsort(distances, axis=1)[:, 1:k+1]
+    nearest_indices = np.argsort(distances, axis=1)[:, 1:k + 1]
     true_positive = np.sum(labels[nearest_indices] == labels[:, np.newaxis], axis=1)
     return np.mean(true_positive / np.sum(labels == labels[:, np.newaxis], axis=1))
 
