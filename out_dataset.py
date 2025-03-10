@@ -33,31 +33,38 @@ def generate_triplets(instance_map, snippets):
             for folder, _ in snippets 
             for pos_doc in bug_snippets]
 
-class TripletDataLoader:
+class TripletDataset:
     def __init__(self, triplet_data, batch_size, max_length):
         self.triplet_data = triplet_data
         self.batch_size = batch_size
         self.max_length = max_length
         self.tokenizer = Tokenizer()
         self._fit_tokenizer()
+        self.epoch_counter = 0
 
     def _fit_tokenizer(self):
-        texts = [item['anchor'] for item in self.triplet_data] + [item['positive'] for item in self.triplet_data] + [item['negative'] for item in self.triplet_data]
+        texts = [item['anchor'] for item in self.triplet_data] + \
+                [item['positive'] for item in self.triplet_data] + \
+                [item['negative'] for item in self.triplet_data]
         self.tokenizer.fit_on_texts(texts)
         self.vocab_size = len(self.tokenizer.word_index) + 1
 
     def _prepare_sequences(self, item):
-        sequences = [pad_sequences([self.tokenizer.texts_to_sequences([item[key]])[0]], maxlen=self.max_length)[0] for key in ['anchor', 'positive', 'negative']]
-        return { 'anchor_seq': sequences[0], 'positive_seq': sequences[1], 'negative_seq': sequences[2] }
+        sequences = [pad_sequences([self.tokenizer.texts_to_sequences([item[key]])[0]], 
+                                    maxlen=self.max_length)[0] for key in ['anchor', 'positive', 'negative']]
+        return {'anchor_seq': sequences[0], 'positive_seq': sequences[1], 'negative_seq': sequences[2]}
 
     def create_tf_dataset(self):
-        dataset = tf.data.Dataset.from_tensor_slices(self.triplet_data)
-        dataset = dataset.map(lambda x: tf.py_function(self._prepare_sequences, [x], [tf.int32, tf.int32, tf.int32]), num_parallel_calls=tf.data.AUTOTUNE)
-        return dataset.batch(self.batch_size)
+        return tf.data.Dataset.from_tensor_slices(self.triplet_data).map(
+            lambda x: tf.py_function(self._prepare_sequences, [x], [tf.int32, tf.int32, tf.int32]), 
+            num_parallel_calls=tf.data.AUTOTUNE).batch(self.batch_size)
 
     def shuffle_data(self):
         random.shuffle(self.triplet_data)
-        return self
+
+    def next_epoch(self):
+        self.epoch_counter += 1
+        self.shuffle_data()
 
 def build_model(vocab_size, embed_dim, seq_length):
     anchor_input = Input(shape=(seq_length,), name='anchor_input')
@@ -82,17 +89,19 @@ def build_model(vocab_size, embed_dim, seq_length):
     positive_dense = dropout_layer(batch_norm_layer(dense_layer(positive_pooled)))
     negative_dense = dropout_layer(batch_norm_layer(dense_layer(negative_pooled)))
 
-    model = Model(inputs=[anchor_input, positive_input, negative_input], outputs=[anchor_dense, positive_dense, negative_dense])
+    model = Model(inputs=[anchor_input, positive_input, negative_input], 
+                  outputs=[anchor_dense, positive_dense, negative_dense])
     model.compile(optimizer=Adam(learning_rate=1e-5), loss='mean_squared_error')
     return model
 
 def triplet_loss(anchor_embeds, positive_embeds, negative_embeds):
-    return tf.reduce_mean(tf.maximum(0.2 + tf.norm(anchor_embeds - positive_embeds, axis=1) - tf.norm(anchor_embeds - negative_embeds, axis=1), 0))
+    return tf.reduce_mean(tf.maximum(0.2 + tf.norm(anchor_embeds - positive_embeds, axis=1) - 
+                                     tf.norm(anchor_embeds - negative_embeds, axis=1), 0))
 
 def train_model(model, train_loader, test_loader, num_epochs):
     train_losses, test_losses, train_accs, test_accs = [], [], [], []
     for epoch in range(1, num_epochs + 1):
-        train_loader.shuffle_data()
+        train_loader.next_epoch()
         train_data = train_loader.create_tf_dataset().shuffle(1000).prefetch(tf.data.AUTOTUNE)
         
         epoch_loss = 0
@@ -155,8 +164,8 @@ def main():
     triplets = generate_triplets(instance_map, snippets)
     train_triplets, valid_triplets = np.array_split(np.array(triplets), 2)
     
-    train_loader = TripletDataLoader(train_triplets.tolist(), batch_size=32, max_length=512)
-    test_loader = TripletDataLoader(valid_triplets.tolist(), batch_size=32, max_length=512)
+    train_loader = TripletDataset(train_triplets.tolist(), batch_size=32, max_length=512)
+    test_loader = TripletDataset(valid_triplets.tolist(), batch_size=32, max_length=512)
     
     model = build_model(train_loader.vocab_size, embed_dim=128, seq_length=512)
     checkpoint_path = "training_1/cp.ckpt"
