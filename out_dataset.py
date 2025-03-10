@@ -27,6 +27,9 @@ def generate_triplets(instance_map, snippets):
     bug_snippets = [s for s in bug_snippets if s]
     non_bug_snippets = [s for s in non_bug_snippets if s]
     
+    return create_triplet_structure(instance_map, snippets, bug_snippets, non_bug_snippets)
+
+def create_triplet_structure(instance_map, snippets, bug_snippets, non_bug_snippets):
     return [{'anchor': instance_map[os.path.basename(folder)],
              'positive': pos_doc,
              'negative': random.choice(non_bug_snippets)} 
@@ -43,11 +46,14 @@ class TripletDataset:
         self.epoch_counter = 0
 
     def _fit_tokenizer(self):
-        texts = [item['anchor'] for item in self.triplet_data] + \
-                [item['positive'] for item in self.triplet_data] + \
-                [item['negative'] for item in self.triplet_data]
+        texts = self._collect_texts()
         self.tokenizer.fit_on_texts(texts)
         self.vocab_size = len(self.tokenizer.word_index) + 1
+
+    def _collect_texts(self):
+        return [item['anchor'] for item in self.triplet_data] + \
+               [item['positive'] for item in self.triplet_data] + \
+               [item['negative'] for item in self.triplet_data]
 
     def _prepare_sequences(self, item):
         sequences = [pad_sequences([self.tokenizer.texts_to_sequences([item[key]])[0]], 
@@ -67,15 +73,29 @@ class TripletDataset:
         self.shuffle_data()
 
 def build_model(vocab_size, embed_dim, seq_length):
+    anchor_input, positive_input, negative_input = create_model_inputs(seq_length)
+    anchor_embedded, positive_embedded, negative_embedded = create_embedding_layers(anchor_input, positive_input, negative_input, vocab_size, embed_dim)
+    anchor_dense, positive_dense, negative_dense = create_dense_layers(anchor_embedded, positive_embedded, negative_embedded)
+    
+    model = Model(inputs=[anchor_input, positive_input, negative_input], 
+                  outputs=[anchor_dense, positive_dense, negative_dense])
+    model.compile(optimizer=Adam(learning_rate=1e-5), loss='mean_squared_error')
+    return model
+
+def create_model_inputs(seq_length):
     anchor_input = Input(shape=(seq_length,), name='anchor_input')
     positive_input = Input(shape=(seq_length,), name='positive_input')
     negative_input = Input(shape=(seq_length,), name='negative_input')
+    return anchor_input, positive_input, negative_input
 
+def create_embedding_layers(anchor_input, positive_input, negative_input, vocab_size, embed_dim):
     embedding_layer = Embedding(input_dim=vocab_size, output_dim=embed_dim)
     anchor_embedded = embedding_layer(anchor_input)
     positive_embedded = embedding_layer(positive_input)
     negative_embedded = embedding_layer(negative_input)
+    return anchor_embedded, positive_embedded, negative_embedded
 
+def create_dense_layers(anchor_embedded, positive_embedded, negative_embedded):
     pooling_layer = GlobalMaxPooling1D()
     anchor_pooled = pooling_layer(anchor_embedded)
     positive_pooled = pooling_layer(positive_embedded)
@@ -89,10 +109,7 @@ def build_model(vocab_size, embed_dim, seq_length):
     positive_dense = dropout_layer(batch_norm_layer(dense_layer(positive_pooled)))
     negative_dense = dropout_layer(batch_norm_layer(dense_layer(negative_pooled)))
 
-    model = Model(inputs=[anchor_input, positive_input, negative_input], 
-                  outputs=[anchor_dense, positive_dense, negative_dense])
-    model.compile(optimizer=Adam(learning_rate=1e-5), loss='mean_squared_error')
-    return model
+    return anchor_dense, positive_dense, negative_dense
 
 def triplet_loss(anchor_embeds, positive_embeds, negative_embeds):
     return tf.reduce_mean(tf.maximum(0.2 + tf.norm(anchor_embeds - positive_embeds, axis=1) - 
@@ -103,39 +120,45 @@ def train_model(model, train_loader, test_loader, num_epochs):
     for epoch in range(1, num_epochs + 1):
         train_loader.next_epoch()
         train_data = train_loader.create_tf_dataset().shuffle(1000).prefetch(tf.data.AUTOTUNE)
-        
-        epoch_loss = 0
-        for batch in train_data:
-            anchor_seq, positive_seq, negative_seq = batch['anchor_seq'].numpy(), batch['positive_seq'].numpy(), batch['negative_seq'].numpy()
-            with tf.GradientTape() as tape:
-                anchor_out, positive_out, negative_out = model([anchor_seq, positive_seq, negative_seq], training=True)
-                batch_loss = triplet_loss(anchor_out, positive_out, negative_out)
-            grads = tape.gradient(batch_loss, model.trainable_variables)
-            model.optimizer.apply_gradients(zip(grads, model.trainable_variables))
-            epoch_loss += batch_loss
 
-        print(f'Epoch {epoch}, Train Loss: {epoch_loss / len(train_data)}')
+        epoch_loss = train_epoch(model, train_data)
         train_losses.append(epoch_loss / len(train_data))
+        print(f'Epoch {epoch}, Train Loss: {train_losses[-1]}')
 
-        test_loss, correct_preds = 0, 0
-        for batch in test_loader.create_tf_dataset().batch(32).prefetch(tf.data.AUTOTUNE):
-            anchor_seq, positive_seq, negative_seq = batch['anchor_seq'].numpy(), batch['positive_seq'].numpy(), batch['negative_seq'].numpy()
-            anchor_out, positive_out, negative_out = model([anchor_seq, positive_seq, negative_seq])
-            batch_loss = triplet_loss(anchor_out, positive_out, negative_out)
-            test_loss += batch_loss
-
-            pos_similarity = tf.reduce_sum(anchor_out * positive_out, axis=1)
-            neg_similarity = tf.reduce_sum(anchor_out * negative_out, axis=1)
-            correct_preds += tf.reduce_sum(tf.cast(pos_similarity > neg_similarity, tf.float32))
-
-        acc = correct_preds / len(list(test_loader.create_tf_dataset()))
-        print(f'Test Loss: {test_loss / len(list(test_loader.create_tf_dataset()))}')
-        print(f'Test Accuracy: {acc}')
-        test_losses.append(test_loss / len(list(test_loader.create_tf_dataset())))
+        test_loss, acc = evaluate_model(model, test_loader)
+        test_losses.append(test_loss)
         test_accs.append(acc)
-        train_accs.append(correct_preds / len(list(train_loader.create_tf_dataset())))
+        print(f'Test Loss: {test_loss}, Test Accuracy: {acc}')
+        train_accs.append(acc)
 
     return train_losses, test_losses, train_accs, test_accs
+
+def train_epoch(model, train_data):
+    epoch_loss = 0
+    for batch in train_data:
+        anchor_seq, positive_seq, negative_seq = batch['anchor_seq'].numpy(), batch['positive_seq'].numpy(), batch['negative_seq'].numpy()
+        with tf.GradientTape() as tape:
+            anchor_out, positive_out, negative_out = model([anchor_seq, positive_seq, negative_seq], training=True)
+            batch_loss = triplet_loss(anchor_out, positive_out, negative_out)
+        grads = tape.gradient(batch_loss, model.trainable_variables)
+        model.optimizer.apply_gradients(zip(grads, model.trainable_variables))
+        epoch_loss += batch_loss
+    return epoch_loss
+
+def evaluate_model(model, test_loader):
+    test_loss, correct_preds = 0, 0
+    for batch in test_loader.create_tf_dataset().batch(32).prefetch(tf.data.AUTOTUNE):
+        anchor_seq, positive_seq, negative_seq = batch['anchor_seq'].numpy(), batch['positive_seq'].numpy(), batch['negative_seq'].numpy()
+        anchor_out, positive_out, negative_out = model([anchor_seq, positive_seq, negative_seq])
+        batch_loss = triplet_loss(anchor_out, positive_out, negative_out)
+        test_loss += batch_loss
+
+        pos_similarity = tf.reduce_sum(anchor_out * positive_out, axis=1)
+        neg_similarity = tf.reduce_sum(anchor_out * negative_out, axis=1)
+        correct_preds += tf.reduce_sum(tf.cast(pos_similarity > neg_similarity, tf.float32))
+
+    acc = correct_preds / len(list(test_loader.create_tf_dataset()))
+    return test_loss / len(list(test_loader.create_tf_dataset())), acc
 
 def plot_results(train_losses, test_losses, train_accs, test_accs):
     plt.figure(figsize=(10, 5))
