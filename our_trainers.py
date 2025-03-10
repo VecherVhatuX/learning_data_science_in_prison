@@ -8,24 +8,13 @@ import random
 
 
 def create_embedder(embedding_size, feature_size):
-    class Embedder(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.embedding_layer = nn.Embedding(embedding_size, feature_size)
-            self.pooling_layer = nn.AdaptiveAvgPool1d(1)
-            self.fc_layer = nn.Linear(feature_size, feature_size)
-            self.batch_norm = nn.BatchNorm1d(feature_size)
-            self.layer_norm = nn.LayerNorm(feature_size)
-
-        def forward(self, x):
-            x = self.embedding_layer(x)
-            x = self.pooling_layer(x.transpose(1, 2)).squeeze(-1)
-            x = self.fc_layer(x)
-            x = self.batch_norm(x)
-            x = self.layer_norm(x)
-            return x
-
-    return Embedder()
+    return nn.Sequential(
+        nn.Embedding(embedding_size, feature_size),
+        nn.AdaptiveAvgPool1d(1),
+        nn.Linear(feature_size, feature_size),
+        nn.BatchNorm1d(feature_size),
+        nn.LayerNorm(feature_size)
+    )
 
 
 def sample_triplet(anchor, anchor_label, labels, n_negatives):
