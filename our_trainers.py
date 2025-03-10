@@ -77,16 +77,25 @@ def visualize_embeddings(embeddings, labels):
     reduced_embeddings = tsne.fit_transform(embeddings)
     plt.figure(figsize=(8, 8))
     plt.scatter(reduced_embeddings[:, 0], reduced_embeddings[:, 1], c=labels)
+    plt.colorbar()
     plt.show()
 
 def knn_accuracy(embeddings, labels, k=5):
-    return np.mean(np.any(np.equal(labels[np.argsort(np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2), axis=1)[:, 1:k+1]], labels[:, np.newaxis]), axis=1))
+    distances = np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2)
+    nearest_indices = np.argsort(distances, axis=1)[:, 1:k+1]
+    return np.mean(np.any(labels[nearest_indices] == labels[:, np.newaxis], axis=1))
 
 def knn_precision(embeddings, labels, k=5):
-    return np.mean(np.sum(np.equal(labels[np.argsort(np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2), axis=1)[:, 1:k+1]], labels[:, np.newaxis]), axis=1) / k)
+    distances = np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2)
+    nearest_indices = np.argsort(distances, axis=1)[:, 1:k+1]
+    true_positive = np.sum(labels[nearest_indices] == labels[:, np.newaxis], axis=1)
+    return np.mean(true_positive / k)
 
 def knn_recall(embeddings, labels, k=5):
-    return np.mean(np.sum(np.equal(labels[np.argsort(np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2), axis=1)[:, 1:k+1]], labels[:, np.newaxis]), axis=1) / np.sum(np.equal(labels, labels[:, np.newaxis]), axis=1))
+    distances = np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2)
+    nearest_indices = np.argsort(distances, axis=1)[:, 1:k+1]
+    true_positive = np.sum(labels[nearest_indices] == labels[:, np.newaxis], axis=1)
+    return np.mean(true_positive / np.sum(labels == labels[:, np.newaxis], axis=1))
 
 def knn_f1(embeddings, labels, k=5):
     precision = knn_precision(embeddings, labels, k)
