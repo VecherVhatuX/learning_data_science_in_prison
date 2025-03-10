@@ -1,7 +1,6 @@
 import os
 import json
 import random
-import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
@@ -74,17 +73,20 @@ class TripletData(Dataset):
         return len(self.data) // self.batch_size
 
     def __getitem__(self, index):
-        input_ids, labels, negative_exs = [], [], []
-        for i in range(self.batch_size):
-            idx = self.indices[index * self.batch_size + i]
-            example = self.data[idx]
-            input_ids.append(self.tokenizer.encode(example['input'], max_length=512, padding='max_length', truncation=True))
-            labels.append(self.tokenizer.encode(example['output'], max_length=512, padding='max_length', truncation=True))
-            for _ in range(self.config.negative_samples_per_batch):
-                neg_idx = random.choice([j for j in range(len(self.data)) if j != idx])
-                negative_ex = self.tokenizer.encode(self.data[neg_idx]['input'], max_length=512, padding='max_length', truncation=True)
-                negative_exs.append(negative_ex)
+        input_ids, labels, negative_exs = zip(*[
+            self.prepare_example(index * self.batch_size + i) for i in range(self.batch_size)
+        ])
         return (torch.tensor(input_ids), torch.tensor(labels), torch.tensor(negative_exs))
+
+    def prepare_example(self, idx):
+        example = self.data[idx]
+        input_id = self.tokenizer.encode(example['input'], max_length=512, padding='max_length', truncation=True)
+        label = self.tokenizer.encode(example['output'], max_length=512, padding='max_length', truncation=True)
+        negative_exs = [
+            self.tokenizer.encode(self.data[random.choice([j for j in range(len(self.data)) if j != idx])]['input'], max_length=512, padding='max_length', truncation=True)
+            ) for _ in range(self.config.negative_samples_per_batch)
+        ]
+        return input_id, label, negative_exs
 
     def shuffle_indices(self):
         random.seed(self.config.seed)
@@ -107,26 +109,25 @@ def train_triplet_model(model, config, train_loader):
     for epoch in range(config.num_epochs):
         for input_ids, labels, negative_exs in train_loader:
             optimizer.zero_grad()
-            anchor_output = model(input_ids)
-            positive_output = model(labels)
-            negative_output = model(negative_exs)
-            loss = model.calculate_triplet_loss(anchor_output, positive_output, negative_output)
+            loss = model.calculate_triplet_loss(
+                model(input_ids),
+                model(labels),
+                model(negative_exs)
+            )
             loss.backward()
             optimizer.step()
         print(f"Completed Epoch: {epoch + 1}/{config.num_epochs}")
 
 def evaluate_triplet_model(model, test_loader):
     model.eval()
-    total_loss = 0
-    with torch.no_grad():
-        for input_ids, labels, negative_exs in test_loader:
-            anchor_output = model(input_ids)
-            positive_output = model(labels)
-            negative_output = model(negative_exs)
-            loss = model.calculate_triplet_loss(anchor_output, positive_output, negative_output)
-            total_loss += loss.item()
-    average_loss = total_loss / len(test_loader)
-    print(f"Test Loss Average: {average_loss:.4f}")
+    total_loss = sum(
+        model.calculate_triplet_loss(
+            model(input_ids),
+            model(labels),
+            model(negative_exs)
+        ).item() for input_ids, labels, negative_exs in test_loader
+    )
+    print(f"Test Loss Average: {total_loss / len(test_loader):.4f}")
 
 def initialize_tokenizer():
     return BertTokenizer.from_pretrained("bert-base-uncased")
@@ -143,12 +144,12 @@ def main():
     test_dataset = TripletData(test_data, config, tokenizer)
     train_loader = DataLoader(train_dataset, batch_size=config.batch_size_train, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=config.batch_size_eval, shuffle=False)
-    
-    for epoch in range(config.num_epochs):
+
+    model = TripletNet(128, 30522)
+    for _ in range(config.num_epochs):
         train_dataset.epoch_shuffle()
         train_loader = DataLoader(train_dataset, batch_size=config.batch_size_train, shuffle=False)
         
-    model = TripletNet(128, 30522)
     train_triplet_model(model, config, train_loader)
     evaluate_triplet_model(model, test_loader)
     save_model(model, os.path.join(config.results_directory, "triplet_model.pth"))
