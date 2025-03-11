@@ -58,7 +58,7 @@ def triplet_loss_fn(margin=1.0):
     return loss
 
 
-def train(model, dataset, num_epochs):
+def train_model(model, dataset, num_epochs):
     optimizer = optim.Adam(model.parameters())
     loss_function = triplet_loss_fn()
     model.train()
@@ -76,7 +76,7 @@ def train(model, dataset, num_epochs):
             optimizer.step()
 
 
-def validate(model, samples, labels, k=5):
+def validate_model(model, samples, labels, k=5):
     model.eval()
     with torch.no_grad():
         embeddings = model(torch.tensor(samples)).numpy()
@@ -91,15 +91,15 @@ def generate_data(size):
     return np.random.randint(0, 100, (size, 10)), np.random.randint(0, 2, (size,))
 
 
-def create_dataset(samples, labels, n_negatives):
+def create_triplet_dataset(samples, labels, n_negatives):
     return TripletDataset(samples, labels, n_negatives)
 
 
-def save_model(model, file_path):
+def save_model_to_file(model, file_path):
     torch.save(model.state_dict(), file_path)
 
 
-def extract_embeddings(model, samples):
+def extract_embeddings_from_model(model, samples):
     with torch.no_grad():
         return model(torch.tensor(samples)).numpy()
 
@@ -139,17 +139,17 @@ def calculate_knn_f1(embeddings, labels, k=5):
     return 2 * (precision * recall) / (precision + recall)
 
 
-def execute_pipeline(learning_rate, batch_size, num_epochs, n_negatives, embedding_size, feature_size, data_size):
+def execute_training_pipeline(learning_rate, batch_size, num_epochs, n_negatives, embedding_size, feature_size, data_size):
     samples, labels = generate_data(data_size)
-    dataset = create_dataset(samples, labels, n_negatives)
+    dataset = create_triplet_dataset(samples, labels, n_negatives)
     model = Embedder(embedding_size, feature_size)
-    train(model, dataset, num_epochs)
+    train_model(model, dataset, num_epochs)
     input_ids = torch.tensor([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]).reshape((1, 10))
     model(input_ids)
-    save_model(model, "triplet_model.pth")
-    predicted_embeddings = extract_embeddings(model, samples)
-    validate(model, samples, labels)
+    save_model_to_file(model, "triplet_model.pth")
+    predicted_embeddings = extract_embeddings_from_model(model, samples)
+    validate_model(model, samples, labels)
 
 
 if __name__ == "__main__":
-    execute_pipeline(1e-4, 32, 10, 5, 101, 10, 100)
+    execute_training_pipeline(1e-4, 32, 10, 5, 101, 10, 100)
