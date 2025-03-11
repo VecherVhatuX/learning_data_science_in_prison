@@ -16,3 +16,4 @@ tokenizers==0.31.0
 tqdm==4.68.0
 PyYAML==6.4.0
 safetensors==0.6.1
+torchvision==0.16.0
