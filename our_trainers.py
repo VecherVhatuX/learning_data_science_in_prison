@@ -54,7 +54,7 @@ def triplet_loss_fn(margin=1.0):
     def loss(anchor, positive, negatives):
         dist_ap = torch.norm(anchor - positive, dim=1)
         dist_an = torch.norm(anchor.unsqueeze(1) - torch.stack(negatives), dim=2)
-        return torch.mean(torch.max(dist_ap - dist_an.min(dim=1)[0] + margin, torch.tensor(0.0, device=anchor.device)))
+        return torch.mean(torch.clamp(dist_ap - dist_an.min(dim=1)[0] + margin, min=0.0))
     return loss
 
 
@@ -80,10 +80,11 @@ def validate_model(model, samples, labels, k=5):
     model.eval()
     with torch.no_grad():
         embeddings = model(torch.tensor(samples)).numpy()
-        print("Validation KNN Accuracy:", calculate_knn_accuracy(embeddings, labels, k))
-        print("Validation KNN Precision:", calculate_knn_precision(embeddings, labels, k))
-        print("Validation KNN Recall:", calculate_knn_recall(embeddings, labels, k))
-        print("Validation KNN F1-score:", calculate_knn_f1(embeddings, labels, k))
+        metrics = calculate_knn_metrics(embeddings, labels, k)
+        print(f"Validation KNN Accuracy: {metrics[0]}")
+        print(f"Validation KNN Precision: {metrics[1]}")
+        print(f"Validation KNN Recall: {metrics[2]}")
+        print(f"Validation KNN F1-score: {metrics[3]}")
         display_embeddings(embeddings, labels)
 
 
