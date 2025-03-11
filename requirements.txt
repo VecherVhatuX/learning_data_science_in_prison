@@ -15,4 +15,4 @@ sentencepiece==0.2.2
 tokenizers==0.34.0
 tqdm==4.68.0
 PyYAML==6.4.0
-safetensors==0.8.0
+safetensors==0.9.0
