@@ -3,7 +3,7 @@ import subprocess
 import time
 import click
 from rich.console import Console
-from some_other_library import Tool, initialize_agent
+from another_library import Tool, setup_agent
 import random
 
 console = Console()
@@ -73,7 +73,7 @@ def retry_command(agent, target_command: str, attempts: int, max_attempts: int) 
 
 def process_command_with_agent(target_command: str, max_attempts: int):
     tools = setup_tools()
-    agent = initialize_agent(tools=tools)
+    agent = setup_agent(tools=tools)
     retry_command(agent, target_command, 0, max_attempts)
 
 def log_execution_time(func):
