@@ -11,33 +11,6 @@ from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 import matplotlib.pyplot as plt
 
-def load_json_data(data_path, folder_path):
-    with open(data_path, 'r') as file:
-        dataset = json.load(file)
-    instance_map = {item['instance_id']: item['problem_statement'] for item in dataset}
-    snippets = [
-        (folder, os.path.join(folder, 'snippet.json'))
-        for folder in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, folder))
-    ]
-    return instance_map, snippets
-
-def generate_triplets(instance_map, snippets):
-    bug_snippets, non_bug_snippets = zip(*(map(lambda snippet_file: json.load(open(snippet_file)), snippets)))
-    bug_snippets = [s['snippet'] for s in bug_snippets if s.get('is_bug') and s['snippet']]
-    non_bug_snippets = [s['snippet'] for s in non_bug_snippets if not s.get('is_bug') and s['snippet']]
-    return create_triplet_structure(instance_map, snippets, bug_snippets, non_bug_snippets)
-
-def create_triplet_structure(instance_map, snippets, bug_snippets, non_bug_snippets):
-    return [
-        {
-            'anchor': instance_map[os.path.basename(folder)],
-            'positive': pos_doc,
-            'negative': random.choice(non_bug_snippets)
-        }
-        for folder, _ in snippets
-        for pos_doc in bug_snippets
-    ]
-
 class TripletDataset:
     def __init__(self, triplet_data, batch_size, max_length):
         self.triplet_data = triplet_data
@@ -68,6 +41,33 @@ class TripletDataset:
 
     def next_epoch(self):
         self.shuffle_data()
+
+def load_json_data(data_path, folder_path):
+    with open(data_path, 'r') as file:
+        dataset = json.load(file)
+    instance_map = {item['instance_id']: item['problem_statement'] for item in dataset}
+    snippets = [
+        (folder, os.path.join(folder, 'snippet.json'))
+        for folder in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, folder))
+    ]
+    return instance_map, snippets
+
+def generate_triplets(instance_map, snippets):
+    bug_snippets, non_bug_snippets = zip(*(map(lambda snippet_file: json.load(open(snippet_file)), snippets)))
+    bug_snippets = [s['snippet'] for s in bug_snippets if s.get('is_bug') and s['snippet']]
+    non_bug_snippets = [s['snippet'] for s in non_bug_snippets if not s.get('is_bug') and s['snippet']]
+    return create_triplet_structure(instance_map, snippets, bug_snippets, non_bug_snippets)
+
+def create_triplet_structure(instance_map, snippets, bug_snippets, non_bug_snippets):
+    return [
+        {
+            'anchor': instance_map[os.path.basename(folder)],
+            'positive': pos_doc,
+            'negative': random.choice(non_bug_snippets)
+        }
+        for folder, _ in snippets
+        for pos_doc in bug_snippets
+    ]
 
 def build_model(vocab_size, embed_dim, seq_length):
     anchor_input, positive_input, negative_input = create_model_inputs(seq_length)
