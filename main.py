@@ -7,7 +7,7 @@ from tensorflow.keras import layers, models
 from transformers import T5Tokenizer
 
 
-def create_configuration():
+def setup_parameters():
     return {
         "model_name": "t5-base",
         "alpha": 16,
@@ -54,9 +54,9 @@ def create_configuration():
     }
 
 
-class TripletModel(models.Model):
+class TripletNeuralNetwork(models.Model):
     def __init__(self, embedding_dim, vocab_size):
-        super(TripletModel, self).__init__()
+        super(TripletNeuralNetwork, self).__init__()
         self.embedding_layer = layers.Embedding(vocab_size, embedding_dim)
         self.lstm_layer = layers.LSTM(embedding_dim, return_sequences=True)
         self.dense_layer = layers.Dense(embedding_dim)
@@ -67,13 +67,13 @@ class TripletModel(models.Model):
         last_output = lstm_output[:, -1, :]
         return self.output_layer(self.dense_layer(last_output))
 
-    def triplet_loss(self, anchor, positive, negative):
-        positive_distance = tf.reduce_mean(tf.square(anchor - positive), axis=-1)
-        negative_distance = tf.reduce_mean(tf.square(anchor - negative), axis=-1)
-        return tf.reduce_mean(tf.maximum(positive_distance - negative_distance + 2.0, 0.0))
+    def compute_triplet_loss(self, anchor, positive, negative):
+        pos_distance = tf.reduce_mean(tf.square(anchor - positive), axis=-1)
+        neg_distance = tf.reduce_mean(tf.square(anchor - negative), axis=-1)
+        return tf.reduce_mean(tf.maximum(pos_distance - neg_distance + 2.0, 0.0))
 
 
-class DataGenerator(tf.keras.utils.Sequence):
+class BatchDataGenerator(tf.keras.utils.Sequence):
     def __init__(self, dataset, config, tokenizer):
         self.dataset = dataset
         self.config = config
@@ -85,9 +85,9 @@ class DataGenerator(tf.keras.utils.Sequence):
         return len(self.dataset) // self.batch_size
 
     def __getitem__(self, index):
-        return tuple(np.array(x) for x in zip(*[self.prepare_entry(index * self.batch_size + i) for i in range(self.batch_size)]))
+        return tuple(np.array(x) for x in zip(*[self.create_sample(index * self.batch_size + i) for i in range(self.batch_size)]))
 
-    def prepare_entry(self, idx):
+    def create_sample(self, idx):
         entry = self.dataset[idx]
         input_ids = self.tokenizer.encode(entry['input'], max_length=512, padding='max_length', truncation=True)
         labels = self.tokenizer.encode(entry['output'], max_length=512, padding='max_length', truncation=True)
@@ -100,65 +100,65 @@ class DataGenerator(tf.keras.utils.Sequence):
             ) for _ in range(self.config["negative_samples_per_batch"])
         ]
 
-    def shuffle_data(self):
+    def shuffle_indices(self):
         random.seed(self.config["seed"])
         random.shuffle(self.indices)
 
-    def epoch_shuffle(self):
-        self.shuffle_data()
+    def shuffle_for_epoch(self):
+        self.shuffle_indices()
 
 
-def load_json_file(path):
+def read_json_file(file_path):
     try:
-        with open(path, 'r') as file:
+        with open(file_path, 'r') as file:
             return json.load(file)
     except FileNotFoundError:
-        print(f"File not found: {path}")
+        print(f"Unable to locate file: {file_path}")
         return None
 
 
-def train_triplet_model(model, config, data_gen):
+def train_model(model, config, data_gen):
     optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
-    model.compile(optimizer=optimizer, loss=model.triplet_loss)
+    model.compile(optimizer=optimizer, loss=model.compute_triplet_loss)
     model.fit(data_gen, epochs=config["epochs"])
 
 
-def evaluate_triplet_model(model, data_gen):
-    total_loss = sum(model.triplet_loss(
+def evaluate_model(model, data_gen):
+    total_loss = sum(model.compute_triplet_loss(
         model(input_ids),
         model(labels),
         model(negative_samples)
     ).numpy() for input_ids, labels, negative_samples in data_gen)
     
-    print(f"Average Evaluation Loss: {total_loss / len(data_gen):.4f}")
+    print(f"Mean Evaluation Loss: {total_loss / len(data_gen):.4f}")
 
 
-def initialize_t5_tokenizer():
+def initialize_tokenizer():
     return T5Tokenizer.from_pretrained("t5-base")
 
 
-def save_model(model, path):
-    model.save_weights(path)
+def save_model_weights(model, file_path):
+    model.save_weights(file_path)
 
 
-def execute_training_pipeline():
-    config = create_configuration()
-    train_data = load_json_file("train.json")
-    test_data = load_json_file("test.json")
-    tokenizer = initialize_t5_tokenizer()
+def run_training_pipeline():
+    config = setup_parameters()
+    training_data = read_json_file("train.json")
+    testing_data = read_json_file("test.json")
+    tokenizer = initialize_tokenizer()
     
-    train_dataset = DataGenerator(train_data, config, tokenizer)
-    test_dataset = DataGenerator(test_data, config, tokenizer)
+    train_dataset = BatchDataGenerator(training_data, config, tokenizer)
+    test_dataset = BatchDataGenerator(testing_data, config, tokenizer)
 
-    model = TripletModel(128, 30522)
+    model = TripletNeuralNetwork(128, 30522)
 
     for _ in range(config["epochs"]):
-        train_dataset.epoch_shuffle()
+        train_dataset.shuffle_for_epoch()
 
-    train_triplet_model(model, config, train_dataset)
-    evaluate_triplet_model(model, test_dataset)
-    save_model(model, os.path.join(config["results_directory"], "triplet_model.h5"))
+    train_model(model, config, train_dataset)
+    evaluate_model(model, test_dataset)
+    save_model_weights(model, os.path.join(config["results_directory"], "triplet_model.h5"))
 
 
 if __name__ == "__main__":
-    execute_training_pipeline()
+    run_training_pipeline()
