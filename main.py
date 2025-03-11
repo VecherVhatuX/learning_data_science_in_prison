@@ -109,7 +109,7 @@ def load_json(file_path):
         with open(file_path, 'r') as file:
             return json.load(file)
     except FileNotFoundError:
-        print(f"File not found: {file_path}")
+        print(f"File not located: {file_path}")
         return None
 
 
@@ -128,7 +128,7 @@ def evaluate_model(model, data_generator):
             model(negative_exs)
         ).numpy()
     
-    print(f"Average Test Loss: {total_loss / len(data_generator):.4f}")
+    print(f"Average Evaluation Loss: {total_loss / len(data_generator):.4f}")
 
 
 def initialize_tokenizer():
