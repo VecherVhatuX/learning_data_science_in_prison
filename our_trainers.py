@@ -70,7 +70,7 @@ def train_model(model, dataset, num_epochs):
             optimizer.zero_grad()
             anchor_embeds = model(anchors)
             positive_embeds = model(positives)
-            negative_embeds = [model(neg) for neg in negatives]
+            negative_embeds = torch.stack([model(neg) for neg in negatives])
             loss_value = loss_function(anchor_embeds, positive_embeds, negative_embeds)
             loss_value.backward()
             optimizer.step()
