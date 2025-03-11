@@ -40,7 +40,6 @@ class TripletDataset:
         self.tokenizer = Tokenizer()
         self.tokenizer.fit_on_texts(self._collect_texts())
         self.vocab_size = len(self.tokenizer.word_index) + 1
-        self.epoch_counter = 0
 
     def _collect_texts(self):
         return [item['anchor'] for item in self.triplet_data] + \
@@ -61,7 +60,6 @@ class TripletDataset:
         random.shuffle(self.triplet_data)
 
     def next_epoch(self):
-        self.epoch_counter += 1
         self.shuffle_data()
 
 def build_model(vocab_size, embed_dim, seq_length):
