@@ -59,12 +59,12 @@ class TripletNetwork(models.Model):
         self.embedding = layers.Embedding(vocab_size, embedding_dim)
         self.lstm = layers.LSTM(embedding_dim, return_sequences=True)
         self.fc = layers.Dense(embedding_dim)
-        self.output = layers.Dense(vocab_size)
+        self.output_layer = layers.Dense(vocab_size)
 
     def call(self, inputs):
         lstm_output = self.lstm(self.embedding(inputs))
         last_output = lstm_output[:, -1, :]
-        return self.output(self.fc(last_output))
+        return self.output_layer(self.fc(last_output))
 
     def compute_triplet_loss(self, anchor, positive, negative):
         pos_dist = tf.reduce_mean(tf.square(anchor - positive), axis=-1)
@@ -77,8 +77,8 @@ class TripletDataGenerator(tf.keras.utils.Sequence):
         self.dataset = dataset
         self.config = config
         self.tokenizer = tokenizer
-        self.indices = list(range(len(dataset)))
         self.batch_size = config.batch_sizes['train']
+        self.indices = list(range(len(dataset)))
 
     def __len__(self):
         return len(self.dataset) // self.batch_size
