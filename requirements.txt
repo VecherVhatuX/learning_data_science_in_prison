@@ -10,7 +10,7 @@ peft==0.15.0
 trl==0.13.0
 bitsandbytes==0.46.0
 flash-attn==2.8.0
-xformers==0.0.30
+xformers==0.0.31
 sentencepiece==0.2.2
 tokenizers==0.35.0
 tqdm==4.68.0
