@@ -12,7 +12,7 @@ bitsandbytes==0.46.0
 flash-attn==2.8.0
 xformers==0.0.31
 sentencepiece==0.2.2
-tokenizers==0.41.0
+tokenizers==0.42.0
 tqdm==4.68.0
 PyYAML==6.4.0
 safetensors==0.10.0
