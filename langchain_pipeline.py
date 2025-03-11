@@ -17,8 +17,8 @@ class Dataset:
         random.shuffle(self.samples)
 
     def get_positive_and_negative_samples(self):
-        positives = list(filter(lambda s: s['label'] == 1, self.samples))
-        negatives = list(filter(lambda s: s['label'] == 0, self.samples))
+        positives = [s for s in self.samples if s['label'] == 1]
+        negatives = [s for s in self.samples if s['label'] == 0]
         return positives, negatives
 
     def next_epoch(self):
