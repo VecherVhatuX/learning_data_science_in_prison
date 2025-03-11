@@ -36,8 +36,7 @@ def install_dependencies(inputs: str) -> str:
         text=True,
         capture_output=True
     )
-    if result.returncode != 0:
-        raise Exception(f"Error installing dependencies: {result.stderr}")
+    result.check_returncode()  # Raises an error if the command fails
     return result.stdout
 
 def run_shell_command(command: str) -> tuple:
@@ -81,8 +80,7 @@ def log_execution_time(func):
     def wrapper(*args, **kwargs):
         start_time = time.time()
         result = func(*args, **kwargs)
-        end_time = time.time()
-        console.print(f"Execution time: {end_time - start_time:.2f} seconds", style="bold yellow")
+        console.print(f"Execution time: {time.time() - start_time:.2f} seconds", style="bold yellow")
         return result
     return wrapper
 
