@@ -30,13 +30,15 @@ def get_env_info(inputs: str) -> str:
     return f"Current environment variables: {dict(os.environ)}\n{inputs}"
 
 def install_dependencies(inputs: str) -> str:
-    return subprocess.run(
+    result = subprocess.run(
         f"pip install {inputs}",
         shell=True,
-        check=True,
         text=True,
         capture_output=True
-    ).stdout
+    )
+    if result.returncode != 0:
+        raise Exception(f"Error installing dependencies: {result.stderr}")
+    return result.stdout
 
 def run_shell_command(command: str) -> tuple:
     result = subprocess.run(command, shell=True, text=True, capture_output=True)
