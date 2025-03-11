@@ -140,5 +140,15 @@ def execute_training_pipeline(learning_rate, batch_size, num_epochs, n_negatives
     validate_model(model, samples, labels)
 
 
+def plot_loss_curve(losses):
+    plt.figure(figsize=(10, 5))
+    plt.plot(losses, label='Loss', color='blue')
+    plt.title('Training Loss Curve')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.show()
+
+
 if __name__ == "__main__":
     execute_training_pipeline(1e-4, 32, 10, 5, 101, 10, 100)
