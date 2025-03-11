@@ -8,23 +8,19 @@ import random
 
 console = Console()
 
-class Dataset:
-    def __init__(self, samples):
-        self.samples = samples
-        self.epochs = 0
+def shuffle_samples(samples):
+    random.shuffle(samples)
 
-    def shuffle_samples(self):
-        random.shuffle(self.samples)
+def get_positive_and_negative_samples(samples):
+    return (
+        [s for s in samples if s['label'] == 1],
+        [s for s in samples if s['label'] == 0]
+    )
 
-    def get_positive_and_negative_samples(self):
-        positives = [s for s in self.samples if s['label'] == 1]
-        negatives = [s for s in self.samples if s['label'] == 0]
-        return positives, negatives
-
-    def next_epoch(self):
-        self.epochs += 1
-        self.shuffle_samples()
-        return self.get_positive_and_negative_samples()
+def next_epoch(samples, epochs):
+    epochs += 1
+    shuffle_samples(samples)
+    return epochs, get_positive_and_negative_samples(samples)
 
 def get_env_info(inputs: str) -> str:
     return f"Current environment variables: {dict(os.environ)}\n{inputs}"
@@ -89,16 +85,16 @@ def main_process(target_command: str, max_attempts: int):
     console.print("Process is starting...", style="bold blue")
     process_command_with_agent(target_command, max_attempts)
 
+def log_command_history(command: str):
+    with open("command_history.log", "a") as log_file:
+        log_file.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {command}\n")
+
 @click.command()
 @click.argument("target_command")
 @click.option("--max_attempts", default=5, help="Maximum number of retry attempts.")
 def main(target_command: str, max_attempts: int):
     log_command_history(target_command)
     main_process(target_command, max_attempts)
-
-def log_command_history(command: str):
-    with open("command_history.log", "a") as log_file:
-        log_file.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {command}\n")
 
 if __name__ == "__main__":
     main()
