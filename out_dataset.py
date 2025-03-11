@@ -159,6 +159,15 @@ def plot_results(train_losses, test_losses, train_accs, test_accs):
     plt.legend()
     plt.show()
 
+def save_model(model, path):
+    torch.save(model.state_dict(), path)
+    print(f'Model saved to {path}')
+
+def load_model(model, path):
+    model.load_state_dict(torch.load(path))
+    model.eval()
+    print(f'Model loaded from {path}')
+
 def main():
     data_path = 'datasets/SWE-bench_oracle.npy'
     snippet_path = 'datasets/10_10_after_fix_pytest'
@@ -175,6 +184,8 @@ def main():
 
     train_losses, test_losses, train_accs = train_model(model, train_loader, test_loader, num_epochs=5, device=device)
     plot_results(train_losses, test_losses, train_accs, test_accs)
+    
+    save_model(model, 'triplet_model.pth')
 
 if __name__ == "__main__":
     main()
