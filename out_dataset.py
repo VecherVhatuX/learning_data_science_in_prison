@@ -17,13 +17,13 @@ class TripletDataset:
         self.batch_size = batch_size
         self.max_length = max_length
         self.tokenizer = Tokenizer()
-        self.tokenizer.fit_on_texts(self._collect_texts())
+        self.tokenizer.fit_on_texts(self._gather_texts())
         self.vocab_size = len(self.tokenizer.word_index) + 1
 
-    def _collect_texts(self):
+    def _gather_texts(self):
         return [item[key] for item in self.triplet_data for key in ['anchor', 'positive', 'negative']]
 
-    def _prepare_sequences(self, item):
+    def _convert_to_sequences(self, item):
         return {
             'anchor_seq': pad_sequences([self.tokenizer.texts_to_sequences([item['anchor']])[0]], maxlen=self.max_length)[0],
             'positive_seq': pad_sequences([self.tokenizer.texts_to_sequences([item['positive']])[0]], maxlen=self.max_length)[0],
@@ -32,7 +32,7 @@ class TripletDataset:
 
     def create_tf_dataset(self):
         return tf.data.Dataset.from_tensor_slices(self.triplet_data).map(
-            lambda x: tf.py_function(self._prepare_sequences, [x], [tf.int32, tf.int32, tf.int32]),
+            lambda x: tf.py_function(self._convert_to_sequences, [x], [tf.int32, tf.int32, tf.int32]),
             num_parallel_calls=tf.data.AUTOTUNE
         ).batch(self.batch_size)
 
