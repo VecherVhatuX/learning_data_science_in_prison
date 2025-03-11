@@ -14,23 +14,29 @@ import matplotlib.pyplot as plt
 def load_json_data(data_path, folder_path):
     with open(data_path, 'r') as file:
         dataset = json.load(file)
-    return ({item['instance_id']: item['problem_statement'] for item in dataset},
-            [(os.path.join(folder, f), os.path.join(folder, f, 'snippet.json')) 
-             for f in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, f))])
+    instance_map = {item['instance_id']: item['problem_statement'] for item in dataset}
+    snippets = [
+        (os.path.join(folder, f), os.path.join(folder, f, 'snippet.json')) 
+        for f in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, f))
+    ]
+    return instance_map, snippets
 
 def generate_triplets(instance_map, snippets):
     bug_snippets, non_bug_snippets = zip(*(map(lambda snippet_file: json.load(open(snippet_file)), snippets)))
     bug_snippets = [s['snippet'] for s in bug_snippets if s.get('is_bug', False) and s['snippet']]
     non_bug_snippets = [s['snippet'] for s in non_bug_snippets if not s.get('is_bug', False) and s['snippet']]
-    
     return create_triplet_structure(instance_map, snippets, bug_snippets, non_bug_snippets)
 
 def create_triplet_structure(instance_map, snippets, bug_snippets, non_bug_snippets):
-    return [{'anchor': instance_map[os.path.basename(folder)],
-             'positive': pos_doc,
-             'negative': random.choice(non_bug_snippets)} 
-            for folder, _ in snippets 
-            for pos_doc in bug_snippets]
+    return [
+        {
+            'anchor': instance_map[os.path.basename(folder)],
+            'positive': pos_doc,
+            'negative': random.choice(non_bug_snippets)
+        }
+        for folder, _ in snippets
+        for pos_doc in bug_snippets
+    ]
 
 class TripletDataset:
     def __init__(self, triplet_data, batch_size, max_length):
@@ -42,19 +48,20 @@ class TripletDataset:
         self.vocab_size = len(self.tokenizer.word_index) + 1
 
     def _collect_texts(self):
-        return [item['anchor'] for item in self.triplet_data] + \
-               [item['positive'] for item in self.triplet_data] + \
-               [item['negative'] for item in self.triplet_data]
+        return [item[key] for item in self.triplet_data for key in ['anchor', 'positive', 'negative']]
 
     def _prepare_sequences(self, item):
-        sequences = [pad_sequences([self.tokenizer.texts_to_sequences([item[key]])[0]], 
-                                    maxlen=self.max_length)[0] for key in ['anchor', 'positive', 'negative']]
+        sequences = [
+            pad_sequences([self.tokenizer.texts_to_sequences([item[key]])[0]], maxlen=self.max_length)[0]
+            for key in ['anchor', 'positive', 'negative']
+        ]
         return {'anchor_seq': sequences[0], 'positive_seq': sequences[1], 'negative_seq': sequences[2]}
 
     def create_tf_dataset(self):
         return tf.data.Dataset.from_tensor_slices(self.triplet_data).map(
-            lambda x: tf.py_function(self._prepare_sequences, [x], [tf.int32, tf.int32, tf.int32]), 
-            num_parallel_calls=tf.data.AUTOTUNE).batch(self.batch_size)
+            lambda x: tf.py_function(self._prepare_sequences, [x], [tf.int32, tf.int32, tf.int32]),
+            num_parallel_calls=tf.data.AUTOTUNE
+        ).batch(self.batch_size)
 
     def shuffle_data(self):
         random.shuffle(self.triplet_data)
@@ -66,9 +73,8 @@ def build_model(vocab_size, embed_dim, seq_length):
     anchor_input, positive_input, negative_input = create_model_inputs(seq_length)
     anchor_embedded, positive_embedded, negative_embedded = create_embedding_layers(anchor_input, positive_input, negative_input, vocab_size, embed_dim)
     anchor_dense, positive_dense, negative_dense = create_dense_layers(anchor_embedded, positive_embedded, negative_embedded)
-    
-    model = Model(inputs=[anchor_input, positive_input, negative_input], 
-                  outputs=[anchor_dense, positive_dense, negative_dense])
+
+    model = Model(inputs=[anchor_input, positive_input, negative_input], outputs=[anchor_dense, positive_dense, negative_dense])
     model.compile(optimizer=Adam(learning_rate=1e-5), loss='mean_squared_error')
     return model
 
@@ -79,9 +85,7 @@ def create_model_inputs(seq_length):
 
 def create_embedding_layers(anchor_input, positive_input, negative_input, vocab_size, embed_dim):
     embedding_layer = Embedding(input_dim=vocab_size, output_dim=embed_dim)
-    return (embedding_layer(anchor_input),
-            embedding_layer(positive_input),
-            embedding_layer(negative_input))
+    return (embedding_layer(anchor_input), embedding_layer(positive_input), embedding_layer(negative_input))
 
 def create_dense_layers(anchor_embedded, positive_embedded, negative_embedded):
     pooling_layer = GlobalMaxPooling1D()
@@ -89,9 +93,11 @@ def create_dense_layers(anchor_embedded, positive_embedded, negative_embedded):
     batch_norm_layer = BatchNormalization()
     dropout_layer = Dropout(0.2)
 
-    return (dropout_layer(batch_norm_layer(dense_layer(pooling_layer(anchor_embedded)))),
-            dropout_layer(batch_norm_layer(dense_layer(pooling_layer(positive_embedded)))),
-            dropout_layer(batch_norm_layer(dense_layer(pooling_layer(negative_embedded)))))
+    return (
+        dropout_layer(batch_norm_layer(dense_layer(pooling_layer(anchor_embedded)))),
+        dropout_layer(batch_norm_layer(dense_layer(pooling_layer(positive_embedded)))),
+        dropout_layer(batch_norm_layer(dense_layer(pooling_layer(negative_embedded))))
+    )
 
 def triplet_loss(anchor_embeds, positive_embeds, negative_embeds):
     return tf.reduce_mean(tf.maximum(0.2 + tf.norm(anchor_embeds - positive_embeds, axis=1) - 
