@@ -16,15 +16,15 @@ def load_json_data(data_path, folder_path):
         dataset = json.load(file)
     instance_map = {item['instance_id']: item['problem_statement'] for item in dataset}
     snippets = [
-        (os.path.join(folder, f), os.path.join(folder, f, 'snippet.json')) 
-        for f in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, f))
+        (folder, os.path.join(folder, 'snippet.json'))
+        for folder in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, folder))
     ]
     return instance_map, snippets
 
 def generate_triplets(instance_map, snippets):
     bug_snippets, non_bug_snippets = zip(*(map(lambda snippet_file: json.load(open(snippet_file)), snippets)))
-    bug_snippets = [s['snippet'] for s in bug_snippets if s.get('is_bug', False) and s['snippet']]
-    non_bug_snippets = [s['snippet'] for s in non_bug_snippets if not s.get('is_bug', False) and s['snippet']]
+    bug_snippets = [s['snippet'] for s in bug_snippets if s.get('is_bug') and s['snippet']]
+    non_bug_snippets = [s['snippet'] for s in non_bug_snippets if not s.get('is_bug') and s['snippet']]
     return create_triplet_structure(instance_map, snippets, bug_snippets, non_bug_snippets)
 
 def create_triplet_structure(instance_map, snippets, bug_snippets, non_bug_snippets):
