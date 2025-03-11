@@ -6,7 +6,6 @@ import tensorflow as tf
 from tensorflow.keras import layers, models
 from transformers import T5Tokenizer
 
-
 def setup_parameters():
     return {
         "model_name": "t5-base",
@@ -53,7 +52,6 @@ def setup_parameters():
         "negative_samples_per_batch": 5,
     }
 
-
 class TripletNeuralNetwork(models.Model):
     def __init__(self, embedding_dim, vocab_size):
         super(TripletNeuralNetwork, self).__init__()
@@ -72,23 +70,20 @@ class TripletNeuralNetwork(models.Model):
         neg_distance = tf.reduce_mean(tf.square(anchor - negative), axis=-1)
         return tf.reduce_mean(tf.maximum(pos_distance - neg_distance + 2.0, 0.0))
 
-
-class BatchDataGenerator(tf.keras.utils.Sequence):
+class Dataset:
     def __init__(self, dataset, config, tokenizer):
         self.dataset = dataset
         self.config = config
         self.tokenizer = tokenizer
-        self.batch_size = config["batch_sizes"]['train']
         self.indices = list(range(len(dataset)))
+        self.epoch_counter = 0
 
-    def __len__(self):
-        return len(self.dataset) // self.batch_size
+    def shuffle_samples(self):
+        random.seed(self.config["seed"])
+        random.shuffle(self.indices)
 
-    def __getitem__(self, index):
-        return tuple(np.array(x) for x in zip(*[self.create_sample(index * self.batch_size + i) for i in range(self.batch_size)]))
-
-    def create_sample(self, idx):
-        entry = self.dataset[idx]
+    def get_positive_negative_samples(self, idx):
+        entry = self.dataset[self.indices[idx]]
         input_ids = self.tokenizer.encode(entry['input'], max_length=512, padding='max_length', truncation=True)
         labels = self.tokenizer.encode(entry['output'], max_length=512, padding='max_length', truncation=True)
         negative_samples = self.generate_negative_samples(idx)
@@ -96,17 +91,24 @@ class BatchDataGenerator(tf.keras.utils.Sequence):
 
     def generate_negative_samples(self, idx):
         return [
-            self.tokenizer.encode(self.dataset[random.choice([j for j in range(len(self.dataset)) if j != idx])]['input'], max_length=512, padding='max_length', truncation=True)
+            self.tokenizer.encode(self.dataset[random.choice([j for j in range(len(self.dataset)) if j != self.indices[idx]])]['input'], max_length=512, padding='max_length', truncation=True)
             ) for _ in range(self.config["negative_samples_per_batch"])
         ]
 
-    def shuffle_indices(self):
-        random.seed(self.config["seed"])
-        random.shuffle(self.indices)
+    def get_epoch_data(self):
+        self.shuffle_samples()
+        return [self.get_positive_negative_samples(i) for i in range(len(self.dataset))]
 
-    def shuffle_for_epoch(self):
-        self.shuffle_indices()
+class BatchDataGenerator(tf.keras.utils.Sequence):
+    def __init__(self, dataset, config, tokenizer):
+        self.dataset = Dataset(dataset, config, tokenizer)
+        self.batch_size = config["batch_sizes"]['train']
 
+    def __len__(self):
+        return len(self.dataset.dataset) // self.batch_size
+
+    def __getitem__(self, index):
+        return tuple(np.array(x) for x in zip(*self.dataset.get_epoch_data()[index * self.batch_size:(index + 1) * self.batch_size]))
 
 def read_json_file(file_path):
     try:
@@ -116,12 +118,10 @@ def read_json_file(file_path):
         print(f"Unable to locate file: {file_path}")
         return None
 
-
 def train_model(model, config, data_gen):
     optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
     model.compile(optimizer=optimizer, loss=model.compute_triplet_loss)
     model.fit(data_gen, epochs=config["epochs"])
-
 
 def evaluate_model(model, data_gen):
     total_loss = sum(model.compute_triplet_loss(
@@ -132,14 +132,11 @@ def evaluate_model(model, data_gen):
     
     print(f"Mean Evaluation Loss: {total_loss / len(data_gen):.4f}")
 
-
 def initialize_tokenizer():
     return T5Tokenizer.from_pretrained("t5-base")
 
-
 def save_model_weights(model, file_path):
     model.save_weights(file_path)
-
 
 def run_training_pipeline():
     config = setup_parameters()
@@ -152,13 +149,9 @@ def run_training_pipeline():
 
     model = TripletNeuralNetwork(128, 30522)
 
-    for _ in range(config["epochs"]):
-        train_dataset.shuffle_for_epoch()
-
     train_model(model, config, train_dataset)
     evaluate_model(model, test_dataset)
     save_model_weights(model, os.path.join(config["results_directory"], "triplet_model.h5"))
-
 
 if __name__ == "__main__":
     run_training_pipeline()
