@@ -50,25 +50,25 @@ def setup_tools() -> list:
     ]
 
 def execute_with_feedback(target_command: str) -> bool:
-    console.print(f"Running target command: {target_command}")
+    console.print(f"Executing command: {target_command}")
     output, error = run_shell_command(target_command)
     if error:
-        console.print(f"Error executing command: {error}", style="bold red")
+        console.print(f"Command execution failed: {error}", style="bold red")
         return False
-    console.print(f"Command output: {output}", style="bold green")
+    console.print(f"Command execution result: {output}", style="bold green")
     return True
 
 def retry_command(agent, target_command: str, attempts: int, max_attempts: int) -> bool:
     if attempts < max_attempts:
-        console.print(f"Attempt {attempts + 1}/{max_attempts}")
+        console.print(f"Attempt number: {attempts + 1}/{max_attempts}")
         if execute_with_feedback(target_command):
-            console.print("Target command executed successfully!", style="bold green")
+            console.print("Command executed successfully!", style="bold green")
             return True
-        agent.run("Check the environment variables and dependencies.")
-        agent.run("Try to fix the environment by installing missing dependencies.")
+        agent.run("Review environment variables and dependencies.")
+        agent.run("Attempt to resolve environment issues by installing required dependencies.")
         time.sleep(5)
         return retry_command(agent, target_command, attempts + 1, max_attempts)
-    console.print("Maximum attempts reached. Stopping.", style="bold red")
+    console.print("Reached the limit of attempts. Halting operation.", style="bold red")
     return False
 
 def process_command_with_agent(target_command: str, max_attempts: int):
@@ -80,13 +80,13 @@ def log_execution_time(func):
     def wrapper(*args, **kwargs):
         start_time = time.time()
         result = func(*args, **kwargs)
-        console.print(f"Execution time: {time.time() - start_time:.2f} seconds", style="bold yellow")
+        console.print(f"Total execution time: {time.time() - start_time:.2f} seconds", style="bold yellow")
         return result
     return wrapper
 
 @log_execution_time
 def main_process(target_command: str, max_attempts: int):
-    console.print("Starting process...", style="bold blue")
+    console.print("Process is starting...", style="bold blue")
     process_command_with_agent(target_command, max_attempts)
 
 @click.command()
