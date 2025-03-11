@@ -36,7 +36,7 @@ def install_dependencies(inputs: str) -> str:
         text=True,
         capture_output=True
     )
-    result.check_returncode()  # Raises an error if the command fails
+    result.check_returncode()
     return result.stdout
 
 def run_shell_command(command: str) -> tuple:
