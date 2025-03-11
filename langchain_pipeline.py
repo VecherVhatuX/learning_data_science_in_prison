@@ -77,12 +77,25 @@ def process_command_with_agent(target_command: str, max_attempts: int):
     agent = initialize_agent(tools=tools)
     retry_command(agent, target_command, 0, max_attempts)
 
+def log_execution_time(func):
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        console.print(f"Execution time: {end_time - start_time:.2f} seconds", style="bold yellow")
+        return result
+    return wrapper
+
+@log_execution_time
+def main_process(target_command: str, max_attempts: int):
+    console.print("Starting process...", style="bold blue")
+    process_command_with_agent(target_command, max_attempts)
+
 @click.command()
 @click.argument("target_command")
 @click.option("--max_attempts", default=5, help="Maximum number of retry attempts.")
 def main(target_command: str, max_attempts: int):
-    console.print("Starting process...", style="bold blue")
-    process_command_with_agent(target_command, max_attempts)
+    main_process(target_command, max_attempts)
 
 if __name__ == "__main__":
     main()
