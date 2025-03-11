@@ -51,11 +51,11 @@ class TripletDataset:
         return [item[key] for item in self.triplet_data for key in ['anchor', 'positive', 'negative']]
 
     def _prepare_sequences(self, item):
-        sequences = [
-            pad_sequences([self.tokenizer.texts_to_sequences([item[key]])[0]], maxlen=self.max_length)[0]
-            for key in ['anchor', 'positive', 'negative']
-        ]
-        return {'anchor_seq': sequences[0], 'positive_seq': sequences[1], 'negative_seq': sequences[2]}
+        return {
+            'anchor_seq': pad_sequences([self.tokenizer.texts_to_sequences([item['anchor']])[0]], maxlen=self.max_length)[0],
+            'positive_seq': pad_sequences([self.tokenizer.texts_to_sequences([item['positive']])[0]], maxlen=self.max_length)[0],
+            'negative_seq': pad_sequences([self.tokenizer.texts_to_sequences([item['negative']])[0]], maxlen=self.max_length)[0]
+        }
 
     def create_tf_dataset(self):
         return tf.data.Dataset.from_tensor_slices(self.triplet_data).map(
