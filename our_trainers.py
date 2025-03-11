@@ -50,6 +50,10 @@ class TripletDataset(torch.utils.data.Dataset):
         self.labels = self.labels[indices]
 
 
+def create_triplet_dataset(samples, labels, n_negatives):
+    return TripletDataset(samples, labels, n_negatives)
+
+
 def triplet_loss_fn(margin=1.0):
     def loss(anchor, positive, negatives):
         dist_ap = torch.norm(anchor - positive, dim=1)
@@ -81,19 +85,19 @@ def validate_model(model, samples, labels, k=5):
     with torch.no_grad():
         embeddings = model(torch.tensor(samples)).numpy()
         metrics = calculate_knn_metrics(embeddings, labels, k)
-        print(f"Validation KNN Accuracy: {metrics[0]}")
-        print(f"Validation KNN Precision: {metrics[1]}")
-        print(f"Validation KNN Recall: {metrics[2]}")
-        print(f"Validation KNN F1-score: {metrics[3]}")
+        print_validation_metrics(metrics)
         display_embeddings(embeddings, labels)
+
+
+def print_validation_metrics(metrics):
+    print(f"Validation KNN Accuracy: {metrics[0]}")
+    print(f"Validation KNN Precision: {metrics[1]}")
+    print(f"Validation KNN Recall: {metrics[2]}")
+    print(f"Validation KNN F1-score: {metrics[3]}")
 
 
 def generate_data(size):
     return np.random.randint(0, 100, (size, 10)), np.random.randint(0, 2, (size,))
-
-
-def create_triplet_dataset(samples, labels, n_negatives):
-    return TripletDataset(samples, labels, n_negatives)
 
 
 def save_model_to_file(model, file_path):
@@ -128,6 +132,16 @@ def calculate_knn_metrics(embeddings, labels, k=5):
     return accuracy, precision, recall, f1_score
 
 
+def plot_loss_curve(losses):
+    plt.figure(figsize=(10, 5))
+    plt.plot(losses, label='Loss', color='blue')
+    plt.title('Training Loss Curve')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.show()
+
+
 def execute_training_pipeline(learning_rate, batch_size, num_epochs, n_negatives, embedding_size, feature_size, data_size):
     samples, labels = generate_data(data_size)
     dataset = create_triplet_dataset(samples, labels, n_negatives)
@@ -138,16 +152,6 @@ def execute_training_pipeline(learning_rate, batch_size, num_epochs, n_negatives
     save_model_to_file(model, "triplet_model.pth")
     predicted_embeddings = extract_embeddings_from_model(model, samples)
     validate_model(model, samples, labels)
-
-
-def plot_loss_curve(losses):
-    plt.figure(figsize=(10, 5))
-    plt.plot(losses, label='Loss', color='blue')
-    plt.title('Training Loss Curve')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.show()
 
 
 if __name__ == "__main__":
