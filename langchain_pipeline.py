@@ -93,6 +93,7 @@ def main_process(target_command: str, max_attempts: int):
 @click.argument("target_command")
 @click.option("--max_attempts", default=5, help="Maximum number of retry attempts.")
 def main(target_command: str, max_attempts: int):
+    log_command_history(target_command)
     main_process(target_command, max_attempts)
 
 def log_command_history(command: str):
@@ -100,6 +101,4 @@ def log_command_history(command: str):
         log_file.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {command}\n")
 
 if __name__ == "__main__":
-    target_command = click.get_current_context().params['target_command']
-    log_command_history(target_command)
     main()
