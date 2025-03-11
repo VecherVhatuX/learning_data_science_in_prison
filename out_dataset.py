@@ -139,8 +139,8 @@ def evaluate_model(model, test_loader):
         neg_similarity = tf.reduce_sum(anchor_out * negative_out, axis=1)
         correct_preds += tf.reduce_sum(tf.cast(pos_similarity > neg_similarity, tf.float32))
 
-    acc = correct_preds / len(list(test_loader.create_tf_dataset()))
-    return test_loss / len(list(test_loader.create_tf_dataset())), acc
+    acc = correct_preds / len(test_loader.triplet_data)
+    return test_loss / len(test_loader.triplet_data), acc
 
 def plot_results(train_losses, test_losses, train_accs, test_accs):
     plt.figure(figsize=(10, 5))
