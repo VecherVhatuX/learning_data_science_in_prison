@@ -160,5 +160,10 @@ def plot_embedding_distribution(embeddings):
     plt.show()
 
 
+def visualize_model_architecture(model):
+    print(model)
+
+
 if __name__ == "__main__":
     execute_training_pipeline(1e-4, 32, 10, 5, 101, 10, 100)
+    visualize_model_architecture(Embedder(101, 10))
