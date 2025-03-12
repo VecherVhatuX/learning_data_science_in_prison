@@ -54,17 +54,17 @@ def initialize_config():
 
 class TripletModel(models.Model):
     def __init__(self, embedding_dim, vocab_size):
-        super(TripletModel, self).__init__()
+        super().__init__()
         self.embedding = layers.Embedding(vocab_size, embedding_dim)
         self.lstm = layers.LSTM(embedding_dim, return_sequences=True)
         self.fc = layers.Dense(embedding_dim)
-        self.output = layers.Dense(vocab_size)
+        self.output_layer = layers.Dense(vocab_size)
 
     def call(self, inputs):
         x = self.embedding(inputs)
         x = self.lstm(x)
         x = x[:, -1, :]
-        return self.output(self.fc(x))
+        return self.output_layer(self.fc(x))
 
     def triplet_loss(self, anchor, positive, negative):
         pos_dist = tf.reduce_mean(tf.square(anchor - positive), axis=-1)
