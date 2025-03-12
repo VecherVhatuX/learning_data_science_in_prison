@@ -71,44 +71,44 @@ class TripletNetwork(models.Model):
         neg_distance = tf.reduce_mean(tf.square(anchor - negative), axis=-1)
         return tf.reduce_mean(tf.maximum(pos_distance - neg_distance + 2.0, 0.0))
 
-class Sampler:
-    def __init__(self, dataset, config, tokenizer):
-        self.dataset = dataset
+class Dataset:
+    def __init__(self, data, config, tokenizer):
+        self.data = data
         self.config = config
         self.tokenizer = tokenizer
-        self.indices = list(range(len(dataset)))
+        self.indices = list(range(len(data)))
 
-    def shuffle_indices(self):
+    def shuffle_samples(self):
         random.seed(self.config["seed"])
         random.shuffle(self.indices)
 
-    def fetch_sample(self, idx):
-        data_item = self.dataset[self.indices[idx]]
+    def get_sample(self, idx):
+        data_item = self.data[self.indices[idx]]
         input_ids = self.tokenizer.encode(data_item['input'], max_length=512, padding='max_length', truncation=True)
         labels = self.tokenizer.encode(data_item['output'], max_length=512, padding='max_length', truncation=True)
-        negative_samples = self.generate_negative_samples(idx)
+        negative_samples = self.get_negative_samples(idx)
         return input_ids, labels, negative_samples
 
-    def generate_negative_samples(self, idx):
+    def get_negative_samples(self, idx):
         return [
-            self.tokenizer.encode(self.dataset[random.choice([j for j in range(len(self.dataset)) if j != self.indices[idx]])]['input'], max_length=512, padding='max_length', truncation=True)
+            self.tokenizer.encode(self.data[random.choice([j for j in range(len(self.data)) if j != self.indices[idx]])]['input'], max_length=512, padding='max_length', truncation=True)
             ) for _ in range(self.config["negative_samples_per_batch"])
         ]
 
     def generate_epoch_samples(self):
-        self.shuffle_indices()
-        return [self.fetch_sample(i) for i in range(len(self.dataset))]
+        self.shuffle_samples()
+        return [self.get_sample(i) for i in range(len(self.data))]
 
 class CustomDataLoader(tf.keras.utils.Sequence):
     def __init__(self, dataset, config, tokenizer):
-        self.sampler = Sampler(dataset, config, tokenizer)
+        self.dataset = Dataset(dataset, config, tokenizer)
         self.batch_size = config["batch_sizes"]['train']
 
     def __len__(self):
-        return len(self.sampler.dataset) // self.batch_size
+        return len(self.dataset.data) // self.batch_size
 
     def __getitem__(self, index):
-        batch_samples = self.sampler.generate_epoch_samples()[index * self.batch_size:(index + 1) * self.batch_size]
+        batch_samples = self.dataset.generate_epoch_samples()[index * self.batch_size:(index + 1) * self.batch_size]
         return tuple(np.array(x) for x in zip(*batch_samples))
 
 def read_json(file_path):
