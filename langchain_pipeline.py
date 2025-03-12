@@ -8,98 +8,97 @@ import random
 
 console = Console()
 
-class Dataset:
-    def __init__(self, samples):
-        self.samples = samples
-        self.epochs = 0
+class SampleDataset:
+    def __init__(self, data):
+        self.data = data
+        self.current_epoch = 0
 
-    def shuffle_samples(self):
-        random.shuffle(self.samples)
+    def randomize_samples(self):
+        random.shuffle(self.data)
 
-    def get_positive_and_negative_samples(self):
-        return (
-            [s for s in self.samples if s['label'] == 1],
-            [s for s in self.samples if s['label'] == 0]
-        )
+    def divide_samples(self):
+        positives = [item for item in self.data if item['label'] == 1]
+        negatives = [item for item in self.data if item['label'] == 0]
+        return positives, negatives
 
-    def next_epoch(self):
-        self.epochs += 1
-        self.shuffle_samples()
-        return self.get_positive_and_negative_samples()
+    def advance_epoch(self):
+        self.current_epoch += 1
+        self.randomize_samples()
+        return self.divide_samples()
 
-def get_env_info(inputs: str) -> str:
-    return f"Current environment variables: {dict(os.environ)}\n{inputs}"
+def display_environment_info(input_data: str) -> str:
+    return f"Environment variables: {dict(os.environ)}\n{input_data}"
 
-def install_dependencies(inputs: str) -> str:
-    result = subprocess.run(
-        f"pip install {inputs}",
+def install_packages(input_data: str) -> str:
+    process = subprocess.run(
+        f"pip install {input_data}",
         shell=True,
         text=True,
         capture_output=True
     )
-    result.check_returncode()
-    return result.stdout
+    process.check_returncode()
+    return process.stdout
 
-def run_shell_command(command: str) -> tuple:
-    result = subprocess.run(command, shell=True, text=True, capture_output=True)
-    return result.stdout, result.stderr
+def execute_command(command: str) -> tuple:
+    process = subprocess.run(command, shell=True, text=True, capture_output=True)
+    return process.stdout, process.stderr
 
-def setup_tools() -> list:
+def initialize_tools() -> list:
     return [
-        Tool(name="CheckEnvVariables", func=get_env_info, description="Check current environment variables."),
-        Tool(name="FixEnvVariables", func=install_dependencies, description="Fix the environment by installing missing packages.")
+        Tool(name="EnvVariableChecker", func=display_environment_info, description="Displays current environment variables."),
+        Tool(name="EnvVariableInstaller", func=install_packages, description="Installs missing packages to fix the environment.")
     ]
 
-def execute_with_feedback(target_command: str) -> bool:
-    console.print(f"Executing command: {target_command}")
-    output, error = run_shell_command(target_command)
-    if error:
-        console.print(f"Command execution failed: {error}", style="bold red")
+def run_command_with_feedback(command_to_execute: str) -> bool:
+    console.print(f"Running command: {command_to_execute}")
+    output, error_message = execute_command(command_to_execute)
+    if error_message:
+        console.print(f"Execution failed: {error_message}", style="bold red")
         return False
-    console.print(f"Command execution result: {output}", style="bold green")
+    console.print(f"Execution successful: {output}", style="bold green")
     return True
 
-def retry_command(agent, target_command: str, attempts: int, max_attempts: int) -> bool:
-    if attempts < max_attempts:
-        console.print(f"Attempt number: {attempts + 1}/{max_attempts}")
-        if execute_with_feedback(target_command):
+def attempt_command(agent, command_to_execute: str, current_attempt: int, max_attempts: int) -> bool:
+    if current_attempt < max_attempts:
+        console.print(f"Attempt: {current_attempt + 1}/{max_attempts}")
+        if run_command_with_feedback(command_to_execute):
             console.print("Command executed successfully!", style="bold green")
             return True
-        agent.run("Review environment variables and dependencies.")
-        agent.run("Attempt to resolve environment issues by installing required dependencies.")
+        agent.run("Evaluate environment variables and dependencies.")
+        agent.run("Try to resolve environment issues by installing required packages.")
         time.sleep(5)
-        return retry_command(agent, target_command, attempts + 1, max_attempts)
-    console.print("Reached the limit of attempts. Halting operation.", style="bold red")
+        return attempt_command(agent, command_to_execute, current_attempt + 1, max_attempts)
+    console.print("Max attempts reached. Stopping operation.", style="bold red")
     return False
 
-def process_command_with_agent(target_command: str, max_attempts: int):
-    tools = setup_tools()
+def execute_with_agent(command_to_execute: str, max_attempts: int):
+    tools = initialize_tools()
     agent = setup_agent(tools=tools)
-    retry_command(agent, target_command, 0, max_attempts)
+    attempt_command(agent, command_to_execute, 0, max_attempts)
 
-def log_execution_time(func):
+def measure_execution_time(func):
     def wrapper(*args, **kwargs):
         start_time = time.time()
         result = func(*args, **kwargs)
-        console.print(f"Total execution time: {time.time() - start_time:.2f} seconds", style="bold yellow")
+        console.print(f"Execution duration: {time.time() - start_time:.2f} seconds", style="bold yellow")
         return result
     return wrapper
 
-@log_execution_time
-def main_process(target_command: str, max_attempts: int):
-    console.print("Process is starting...", style="bold blue")
-    process_command_with_agent(target_command, max_attempts)
+@measure_execution_time
+def start_process(command_to_execute: str, max_attempts: int):
+    console.print("Starting process...", style="bold blue")
+    execute_with_agent(command_to_execute, max_attempts)
 
-def log_command_history(command: str):
-    with open("command_history.log", "a") as log_file:
-        log_file.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {command}\n")
+def log_command(command: str):
+    with open("command_history.log", "a") as history_file:
+        history_file.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {command}\n")
 
 @click.command()
-@click.argument("target_command")
-@click.option("--max_attempts", default=5, help="Maximum number of retry attempts.")
-def main(target_command: str, max_attempts: int):
-    log_command_history(target_command)
-    main_process(target_command, max_attempts)
+@click.argument("command_to_execute")
+@click.option("--max_attempts", default=5, help="How many times to retry.")
+def main(command_to_execute: str, max_attempts: int):
+    log_command(command_to_execute)
+    start_process(command_to_execute, max_attempts)
 
 if __name__ == "__main__":
     main()
