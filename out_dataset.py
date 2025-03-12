@@ -17,6 +17,15 @@ def convert_to_sequences(tokenizer, entry):
         'negative_seq': tokenizer.transform([entry['negative']])[0]
     }
 
+def shuffle_samples(data):
+    random.shuffle(data)
+    return data
+
+def choose_samples(batch):
+    positive_sample = random.choice(batch)
+    negative_sample = random.choice([entry for entry in batch if entry != positive_sample])
+    return positive_sample, negative_sample
+
 class TripletDataset:
     def __init__(self, triplet_data, max_length):
         self.triplet_data = triplet_data
@@ -24,17 +33,8 @@ class TripletDataset:
         self.tokenizer = LabelEncoder()
         self.tokenizer.fit(get_texts(triplet_data))
 
-    def shuffle_samples(self):
-        random.shuffle(self.triplet_data)
-
     def get_samples(self):
         return self.triplet_data
-
-    def choose_samples(self):
-        batch = self.triplet_data[:]
-        positive_sample = random.choice(batch)
-        negative_sample = random.choice([entry for entry in batch if entry != positive_sample])
-        return positive_sample, negative_sample
 
 class TripletDataGenerator(tf.keras.utils.Sequence):
     def __init__(self, triplet_data, max_length, batch_size):
@@ -49,7 +49,7 @@ class TripletDataGenerator(tf.keras.utils.Sequence):
         return np.array([convert_to_sequences(self.dataset.tokenizer, entry) for entry in batch])
 
     def on_epoch_end(self):
-        self.dataset.shuffle_samples()
+        self.dataset.triplet_data = shuffle_samples(self.dataset.triplet_data)
 
 def load_json(file_path, base_dir):
     with open(file_path, 'r') as f:
