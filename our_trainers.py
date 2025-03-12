@@ -154,5 +154,15 @@ def generate_additional_data(size):
     return np.random.randn(size, 10), np.random.randint(0, 2, size)
 
 
+def plot_embedding_distribution(embeddings, labels):
+    plt.figure(figsize=(10, 6))
+    plt.hist(embeddings, bins=30, alpha=0.7, label='Embedding Distribution')
+    plt.title('Distribution of Embeddings')
+    plt.xlabel('Embedding Values')
+    plt.ylabel('Frequency')
+    plt.legend()
+    plt.show()
+
+
 if __name__ == "__main__":
     run_training_pipeline(1e-4, 32, 10, 5, 101, 10, 100)
