@@ -1,9 +1,9 @@
 import os
-import subprocess
 import time
-import click
-from rich.console import Console
 import random
+from rich.console import Console
+from subprocess import run, CalledProcessError
+import typer
 from tool_library import Tool, create_agent
 
 console = Console()
@@ -26,17 +26,19 @@ def display_environment_info(input_data: str) -> str:
     return f"Current environment settings: {dict(os.environ)}\n{input_data}"
 
 def install_packages(input_data: str) -> str:
-    process = subprocess.run(
-        f"pip install {input_data}",
-        shell=True,
-        text=True,
-        capture_output=True
-    )
-    process.check_returncode()
-    return process.stdout
+    try:
+        process = run(
+            ["pip", "install", input_data],
+            text=True,
+            capture_output=True,
+            check=True
+        )
+        return process.stdout
+    except CalledProcessError as e:
+        return e.stderr
 
 def execute_command(command: str) -> tuple:
-    process = subprocess.run(command, shell=True, text=True, capture_output=True)
+    process = run(command, shell=True, text=True, capture_output=True)
     return process.stdout, process.stderr
 
 def initialize_tools() -> list:
@@ -95,15 +97,12 @@ def countdown_timer(seconds: int):
         time.sleep(1)
     console.print("Countdown has finished!", style="bold green")
 
-@click.command()
-@click.argument("command_to_execute")
-@click.option("--max_attempts", default=5, help="Specify the number of retries.")
-@click.option("--countdown", default=0, help="Specify a countdown timer before executing the command.")
-def main(command_to_execute: str, max_attempts: int, countdown: int):
+@app.command()
+def main(command_to_execute: str, max_attempts: int = 5, countdown: int = 0):
     log_command(command_to_execute)
     if countdown > 0:
         countdown_timer(countdown)
     start_process(command_to_execute, max_attempts)
 
 if __name__ == "__main__":
-    main()
+    typer.run(main)
