@@ -61,10 +61,8 @@ class TripletNetwork(models.Model):
         self.output_layer = layers.Dense(vocab_size)
 
     def call(self, inputs):
-        embedded = self.embedding_layer(inputs)
-        lstm_out = self.lstm_layer(embedded)
-        last_output = lstm_out[:, -1, :]
-        return self.output_layer(self.dense_layer(last_output))
+        lstm_out = self.lstm_layer(self.embedding_layer(inputs))
+        return self.output_layer(self.dense_layer(lstm_out[:, -1, :]))
 
     def triplet_loss_fn(self, anchor, positive, negative):
         pos_distance = tf.reduce_mean(tf.square(anchor - positive), axis=-1)
@@ -91,7 +89,8 @@ class Dataset:
 
     def get_negative_samples(self, idx):
         return [
-            self.tokenizer.encode(self.data[random.choice([j for j in range(len(self.data)) if j != self.indices[idx]])]['input'], max_length=512, padding='max_length', truncation=True)
+            self.tokenizer.encode(self.data[random.choice([j for j in range(len(self.data)) if j != self.indices[idx]])]['input'],
+                                  max_length=512, padding='max_length', truncation=True)
             ) for _ in range(self.config["negative_samples_per_batch"])
         ]
 
