@@ -3,11 +3,11 @@ import json
 import random
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras import layers, models
+from tensorflow.keras import layers, Model
 from transformers import T5Tokenizer
 
 
-def get_configuration():
+def create_config():
     return {
         "model_name": "t5-base",
         "alpha": 16,
@@ -54,83 +54,85 @@ def get_configuration():
     }
 
 
-class TripletNetwork(models.Model):
+class TripletModel(Model):
     def __init__(self, embedding_dim, vocab_size):
         super().__init__()
-        self.embedding_layer = layers.Embedding(vocab_size, embedding_dim)
-        self.lstm_layer = layers.LSTM(embedding_dim, return_sequences=True)
-        self.dense_layer = layers.Dense(embedding_dim)
-        self.output_layer = layers.Dense(vocab_size)
+        self.embedding = layers.Embedding(vocab_size, embedding_dim)
+        self.lstm = layers.LSTM(embedding_dim, return_sequences=True)
+        self.dense = layers.Dense(embedding_dim)
+        self.output = layers.Dense(vocab_size)
 
     def call(self, inputs):
-        lstm_out = self.lstm_layer(self.embedding_layer(inputs))
-        return self.output_layer(self.dense_layer(lstm_out[:, -1, :]))
+        x = self.embedding(inputs)
+        x = self.lstm(x)
+        x = self.dense(x[:, -1, :])
+        return self.output(x)
 
-    def triplet_loss_fn(self, anchor, positive, negative):
-        pos_distance = tf.reduce_mean(tf.square(anchor - positive), axis=-1)
-        neg_distance = tf.reduce_mean(tf.square(anchor - negative), axis=-1)
-        return tf.reduce_mean(tf.maximum(pos_distance - neg_distance + 2.0, 0.0))
+    def compute_triplet_loss(self, anchor, positive, negative):
+        pos_dist = tf.reduce_mean(tf.square(anchor - positive), axis=-1)
+        neg_dist = tf.reduce_mean(tf.square(anchor - negative), axis=-1)
+        return tf.reduce_mean(tf.maximum(pos_dist - neg_dist + 2.0, 0.0))
 
 
-class Dataset:
+class DataHandler:
     def __init__(self, data, config, tokenizer):
         self.data = data
         self.config = config
         self.tokenizer = tokenizer
-        self.indices = list(range(len(data)))
+        self.sample_indices = list(range(len(data)))
 
-    def shuffle_samples(self):
+    def shuffle_data(self):
         random.seed(self.config["seed"])
-        random.shuffle(self.indices)
+        random.shuffle(self.sample_indices)
 
-    def get_sample(self, idx):
-        data_item = self.data[self.indices[idx]]
-        input_ids = self.tokenizer.encode(data_item['input'], max_length=512, padding='max_length', truncation=True)
-        labels = self.tokenizer.encode(data_item['output'], max_length=512, padding='max_length', truncation=True)
+    def get_data_sample(self, idx):
+        item = self.data[self.sample_indices[idx]]
+        input_ids = self.tokenizer.encode(item['input'], max_length=512, padding='max_length', truncation=True)
+        labels = self.tokenizer.encode(item['output'], max_length=512, padding='max_length', truncation=True)
         return input_ids, labels, self.get_negative_samples(idx)
 
     def get_negative_samples(self, idx):
         return [
-            self.tokenizer.encode(self.data[random.choice([j for j in range(len(self.data)) if j != self.indices[idx]])]['input'],
+            self.tokenizer.encode(self.data[random.choice([j for j in range(len(self.data)) if j != self.sample_indices[idx]])]['input'],
                                   max_length=512, padding='max_length', truncation=True)
             ) for _ in range(self.config["negative_samples_per_batch"])
         ]
 
-    def generate_epoch_samples(self):
-        self.shuffle_samples()
-        return [self.get_sample(i) for i in range(len(self.data))]
+    def generate_samples_for_epoch(self):
+        self.shuffle_data()
+        return [self.get_data_sample(i) for i in range(len(self.data))]
 
 
-class CustomDataLoader(tf.keras.utils.Sequence):
+class DataLoader(tf.keras.utils.Sequence):
     def __init__(self, dataset, config, tokenizer):
-        self.dataset = Dataset(dataset, config, tokenizer)
+        self.dataset = DataHandler(dataset, config, tokenizer)
         self.batch_size = config["batch_sizes"]['train']
 
     def __len__(self):
         return len(self.dataset.data) // self.batch_size
 
     def __getitem__(self, index):
-        batch_samples = self.dataset.generate_epoch_samples()[index * self.batch_size:(index + 1) * self.batch_size]
-        return tuple(np.array(x) for x in zip(*batch_samples))
+        samples = self.dataset.generate_samples_for_epoch()[index * self.batch_size:(index + 1) * self.batch_size]
+        return tuple(np.array(x) for x in zip(*samples))
 
 
-def read_json(file_path):
+def load_json(file_path):
     try:
-        with open(file_path, 'r') as file:
-            return json.load(file)
+        with open(file_path, 'r') as f:
+            return json.load(f)
     except FileNotFoundError:
         print(f"File not found: {file_path}")
         return None
 
 
-def train_model(model, config, data_loader):
+def train_triplet_network(model, config, data_loader):
     optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
-    model.compile(optimizer=optimizer, loss=model.triplet_loss_fn)
+    model.compile(optimizer=optimizer, loss=model.compute_triplet_loss)
     model.fit(data_loader, epochs=config["epochs"])
 
 
-def evaluate_model(model, data_loader):
-    total_loss = sum(model.triplet_loss_fn(
+def evaluate_triplet_model(model, data_loader):
+    total_loss = sum(model.compute_triplet_loss(
         model(input_ids),
         model(labels),
         model(neg_samples)
@@ -139,37 +141,37 @@ def evaluate_model(model, data_loader):
     print(f"Mean Evaluation Loss: {total_loss / len(data_loader):.4f}")
 
 
-def load_tokenizer():
+def initialize_tokenizer():
     return T5Tokenizer.from_pretrained("t5-base")
 
 
-def save_model_weights(model, file_path):
+def save_model(model, file_path):
     model.save_weights(file_path)
 
 
-def run_training_pipeline():
-    config = get_configuration()
-    training_data = read_json("train.json")
-    testing_data = read_json("test.json")
-    tokenizer = load_tokenizer()
+def execute_training_pipeline():
+    config = create_config()
+    train_data = load_json("train.json")
+    test_data = load_json("test.json")
+    tokenizer = initialize_tokenizer()
 
-    if training_data is None or testing_data is None:
+    if train_data is None or test_data is None:
         return
 
-    train_loader = CustomDataLoader(training_data, config, tokenizer)
-    test_loader = CustomDataLoader(testing_data, config, tokenizer)
+    train_loader = DataLoader(train_data, config, tokenizer)
+    test_loader = DataLoader(test_data, config, tokenizer)
 
-    model = TripletNetwork(128, 30522)
+    model = TripletModel(128, 30522)
 
-    train_model(model, config, train_loader)
-    evaluate_model(model, test_loader)
-    save_model_weights(model, os.path.join(config["results_directory"], "triplet_model.h5"))
+    train_triplet_network(model, config, train_loader)
+    evaluate_triplet_model(model, test_loader)
+    save_model(model, os.path.join(config["results_directory"], "triplet_model.h5"))
 
 
-def save_training_history(history, file_path):
-    with open(file_path, 'w') as file:
-        json.dump(history.history, file)
+def store_training_history(history, file_path):
+    with open(file_path, 'w') as f:
+        json.dump(history.history, f)
 
 
 if __name__ == "__main__":
-    run_training_pipeline()
+    execute_training_pipeline()
