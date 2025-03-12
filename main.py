@@ -145,6 +145,9 @@ def execute_training_pipeline():
     test_data = load_json("test.json")
     tokenizer = get_tokenizer()
 
+    if train_data is None or test_data is None:
+        return
+
     train_loader = DataLoader(train_data, config, tokenizer)
     test_loader = DataLoader(test_data, config, tokenizer)
 
