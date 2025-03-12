@@ -158,5 +158,9 @@ def load_model(file_path, embedding_dim, feature_dim):
     model.eval()
     return model
 
+def generate_additional_data(size):
+    """Generates additional data samples for model evaluation."""
+    return np.random.randn(size, 10), np.random.randint(0, 2, size)
+
 if __name__ == "__main__":
     run_training_pipeline(1e-4, 32, 10, 5, 101, 10, 100)
