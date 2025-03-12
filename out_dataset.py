@@ -9,36 +9,39 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import LabelEncoder
 import matplotlib.pyplot as plt
 
+
+def gather_texts(triplet_data):
+    return [item[key] for item in triplet_data for key in ['anchor', 'positive', 'negative']]
+
+
+def convert_to_sequences(tokenizer, item):
+    return {
+        'anchor_seq': tokenizer.transform([item['anchor']])[0],
+        'positive_seq': tokenizer.transform([item['positive']])[0],
+        'negative_seq': tokenizer.transform([item['negative']])[0]
+    }
+
+
 class TripletDataset(Dataset):
     def __init__(self, triplet_data, max_length):
         self.triplet_data = triplet_data
         self.max_length = max_length
         self.tokenizer = LabelEncoder()
-        self.tokenizer.fit(self._gather_texts())
+        self.tokenizer.fit(gather_texts(triplet_data))
         self.vocab_size = len(self.tokenizer.classes_) + 1
-
-    def _gather_texts(self):
-        return [item[key] for item in self.triplet_data for key in ['anchor', 'positive', 'negative']]
-
-    def _convert_to_sequences(self, item):
-        return {
-            'anchor_seq': self.tokenizer.transform([item['anchor']])[0],
-            'positive_seq': self.tokenizer.transform([item['positive']])[0],
-            'negative_seq': self.tokenizer.transform([item['negative']])[0]
-        }
 
     def __len__(self):
         return len(self.triplet_data)
 
     def __getitem__(self, idx):
-        item = self.triplet_data[idx]
-        return self._convert_to_sequences(item)
+        return convert_to_sequences(self.tokenizer, self.triplet_data[idx])
 
     def shuffle_data(self):
         random.shuffle(self.triplet_data)
 
     def next_epoch(self):
         self.shuffle_data()
+
 
 def load_json_data(data_path, folder_path):
     with open(data_path, 'r') as file:
@@ -50,11 +53,13 @@ def load_json_data(data_path, folder_path):
     ]
     return instance_map, snippets
 
+
 def generate_triplets(instance_map, snippets):
     bug_snippets, non_bug_snippets = zip(*(map(lambda snippet_file: json.load(open(snippet_file)), snippets)))
     bug_snippets = [s['snippet'] for s in bug_snippets if s.get('is_bug') and s['snippet']]
     non_bug_snippets = [s['snippet'] for s in non_bug_snippets if not s.get('is_bug') and s['snippet']]
     return create_triplet_structure(instance_map, snippets, bug_snippets, non_bug_snippets)
+
 
 def create_triplet_structure(instance_map, snippets, bug_snippets, non_bug_snippets):
     return [
@@ -66,6 +71,7 @@ def create_triplet_structure(instance_map, snippets, bug_snippets, non_bug_snipp
         for folder, _ in snippets
         for pos_doc in bug_snippets
     ]
+
 
 class TripletModel(nn.Module):
     def __init__(self, vocab_size, embed_dim):
@@ -80,14 +86,15 @@ class TripletModel(nn.Module):
         )
 
     def forward(self, anchor, positive, negative):
-        anchor_out = self.fc(self.embedding(anchor))
-        positive_out = self.fc(self.embedding(positive))
-        negative_out = self.fc(self.embedding(negative))
-        return anchor_out, positive_out, negative_out
+        return (self.fc(self.embedding(anchor)), 
+                self.fc(self.embedding(positive)), 
+                self.fc(self.embedding(negative)))
+
 
 def triplet_loss(anchor_embeds, positive_embeds, negative_embeds):
     return torch.mean(torch.clamp(0.2 + torch.norm(anchor_embeds - positive_embeds, dim=1) - 
                                    torch.norm(anchor_embeds - negative_embeds, dim=1), min=0))
+
 
 def train_model(model, train_loader, test_loader, num_epochs, device):
     model.to(device)
@@ -96,19 +103,7 @@ def train_model(model, train_loader, test_loader, num_epochs, device):
 
     for epoch in range(num_epochs):
         model.train()
-        train_loss = 0
-        for batch in train_loader:
-            anchor_seq = batch['anchor_seq'].to(device)
-            positive_seq = batch['positive_seq'].to(device)
-            negative_seq = batch['negative_seq'].to(device)
-
-            optimizer.zero_grad()
-            anchor_out, positive_out, negative_out = model(anchor_seq, positive_seq, negative_seq)
-            loss = triplet_loss(anchor_out, positive_out, negative_out)
-            loss.backward()
-            optimizer.step()
-            train_loss += loss.item()
-
+        train_loss = sum(train_step(model, batch, optimizer, device) for batch in train_loader)
         train_losses.append(train_loss / len(train_loader))
         print(f'Epoch {epoch + 1}, Train Loss: {train_losses[-1]}')
 
@@ -117,7 +112,21 @@ def train_model(model, train_loader, test_loader, num_epochs, device):
         test_accs.append(acc)
         print(f'Test Loss: {test_loss}, Test Accuracy: {acc}')
 
-    return train_losses, test_losses, train_accs
+    return train_losses, test_losses, test_accs
+
+
+def train_step(model, batch, optimizer, device):
+    anchor_seq = batch['anchor_seq'].to(device)
+    positive_seq = batch['positive_seq'].to(device)
+    negative_seq = batch['negative_seq'].to(device)
+
+    optimizer.zero_grad()
+    anchor_out, positive_out, negative_out = model(anchor_seq, positive_seq, negative_seq)
+    loss = triplet_loss(anchor_out, positive_out, negative_out)
+    loss.backward()
+    optimizer.step()
+    return loss.item()
+
 
 def evaluate_model(model, test_loader, device):
     model.eval()
@@ -130,15 +139,18 @@ def evaluate_model(model, test_loader, device):
             negative_seq = batch['negative_seq'].to(device)
 
             anchor_out, positive_out, negative_out = model(anchor_seq, positive_seq, negative_seq)
-            loss = triplet_loss(anchor_out, positive_out, negative_out)
-            test_loss += loss.item()
-
-            pos_similarity = torch.sum(anchor_out * positive_out, dim=1)
-            neg_similarity = torch.sum(anchor_out * negative_out, dim=1)
-            correct_preds += torch.sum(pos_similarity > neg_similarity).item()
+            test_loss += triplet_loss(anchor_out, positive_out, negative_out).item()
+            correct_preds += count_correct_predictions(anchor_out, positive_out, negative_out)
 
     acc = correct_preds / len(test_loader.dataset)
     return test_loss / len(test_loader), acc
+
+
+def count_correct_predictions(anchor_out, positive_out, negative_out):
+    pos_similarity = torch.sum(anchor_out * positive_out, dim=1)
+    neg_similarity = torch.sum(anchor_out * negative_out, dim=1)
+    return torch.sum(pos_similarity > neg_similarity).item()
+
 
 def plot_results(train_losses, test_losses, train_accs, test_accs):
     plt.figure(figsize=(10, 5))
@@ -159,14 +171,17 @@ def plot_results(train_losses, test_losses, train_accs, test_accs):
     plt.legend()
     plt.show()
 
+
 def save_model(model, path):
     torch.save(model.state_dict(), path)
     print(f'Model saved to {path}')
+
 
 def load_model(model, path):
     model.load_state_dict(torch.load(path))
     model.eval()
     print(f'Model loaded from {path}')
+
 
 def main():
     data_path = 'datasets/SWE-bench_oracle.npy'
@@ -183,9 +198,10 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     train_losses, test_losses, train_accs = train_model(model, train_loader, test_loader, num_epochs=5, device=device)
-    plot_results(train_losses, test_losses, train_accs, test_accs)
-    
+    plot_results(train_losses, test_losses, train_accs, [])
+
     save_model(model, 'triplet_model.pth')
+
 
 if __name__ == "__main__":
     main()
