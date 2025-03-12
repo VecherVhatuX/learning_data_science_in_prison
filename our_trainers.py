@@ -52,14 +52,19 @@ def triplet_loss(margin=1.0):
 def train(model, dataset, epochs, lr):
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = triplet_loss()
+    loss_history = []
 
     for epoch in range(epochs):
+        epoch_loss = 0
         for anchors, positives, negatives in DataLoader(dataset, batch_size=32, shuffle=True):
             anchors, positives = anchors.float(), positives.float()
             optimizer.zero_grad()
             loss = loss_fn(anchors, positives, negatives)
             loss.backward()
             optimizer.step()
+            epoch_loss += loss.item()
+        loss_history.append(epoch_loss / len(dataset))
+    return loss_history
 
 
 def evaluate_model(model, samples, labels, k=5):
@@ -84,6 +89,12 @@ def generate_data(size):
 
 def save_model(model, path):
     torch.save(model.state_dict(), path)
+
+
+def load_model(model_class, path):
+    model = model_class()
+    model.load_state_dict(torch.load(path))
+    return model
 
 
 def get_embeddings(model, input_data):
@@ -129,15 +140,10 @@ def execute_training_pipeline(lr, batch_size, epochs, neg_count, emb_dim, feat_d
     samples, labels = generate_data(data_size)
     triplet_data = TripletData(samples, labels, neg_count)
     model = Embedder(emb_dim, feat_dim)
-    train(model, triplet_data, epochs, lr)
+    loss_history = train(model, triplet_data, epochs, lr)
     save_model(model, "triplet_model.pth")
+    plot_training_loss(loss_history)
     evaluate_model(model, samples, labels)
-
-
-def load_model(model_class, path):
-    model = model_class()
-    model.load_state_dict(torch.load(path))
-    return model
 
 
 def create_additional_data(size):
