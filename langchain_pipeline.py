@@ -94,11 +94,20 @@ def log_command(command: str):
     with open("command_history.log", "a") as history_file:
         history_file.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {command}\n")
 
+def countdown_timer(seconds: int):
+    for i in range(seconds, 0, -1):
+        console.print(f"Countdown: {i} seconds remaining", style="bold magenta")
+        time.sleep(1)
+    console.print("Countdown has finished!", style="bold green")
+
 @click.command()
 @click.argument("command_to_execute")
 @click.option("--max_attempts", default=5, help="Specify the number of retries.")
-def main(command_to_execute: str, max_attempts: int):
+@click.option("--countdown", default=0, help="Specify a countdown timer before executing the command.")
+def main(command_to_execute: str, max_attempts: int, countdown: int):
     log_command(command_to_execute)
+    if countdown > 0:
+        countdown_timer(countdown)
     start_process(command_to_execute, max_attempts)
 
 if __name__ == "__main__":
