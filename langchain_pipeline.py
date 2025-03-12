@@ -3,29 +3,24 @@ import subprocess
 import time
 import click
 from rich.console import Console
-from rich import print
 import random
 from tool_library import Tool, create_agent
 
 console = Console()
 
-class SampleDataset:
-    def __init__(self, data):
-        self.data = data
-        self.current_epoch = 0
+def randomize_samples(data):
+    random.shuffle(data)
+    return data
 
-    def randomize_samples(self):
-        random.shuffle(self.data)
+def divide_samples(data):
+    positives = [item for item in data if item['label'] == 1]
+    negatives = [item for item in data if item['label'] == 0]
+    return positives, negatives
 
-    def divide_samples(self):
-        positives = [item for item in self.data if item['label'] == 1]
-        negatives = [item for item in self.data if item['label'] == 0]
-        return positives, negatives
-
-    def advance_epoch(self):
-        self.current_epoch += 1
-        self.randomize_samples()
-        return self.divide_samples()
+def advance_epoch(data, current_epoch):
+    current_epoch += 1
+    data = randomize_samples(data)
+    return divide_samples(data), current_epoch
 
 def display_environment_info(input_data: str) -> str:
     return f"Current environment settings: {dict(os.environ)}\n{input_data}"
