@@ -17,26 +17,39 @@ def convert_to_sequences(tokenizer, entry):
         'negative_seq': tokenizer.transform([entry['negative']])[0]
     }
 
-class TripletDataGenerator(tf.keras.utils.Sequence):
-    def __init__(self, triplet_data, max_length, batch_size):
+class TripletDataset:
+    def __init__(self, triplet_data, max_length):
         self.triplet_data = triplet_data
         self.max_length = max_length
-        self.batch_size = batch_size
         self.tokenizer = LabelEncoder()
         self.tokenizer.fit(get_texts(triplet_data))
 
-    def __len__(self):
-        return len(self.triplet_data) // self.batch_size + (len(self.triplet_data) % self.batch_size > 0)
-
-    def __getitem__(self, idx):
-        batch = self.triplet_data[idx * self.batch_size : (idx + 1) * self.batch_size]
-        return np.array([convert_to_sequences(self.tokenizer, entry) for entry in batch])
-
-    def shuffle_data(self):
+    def shuffle_samples(self):
         random.shuffle(self.triplet_data)
 
-    def reset_for_epoch(self):
-        self.shuffle_data()
+    def get_samples(self):
+        return self.triplet_data
+
+    def choose_samples(self):
+        batch = self.triplet_data[:]
+        positive_sample = random.choice(batch)
+        negative_sample = random.choice([entry for entry in batch if entry != positive_sample])
+        return positive_sample, negative_sample
+
+class TripletDataGenerator(tf.keras.utils.Sequence):
+    def __init__(self, triplet_data, max_length, batch_size):
+        self.dataset = TripletDataset(triplet_data, max_length)
+        self.batch_size = batch_size
+
+    def __len__(self):
+        return len(self.dataset.get_samples()) // self.batch_size + (len(self.dataset.get_samples()) % self.batch_size > 0)
+
+    def __getitem__(self, idx):
+        batch = self.dataset.get_samples()[idx * self.batch_size : (idx + 1) * self.batch_size]
+        return np.array([convert_to_sequences(self.dataset.tokenizer, entry) for entry in batch])
+
+    def on_epoch_end(self):
+        self.dataset.shuffle_samples()
 
 def load_json(file_path, base_dir):
     with open(file_path, 'r') as f:
@@ -110,7 +123,7 @@ def evaluate_model(model, valid_gen):
                                                   model(batch['negative_seq'])) 
                         for batch in valid_gen)
 
-    accuracy = correct_preds / len(valid_gen.triplet_data)
+    accuracy = correct_preds / len(valid_gen.dataset.get_samples())
     return loss, accuracy
 
 def count_correct_predictions(anchor_output, positive_output, negative_output):
@@ -158,9 +171,9 @@ def main():
     train_gen = TripletDataGenerator(train_data.tolist(), max_length=512, batch_size=32)
     valid_gen = TripletDataGenerator(valid_data.tolist(), max_length=512, batch_size=32)
     
-    model = TripletNetwork(vocab_size=len(train_gen.tokenizer.classes_) + 1, embedding_dim=128)
+    model = TripletNetwork(vocab_size=len(train_gen.dataset.tokenizer.classes_) + 1, embedding_dim=128)
     
-    train_losses, validation_losses, training_accuracies = train_model(model, train_gen, valid_gen, epochs=5)
+    train_losses, validation_losses, training_accuracies = train_model(model, train_gen, valid_gen, num_epochs=5)
     plot_results(train_losses, validation_losses, training_accuracies, [])
 
     save_model(model, 'triplet_model.h5')
