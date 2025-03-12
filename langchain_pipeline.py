@@ -28,7 +28,7 @@ class SampleDataset:
         return self.divide_samples()
 
 def display_environment_info(input_data: str) -> str:
-    return f"Environment variables: {dict(os.environ)}\n{input_data}"
+    return f"Current environment settings: {dict(os.environ)}\n{input_data}"
 
 def install_packages(input_data: str) -> str:
     process = subprocess.run(
@@ -46,30 +46,30 @@ def execute_command(command: str) -> tuple:
 
 def initialize_tools() -> list:
     return [
-        Tool(name="EnvVariableChecker", func=display_environment_info, description="Displays current environment variables."),
-        Tool(name="EnvVariableInstaller", func=install_packages, description="Installs missing packages to fix the environment.")
+        Tool(name="EnvVariableChecker", func=display_environment_info, description="Shows current environment settings."),
+        Tool(name="EnvVariableInstaller", func=install_packages, description="Installs necessary packages for environment correction.")
     ]
 
 def run_command_with_feedback(command_to_execute: str) -> bool:
-    console.print(f"Running command: {command_to_execute}")
+    console.print(f"Executing command: {command_to_execute}")
     output, error_message = execute_command(command_to_execute)
     if error_message:
-        console.print(f"Execution failed: {error_message}", style="bold red")
+        console.print(f"Execution encountered an error: {error_message}", style="bold red")
         return False
-    console.print(f"Execution successful: {output}", style="bold green")
+    console.print(f"Execution completed successfully: {output}", style="bold green")
     return True
 
 def attempt_command(agent, command_to_execute: str, current_attempt: int, max_attempts: int) -> bool:
     if current_attempt < max_attempts:
-        console.print(f"Attempt: {current_attempt + 1}/{max_attempts}")
+        console.print(f"Attempt number: {current_attempt + 1}/{max_attempts}")
         if run_command_with_feedback(command_to_execute):
             console.print("Command executed successfully!", style="bold green")
             return True
-        agent.run("Evaluate environment variables and dependencies.")
-        agent.run("Try to resolve environment issues by installing required packages.")
+        agent.run("Assess environment variables and dependencies.")
+        agent.run("Attempt to resolve environment challenges by installing necessary packages.")
         time.sleep(5)
         return attempt_command(agent, command_to_execute, current_attempt + 1, max_attempts)
-    console.print("Max attempts reached. Stopping operation.", style="bold red")
+    console.print("Reached maximum attempts. Halting operation.", style="bold red")
     return False
 
 def execute_with_agent(command_to_execute: str, max_attempts: int):
@@ -81,13 +81,13 @@ def measure_execution_time(func):
     def wrapper(*args, **kwargs):
         start_time = time.time()
         result = func(*args, **kwargs)
-        console.print(f"Execution duration: {time.time() - start_time:.2f} seconds", style="bold yellow")
+        console.print(f"Total execution time: {time.time() - start_time:.2f} seconds", style="bold yellow")
         return result
     return wrapper
 
 @measure_execution_time
 def start_process(command_to_execute: str, max_attempts: int):
-    console.print("Starting process...", style="bold blue")
+    console.print("Initializing process...", style="bold blue")
     execute_with_agent(command_to_execute, max_attempts)
 
 def log_command(command: str):
@@ -96,7 +96,7 @@ def log_command(command: str):
 
 @click.command()
 @click.argument("command_to_execute")
-@click.option("--max_attempts", default=5, help="How many times to retry.")
+@click.option("--max_attempts", default=5, help="Specify the number of retries.")
 def main(command_to_execute: str, max_attempts: int):
     log_command(command_to_execute)
     start_process(command_to_execute, max_attempts)
