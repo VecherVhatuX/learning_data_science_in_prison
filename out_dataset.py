@@ -26,6 +26,33 @@ def choose_samples(batch):
     negative_sample = random.choice([entry for entry in batch if entry != positive_sample])
     return positive_sample, negative_sample
 
+def create_triplet_structure(instance_mapping, snippet_paths, bug_snips, non_bug_snips):
+    return [
+        {
+            'anchor': instance_mapping[os.path.basename(folder)],
+            'positive': pos_snip,
+            'negative': random.choice(non_bug_snips)
+        }
+        for folder, _ in snippet_paths
+        for pos_snip in bug_snips
+    ]
+
+def load_json(file_path, base_dir):
+    with open(file_path, 'r') as f:
+        data = json.load(f)
+    mapping = {item['instance_id']: item['problem_statement'] for item in data}
+    snippet_paths = [
+        (folder, os.path.join(folder, 'snippet.json'))
+        for folder in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, folder))
+    ]
+    return mapping, snippet_paths
+
+def generate_triplet_data(instance_mapping, snippet_paths):
+    bug_snips, non_bug_snips = zip(*(map(lambda path: json.load(open(path)), snippet_paths)))
+    bug_snips = [s['snippet'] for s in bug_snips if s.get('is_bug') and s['snippet']]
+    non_bug_snips = [s['snippet'] for s in non_bug_snips if not s.get('is_bug') and s['snippet']]
+    return create_triplet_structure(instance_mapping, snippet_paths, bug_snips, non_bug_snips)
+
 class TripletDataset:
     def __init__(self, triplet_data, max_length):
         self.triplet_data = triplet_data
@@ -46,37 +73,10 @@ class TripletDataGenerator(tf.keras.utils.Sequence):
 
     def __getitem__(self, idx):
         batch = self.dataset.get_samples()[idx * self.batch_size : (idx + 1) * self.batch_size]
-        return np.array([convert_to_sequences(self.dataset.tokenizer, entry) for entry in batch])
+        return np.array(list(map(lambda entry: convert_to_sequences(self.dataset.tokenizer, entry), batch)))
 
     def on_epoch_end(self):
         self.dataset.triplet_data = shuffle_samples(self.dataset.triplet_data)
-
-def load_json(file_path, base_dir):
-    with open(file_path, 'r') as f:
-        data = json.load(f)
-    mapping = {item['instance_id']: item['problem_statement'] for item in data}
-    snippet_paths = [
-        (folder, os.path.join(folder, 'snippet.json'))
-        for folder in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, folder))
-    ]
-    return mapping, snippet_paths
-
-def generate_triplet_data(instance_mapping, snippet_paths):
-    bug_snips, non_bug_snips = zip(*(map(lambda path: json.load(open(path)), snippet_paths)))
-    bug_snips = [s['snippet'] for s in bug_snips if s.get('is_bug') and s['snippet']]
-    non_bug_snips = [s['snippet'] for s in non_bug_snips if not s.get('is_bug') and s['snippet']]
-    return create_triplet_structure(instance_mapping, snippet_paths, bug_snips, non_bug_snips)
-
-def create_triplet_structure(instance_mapping, snippet_paths, bug_snips, non_bug_snips):
-    return [
-        {
-            'anchor': instance_mapping[os.path.basename(folder)],
-            'positive': pos_snip,
-            'negative': random.choice(non_bug_snips)
-        }
-        for folder, _ in snippet_paths
-        for pos_snip in bug_snips
-    ]
 
 class TripletNetwork(models.Model):
     def __init__(self, vocab_size, embedding_dim):
@@ -102,19 +102,14 @@ def triplet_loss(y_true, y_pred):
 
 def train_model(model, train_gen, valid_gen, num_epochs):
     model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5), loss=triplet_loss)
-    train_losses, val_losses, train_accuracies = [], [], []
-
-    for epoch in range(num_epochs):
+    
+    def train_epoch(epoch):
         model.fit(train_gen, epochs=1, verbose=1)
         train_loss = model.evaluate(train_gen, verbose=0)
-        train_losses.append(train_loss)
-
         val_loss, accuracy = evaluate_model(model, valid_gen)
-        val_losses.append(val_loss)
-        train_accuracies.append(accuracy)
-        print(f'Epoch {epoch + 1}, Train Loss: {train_loss}, Validation Loss: {val_loss}, Validation Accuracy: {accuracy}')
+        return train_loss, val_loss, accuracy
 
-    return train_losses, val_losses, train_accuracies
+    return list(map(train_epoch, range(num_epochs)))
 
 def evaluate_model(model, valid_gen):
     loss = model.evaluate(valid_gen)
