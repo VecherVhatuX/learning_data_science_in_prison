@@ -85,7 +85,7 @@ def triplet_loss(anchor_embeds, positive_embeds, negative_embeds):
     return tf.reduce_mean(tf.maximum(0.2 + tf.norm(anchor_embeds - positive_embeds, axis=1) - 
                                       tf.norm(anchor_embeds - negative_embeds, axis=1), 0))
 
-def train_model(model, train_loader, test_loader, num_epochs, device):
+def train_model(model, train_loader, test_loader, num_epochs):
     model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5),
                   loss=triplet_loss)
     train_losses, test_losses, train_accs = [], [], []
@@ -97,18 +97,17 @@ def train_model(model, train_loader, test_loader, num_epochs, device):
 
         test_loss, acc = evaluate_model(model, test_loader)
         test_losses.append(test_loss)
-        test_accs.append(acc)
+        train_accs.append(acc)
         print(f'Epoch {epoch + 1}, Train Loss: {train_loss}, Test Loss: {test_loss}, Test Accuracy: {acc}')
 
-    return train_losses, test_losses, test_accs
+    return train_losses, test_losses, train_accs
 
 def evaluate_model(model, test_loader):
     test_loss = model.evaluate(test_loader)
-    correct_preds = 0
-
-    for batch in test_loader:
-        anchor_out, positive_out, negative_out = model(batch['anchor_seq']), model(batch['positive_seq']), model(batch['negative_seq'])
-        correct_preds += count_correct_predictions(anchor_out, positive_out, negative_out)
+    correct_preds = sum(count_correct_predictions(model(batch['anchor_seq']), 
+                                                  model(batch['positive_seq']), 
+                                                  model(batch['negative_seq'])) 
+                        for batch in test_loader)
 
     acc = correct_preds / len(test_loader.dataset)
     return test_loss, acc
@@ -159,9 +158,8 @@ def main():
     test_loader = TripletDataset(valid_triplets.tolist(), max_length=512, batch_size=32)
     
     model = TripletModel(vocab_size=len(train_loader.tokenizer.classes_) + 1, embed_dim=128)
-    device = 'GPU' if tf.config.list_physical_devices('GPU') else 'CPU'
-
-    train_losses, test_losses, train_accs = train_model(model, train_loader, test_loader, num_epochs=5, device=device)
+    
+    train_losses, test_losses, train_accs = train_model(model, train_loader, test_loader, num_epochs=5)
     plot_results(train_losses, test_losses, train_accs, [])
 
     save_model(model, 'triplet_model.h5')
