@@ -166,5 +166,10 @@ def run_training_pipeline():
     save_model_weights(model, os.path.join(config["results_directory"], "triplet_model.h5"))
 
 
+def save_training_history(history, file_path):
+    with open(file_path, 'w') as file:
+        json.dump(history.history, file)
+
+
 if __name__ == "__main__":
     run_training_pipeline()
