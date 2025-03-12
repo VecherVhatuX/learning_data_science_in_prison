@@ -127,17 +127,19 @@ def load_json(file_path):
 
 def train_triplet_network(model, config, data_loader):
     optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
-    model.compile(optimizer=optimizer, loss=model.compute_triplet_loss)
+    model.compile(optimizer=optimizer, loss=lambda y_true, y_pred: model.compute_triplet_loss(y_true[0], y_true[1], y_pred))
     model.fit(data_loader, epochs=config["epochs"])
 
 
 def evaluate_triplet_model(model, data_loader):
-    total_loss = sum(model.compute_triplet_loss(
-        model(input_ids),
-        model(labels),
-        model(neg_samples)
-    ).numpy() for input_ids, labels, neg_samples in data_loader)
-
+    total_loss = 0
+    for input_ids, labels, neg_samples in data_loader:
+        loss = model.compute_triplet_loss(
+            model(input_ids),
+            model(labels),
+            model(neg_samples)
+        ).numpy()
+        total_loss += loss
     print(f"Mean Evaluation Loss: {total_loss / len(data_loader):.4f}")
 
 
