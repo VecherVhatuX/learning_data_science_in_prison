@@ -22,13 +22,6 @@ class NeuralEmbedder(nn.Module):
         return self.network(inputs)
 
 
-def sample_triplet(anchor, anchor_label, all_labels, num_negatives):
-    positive_indices = np.where(all_labels == anchor_label.item())[0]
-    positive_sample_idx = random.choice(positive_indices.tolist())
-    negative_samples = random.sample(np.where(all_labels != anchor_label.item())[0].tolist(), num_negatives)
-    return anchor, all_labels[positive_sample_idx], [all_labels[i] for i in negative_samples]
-
-
 class CustomTripletDataset(torch.utils.data.Dataset):
     def __init__(self, data_samples, data_labels, num_negatives):
         self.data_samples = data_samples
@@ -41,7 +34,13 @@ class CustomTripletDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         anchor = self.data_samples[idx]
         anchor_label = self.data_labels[idx]
-        return sample_triplet(anchor, anchor_label, self.data_labels, self.num_negatives)
+        return self.sample_triplet(anchor, anchor_label)
+
+    def sample_triplet(self, anchor, anchor_label):
+        positive_indices = np.where(self.data_labels == anchor_label.item())[0]
+        positive_sample_idx = random.choice(positive_indices.tolist())
+        negative_samples = random.sample(np.where(self.data_labels != anchor_label.item())[0].tolist(), self.num_negatives)
+        return anchor, self.data_labels[positive_sample_idx], [self.data_labels[i] for i in negative_samples]
 
     def shuffle_data(self):
         indices = np.arange(len(self.data_samples))
