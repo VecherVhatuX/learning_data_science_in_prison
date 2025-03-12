@@ -152,6 +152,11 @@ def run_training_pipeline(learning_rate, batch_size, num_epochs, num_negatives, 
     predicted_embeddings = extract_model_embeddings(model, samples)
     evaluate_model(model, samples, labels)
 
+def load_model(file_path, embedding_dim, feature_dim):
+    model = NeuralEmbedder(embedding_dim, feature_dim)
+    model.load_state_dict(torch.load(file_path))
+    model.eval()
+    return model
 
 if __name__ == "__main__":
     run_training_pipeline(1e-4, 32, 10, 5, 101, 10, 100)
