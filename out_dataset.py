@@ -21,20 +21,15 @@ def shuffle_samples(data):
     random.shuffle(data)
     return data
 
-def choose_samples(batch):
-    positive_sample = random.choice(batch)
-    negative_sample = random.choice([entry for entry in batch if entry != positive_sample])
-    return positive_sample, negative_sample
-
-def create_triplet_structure(instance_mapping, snippet_paths, bug_snips, non_bug_snips):
+def create_triplet_structure(instance_mapping, bug_snips, non_bug_snips):
     return [
         {
             'anchor': instance_mapping[os.path.basename(folder)],
-            'positive': pos_snip,
+            'positive': bug_snip,
             'negative': random.choice(non_bug_snips)
         }
         for folder, _ in snippet_paths
-        for pos_snip in bug_snips
+        for bug_snip in bug_snips
     ]
 
 def load_json(file_path, base_dir):
@@ -51,12 +46,11 @@ def generate_triplet_data(instance_mapping, snippet_paths):
     bug_snips, non_bug_snips = zip(*(map(lambda path: json.load(open(path)), snippet_paths)))
     bug_snips = [s['snippet'] for s in bug_snips if s.get('is_bug') and s['snippet']]
     non_bug_snips = [s['snippet'] for s in non_bug_snips if not s.get('is_bug') and s['snippet']]
-    return create_triplet_structure(instance_mapping, snippet_paths, bug_snips, non_bug_snips)
+    return create_triplet_structure(instance_mapping, bug_snips, non_bug_snips)
 
 class TripletDataset:
-    def __init__(self, triplet_data, max_length):
+    def __init__(self, triplet_data):
         self.triplet_data = triplet_data
-        self.max_length = max_length
         self.tokenizer = LabelEncoder()
         self.tokenizer.fit(get_texts(triplet_data))
 
@@ -64,16 +58,16 @@ class TripletDataset:
         return self.triplet_data
 
 class TripletDataGenerator(tf.keras.utils.Sequence):
-    def __init__(self, triplet_data, max_length, batch_size):
-        self.dataset = TripletDataset(triplet_data, max_length)
+    def __init__(self, triplet_data, batch_size):
+        self.dataset = TripletDataset(triplet_data)
         self.batch_size = batch_size
 
     def __len__(self):
-        return len(self.dataset.get_samples()) // self.batch_size + (len(self.dataset.get_samples()) % self.batch_size > 0)
+        return (len(self.dataset.get_samples()) + self.batch_size - 1) // self.batch_size
 
     def __getitem__(self, idx):
         batch = self.dataset.get_samples()[idx * self.batch_size : (idx + 1) * self.batch_size]
-        return np.array(list(map(lambda entry: convert_to_sequences(self.dataset.tokenizer, entry), batch)))
+        return np.array([convert_to_sequences(self.dataset.tokenizer, entry) for entry in batch])
 
     def on_epoch_end(self):
         self.dataset.triplet_data = shuffle_samples(self.dataset.triplet_data)
@@ -102,14 +96,14 @@ def triplet_loss(y_true, y_pred):
 
 def train_model(model, train_gen, valid_gen, num_epochs):
     model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5), loss=triplet_loss)
-    
-    def train_epoch(epoch):
+
+    history = []
+    for epoch in range(num_epochs):
         model.fit(train_gen, epochs=1, verbose=1)
         train_loss = model.evaluate(train_gen, verbose=0)
         val_loss, accuracy = evaluate_model(model, valid_gen)
-        return train_loss, val_loss, accuracy
-
-    return list(map(train_epoch, range(num_epochs)))
+        history.append((train_loss, val_loss, accuracy))
+    return history
 
 def evaluate_model(model, valid_gen):
     loss = model.evaluate(valid_gen)
@@ -126,8 +120,10 @@ def count_correct_predictions(anchor_output, positive_output, negative_output):
     negative_similarity = tf.reduce_sum(anchor_output * negative_output, axis=1)
     return tf.reduce_sum(positive_similarity > negative_similarity).numpy()
 
-def plot_results(train_losses, val_losses, train_accuracies, val_accuracies):
+def plot_results(history):
+    train_losses, val_losses, train_accuracies = zip(*history)
     plt.figure(figsize=(10, 5))
+    
     plt.subplot(1, 2, 1)
     plt.plot(train_losses, label='Train Loss')
     plt.plot(val_losses, label='Validation Loss')
@@ -138,7 +134,6 @@ def plot_results(train_losses, val_losses, train_accuracies, val_accuracies):
 
     plt.subplot(1, 2, 2)
     plt.plot(train_accuracies, label='Train Accuracy')
-    plt.plot(val_accuracies, label='Validation Accuracy')
     plt.title('Accuracy Throughout Epochs')
     plt.xlabel('Epochs')
     plt.ylabel('Accuracy')
@@ -151,7 +146,6 @@ def save_model(model, path):
 
 def load_model(path):
     model = models.load_model(path)
-    model.evaluate()
     print(f'Model loaded from {path}')
     return model
 
@@ -163,13 +157,13 @@ def main():
     triplet_data = generate_triplet_data(instance_map, snippet_files)
     train_data, valid_data = np.array_split(np.array(triplet_data), 2)
     
-    train_gen = TripletDataGenerator(train_data.tolist(), max_length=512, batch_size=32)
-    valid_gen = TripletDataGenerator(valid_data.tolist(), max_length=512, batch_size=32)
+    train_gen = TripletDataGenerator(train_data.tolist(), batch_size=32)
+    valid_gen = TripletDataGenerator(valid_data.tolist(), batch_size=32)
     
     model = TripletNetwork(vocab_size=len(train_gen.dataset.tokenizer.classes_) + 1, embedding_dim=128)
     
-    train_losses, validation_losses, training_accuracies = train_model(model, train_gen, valid_gen, num_epochs=5)
-    plot_results(train_losses, validation_losses, training_accuracies, [])
+    history = train_model(model, train_gen, valid_gen, num_epochs=5)
+    plot_results(history)
 
     save_model(model, 'triplet_model.h5')
 
