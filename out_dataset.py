@@ -76,12 +76,14 @@ class TripletModel(models.Model):
             layers.Dense(128)
         ])
 
-    def call(self, anchor, positive, negative):
+    def call(self, inputs):
+        anchor, positive, negative = inputs
         return (self.fc(self.embedding(anchor)), 
                 self.fc(self.embedding(positive)), 
                 self.fc(self.embedding(negative)))
 
-def triplet_loss(anchor_embeds, positive_embeds, negative_embeds):
+def triplet_loss(y_true, y_pred):
+    anchor_embeds, positive_embeds, negative_embeds = y_pred
     return tf.reduce_mean(tf.maximum(0.2 + tf.norm(anchor_embeds - positive_embeds, axis=1) - 
                                       tf.norm(anchor_embeds - negative_embeds, axis=1), 0))
 
@@ -109,7 +111,7 @@ def evaluate_model(model, test_loader):
                                                   model(batch['negative_seq'])) 
                         for batch in test_loader)
 
-    acc = correct_preds / len(test_loader.dataset)
+    acc = correct_preds / len(test_loader.triplet_data)
     return test_loss, acc
 
 def count_correct_predictions(anchor_out, positive_out, negative_out):
