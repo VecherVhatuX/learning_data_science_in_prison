@@ -8,22 +8,27 @@ import random
 
 console = Console()
 
-def shuffle_samples(samples):
-    """Randomly reorder the provided list of samples."""
-    random.shuffle(samples)
+class Dataset:
+    def __init__(self, samples):
+        self.samples = samples
+        self.epochs = 0
 
-def get_positive_and_negative_samples(samples):
-    """Separate samples into two lists: positive and negative based on their labels."""
-    return (
-        [s for s in samples if s['label'] == 1],
-        [s for s in samples if s['label'] == 0]
-    )
+    def shuffle_samples(self):
+        """Randomly reorder the list of samples."""
+        random.shuffle(self.samples)
 
-def next_epoch(samples, epochs):
-    """Increment the epoch count and shuffle samples for the next round."""
-    epochs += 1
-    shuffle_samples(samples)
-    return epochs, get_positive_and_negative_samples(samples)
+    def get_positive_and_negative_samples(self):
+        """Separate samples into two lists: positive and negative based on their labels."""
+        return (
+            [s for s in self.samples if s['label'] == 1],
+            [s for s in self.samples if s['label'] == 0]
+        )
+
+    def next_epoch(self):
+        """Increment the epoch count and shuffle samples for the next round."""
+        self.epochs += 1
+        self.shuffle_samples()
+        return self.get_positive_and_negative_samples()
 
 def get_env_info(inputs: str) -> str:
     """Retrieve and format the current environment variables along with provided input."""
