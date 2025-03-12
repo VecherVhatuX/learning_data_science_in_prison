@@ -6,6 +6,7 @@ import tensorflow as tf
 from tensorflow.keras import layers, models
 from transformers import T5Tokenizer
 
+
 def get_configuration():
     return {
         "model_name": "t5-base",
@@ -52,6 +53,7 @@ def get_configuration():
         "negative_samples_per_batch": 5,
     }
 
+
 class TripletNetwork(models.Model):
     def __init__(self, embedding_dim, vocab_size):
         super().__init__()
@@ -69,6 +71,7 @@ class TripletNetwork(models.Model):
         neg_distance = tf.reduce_mean(tf.square(anchor - negative), axis=-1)
         return tf.reduce_mean(tf.maximum(pos_distance - neg_distance + 2.0, 0.0))
 
+
 class Dataset:
     def __init__(self, data, config, tokenizer):
         self.data = data
@@ -84,8 +87,7 @@ class Dataset:
         data_item = self.data[self.indices[idx]]
         input_ids = self.tokenizer.encode(data_item['input'], max_length=512, padding='max_length', truncation=True)
         labels = self.tokenizer.encode(data_item['output'], max_length=512, padding='max_length', truncation=True)
-        negative_samples = self.get_negative_samples(idx)
-        return input_ids, labels, negative_samples
+        return input_ids, labels, self.get_negative_samples(idx)
 
     def get_negative_samples(self, idx):
         return [
@@ -97,6 +99,7 @@ class Dataset:
     def generate_epoch_samples(self):
         self.shuffle_samples()
         return [self.get_sample(i) for i in range(len(self.data))]
+
 
 class CustomDataLoader(tf.keras.utils.Sequence):
     def __init__(self, dataset, config, tokenizer):
@@ -110,6 +113,7 @@ class CustomDataLoader(tf.keras.utils.Sequence):
         batch_samples = self.dataset.generate_epoch_samples()[index * self.batch_size:(index + 1) * self.batch_size]
         return tuple(np.array(x) for x in zip(*batch_samples))
 
+
 def read_json(file_path):
     try:
         with open(file_path, 'r') as file:
@@ -118,10 +122,12 @@ def read_json(file_path):
         print(f"File not found: {file_path}")
         return None
 
+
 def train_model(model, config, data_loader):
     optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
     model.compile(optimizer=optimizer, loss=model.triplet_loss_fn)
     model.fit(data_loader, epochs=config["epochs"])
+
 
 def evaluate_model(model, data_loader):
     total_loss = sum(model.triplet_loss_fn(
@@ -132,11 +138,14 @@ def evaluate_model(model, data_loader):
 
     print(f"Mean Evaluation Loss: {total_loss / len(data_loader):.4f}")
 
+
 def load_tokenizer():
     return T5Tokenizer.from_pretrained("t5-base")
 
+
 def save_model_weights(model, file_path):
     model.save_weights(file_path)
+
 
 def run_training_pipeline():
     config = get_configuration()
@@ -155,6 +164,7 @@ def run_training_pipeline():
     train_model(model, config, train_loader)
     evaluate_model(model, test_loader)
     save_model_weights(model, os.path.join(config["results_directory"], "triplet_model.h5"))
+
 
 if __name__ == "__main__":
     run_training_pipeline()
