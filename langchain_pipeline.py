@@ -3,8 +3,9 @@ import subprocess
 import time
 import click
 from rich.console import Console
-from another_library import Tool, setup_agent
+from rich import print
 import random
+from tool_library import Tool, create_agent  # Assuming a different library for Tool and agent setup
 
 console = Console()
 
@@ -73,7 +74,7 @@ def attempt_command(agent, command_to_execute: str, current_attempt: int, max_at
 
 def execute_with_agent(command_to_execute: str, max_attempts: int):
     tools = initialize_tools()
-    agent = setup_agent(tools=tools)
+    agent = create_agent(tools=tools)
     attempt_command(agent, command_to_execute, 0, max_attempts)
 
 def measure_execution_time(func):
