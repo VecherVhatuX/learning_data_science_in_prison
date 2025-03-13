@@ -18,8 +18,9 @@ generate_random_dataset = lambda size: (np.random.randint(0, 100, (size, 10)), n
 create_triplet_data = lambda samples, labels, negative_count: tf.data.Dataset.from_tensor_slices((samples, labels)).map(
     lambda anchor, label: (
         anchor,
-        tf.convert_to_tensor(random.choice(samples[labels == label.numpy()]), dtype=tf.float32),
-        tf.convert_to_tensor(random.sample(samples[labels != label.numpy()].tolist(), negative_count), dtype=tf.float32)
+        tf.convert_to_tensor(random.choice(samples[labels == label.numpy()]),
+        tf.convert_to_tensor(random.sample(samples[labels != label.numpy()].tolist(), negative_count))
+    )
 )
 
 triplet_loss_function = lambda margin=1.0: lambda anchor, positive, negative: tf.reduce_mean(
@@ -70,7 +71,7 @@ display_metrics = lambda metrics: (
 
 save_model = lambda model, filepath: model.save_weights(filepath)
 
-load_model = lambda model_class, filepath: (lambda model=model_class(): model.load_weights(filepath) or model
+load_model = lambda model_class, filepath: (lambda model=model_class(): model.load_weights(filepath) or model)()
 
 get_embeddings = lambda model, input_data: model(tf.convert_to_tensor(input_data, dtype=tf.int32)).numpy()
 
