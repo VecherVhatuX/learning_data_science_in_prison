@@ -3,7 +3,7 @@ import time
 import random
 from rich.console import Console
 from subprocess import run, CalledProcessError
-import typer
+import click
 from tool_library import Tool, create_agent
 
 console = Console()
@@ -98,12 +98,15 @@ def timer(seconds: int):
 
     timer_helper(seconds)
 
-@app.command()
-def main(cmd: str, max_retries: int = 5, countdown_time: int = 0):
+@click.command()
+@click.argument('cmd')
+@click.option('--max-retries', default=5, help='Maximum number of command retries.')
+@click.option('--countdown-time', default=0, help='Countdown time before executing the command.')
+def main(cmd: str, max_retries: int, countdown_time: int):
     log_command(cmd)
     if countdown_time > 0:
         timer(countdown_time)
     start_process(cmd, max_retries)
 
 if __name__ == "__main__":
-    typer.run(main)
+    main()
