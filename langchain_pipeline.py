@@ -18,9 +18,7 @@ def categorize_samples(samples):
     )
 
 def update_epoch(samples, epoch):
-    shuffled_samples = shuffle_samples(samples)
-    categorized_samples = categorize_samples(shuffled_samples)
-    return categorized_samples, epoch + 1
+    return categorize_samples(shuffle_samples(samples)), epoch + 1
 
 def show_env_info(data: str) -> str:
     return f"Current environment settings: {dict(os.environ)}\n{data}"
@@ -37,8 +35,7 @@ def package_installer(data: str) -> str:
         return error.stderr
 
 def run_shell_command(cmd: str) -> tuple:
-    process = run(cmd, shell=True, text=True, capture_output=True)
-    return process.stdout, process.stderr
+    return run(cmd, shell=True, text=True, capture_output=True).stdout, run(cmd, shell=True, text=True, capture_output=True).stderr
 
 def setup_tools() -> list:
     return [
@@ -74,12 +71,12 @@ def run_with_agent(cmd: str, max_retries: int):
     retry_command(agent, cmd, 0, max_retries)
 
 def timing_decorator(func):
-    def inner(*args, **kwargs):
+    def wrapper(*args, **kwargs):
         start = time.time()
         result = func(*args, **kwargs)
         console.print(f"Execution time: {time.time() - start:.2f} seconds", style="bold yellow")
         return result
-    return inner
+    return wrapper
 
 @timing_decorator
 def initiate_process(cmd: str, max_retries: int):
@@ -95,8 +92,9 @@ def countdown(seconds: int):
         if sec > 0:
             console.print(f"Countdown: {sec} seconds left", style="bold magenta")
             time.sleep(1)
-            return countdown_helper(sec - 1)
-        console.print("Countdown completed!", style="bold green")
+            countdown_helper(sec - 1)
+        else:
+            console.print("Countdown completed!", style="bold green")
 
     countdown_helper(seconds)
 
