@@ -2,19 +2,21 @@ import json
 import os
 import random
 import numpy as np
-import tensorflow as tf
+import torch
+import torch.nn as nn
+import torch.optim as optim
 from sklearn.preprocessing import LabelEncoder
 import matplotlib.pyplot as plt
-from tensorflow.keras import layers, models, optimizers
+from torch.utils.data import Dataset, DataLoader
 
 def collect_all_texts(triplet_data):
     return [text for item in triplet_data for text in (item['anchor'], item['positive'], item['negative'])]
 
 def convert_to_sequences(tokenizer, data_item):
     return {
-        'anchor_seq': tf.convert_to_tensor(tokenizer.transform([data_item['anchor']])[0]),
-        'positive_seq': tf.convert_to_tensor(tokenizer.transform([data_item['positive']])[0]),
-        'negative_seq': tf.convert_to_tensor(tokenizer.transform([data_item['negative']])[0])
+        'anchor_seq': torch.tensor(tokenizer.transform([data_item['anchor']])[0], dtype=torch.long),
+        'positive_seq': torch.tensor(tokenizer.transform([data_item['positive']])[0], dtype=torch.long),
+        'negative_seq': torch.tensor(tokenizer.transform([data_item['negative']])[0], dtype=torch.long)
     }
 
 def randomize_data(data_samples):
@@ -57,7 +59,7 @@ class TripletData:
     def get_samples(self):
         return self.triplet_data
 
-class TripletDataset(tf.data.Dataset):
+class TripletDataset(Dataset):
     def __init__(self, triplet_data):
         self.data = TripletData(triplet_data)
 
@@ -68,42 +70,43 @@ class TripletDataset(tf.data.Dataset):
         data_item = self.data.get_samples()[index]
         return convert_to_sequences(self.data.tokenizer, data_item)
 
-class TripletModel(models.Model):
+class TripletModel(nn.Module):
     def __init__(self, vocab_size, embedding_dim):
         super(TripletModel, self).__init__()
-        self.embedding_layer = layers.Embedding(vocab_size, embedding_dim)
-        self.dense_network = models.Sequential([
-            layers.Dense(128, activation='relu'),
-            layers.BatchNormalization(),
-            layers.Dropout(0.2),
-            layers.Dense(128)
-        ])
+        self.embedding_layer = nn.Embedding(vocab_size, embedding_dim)
+        self.dense_network = nn.Sequential(
+            nn.Linear(embedding_dim, 128),
+            nn.ReLU(),
+            nn.BatchNorm1d(128),
+            nn.Dropout(0.2),
+            nn.Linear(128, 128)
+        )
 
-    def call(self, anchor, positive, negative):
+    def forward(self, anchor, positive, negative):
         anchor_embed = self.dense_network(self.embedding_layer(anchor))
         positive_embed = self.dense_network(self.embedding_layer(positive))
         negative_embed = self.dense_network(self.embedding_layer(negative))
         return anchor_embed, positive_embed, negative_embed
 
 def compute_loss(anchor_embeds, positive_embeds, negative_embeds):
-    return tf.reduce_mean(tf.maximum(0.2 + tf.norm(anchor_embeds - positive_embeds, axis=1) -
-                          tf.norm(anchor_embeds - negative_embeds, axis=1), 0))
+    return torch.mean(torch.clamp(0.2 + torch.norm(anchor_embeds - positive_embeds, dim=1) -
+                          torch.norm(anchor_embeds - negative_embeds, dim=1), min=0))
 
 def train_network(model, train_loader, valid_loader, epochs):
-    optimizer = optimizers.Adam(learning_rate=1e-5)
+    optimizer = optim.Adam(model.parameters(), lr=1e-5)
     history = []
     
     for epoch in range(epochs):
         model.train()
         for batch in train_loader:
-            with tf.GradientTape() as tape:
-                anchor, positive, negative = batch['anchor_seq'], batch['positive_seq'], batch['negative_seq']
-                anchor_embeds, positive_embeds, negative_embeds = model(anchor, positive, negative)
-                loss = compute_loss(anchor_embeds, positive_embeds, negative_embeds)
-            gradients = tape.gradient(loss, model.trainable_variables)
-            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+            optimizer.zero_grad()
+            anchor, positive, negative = batch['anchor_seq'], batch['positive_seq'], batch['negative_seq']
+            anchor_embeds, positive_embeds, negative_embeds = model(anchor, positive, negative)
+            loss = compute_loss(anchor_embeds, positive_embeds, negative_embeds)
+            loss.backward()
+            optimizer.step()
         
-        train_loss = loss.numpy()
+        train_loss = loss.item()
         validation_loss, accuracy = evaluate_network(model, valid_loader)
         history.append((train_loss, validation_loss, accuracy))
     
@@ -113,18 +116,19 @@ def evaluate_network(model, valid_loader):
     model.eval()
     loss = 0
     correct = 0
-    for batch in valid_loader:
-        anchor, positive, negative = batch['anchor_seq'], batch['positive_seq'], batch['negative_seq']
-        anchor_embeds, positive_embeds, negative_embeds = model(anchor, positive, negative)
-        loss += compute_loss(anchor_embeds, positive_embeds, negative_embeds).numpy()
-        correct += count_matches(anchor_embeds, positive_embeds, negative_embeds)
+    with torch.no_grad():
+        for batch in valid_loader:
+            anchor, positive, negative = batch['anchor_seq'], batch['positive_seq'], batch['negative_seq']
+            anchor_embeds, positive_embeds, negative_embeds = model(anchor, positive, negative)
+            loss += compute_loss(anchor_embeds, positive_embeds, negative_embeds).item()
+            correct += count_matches(anchor_embeds, positive_embeds, negative_embeds)
     accuracy = correct / len(valid_loader.dataset)
     return loss / len(valid_loader), accuracy
 
 def count_matches(anchor_output, positive_output, negative_output):
-    positive_similarity = tf.reduce_sum(anchor_output * positive_output, axis=1)
-    negative_similarity = tf.reduce_sum(anchor_output * negative_output, axis=1)
-    return tf.reduce_sum(tf.cast(positive_similarity > negative_similarity, tf.int32)).numpy()
+    positive_similarity = torch.sum(anchor_output * positive_output, dim=1)
+    negative_similarity = torch.sum(anchor_output * negative_output, dim=1)
+    return torch.sum((positive_similarity > negative_similarity).int()).item()
 
 def visualize_results(history):
     train_losses, val_losses, train_accuracies = zip(*history)
@@ -147,11 +151,11 @@ def visualize_results(history):
     plt.show()
 
 def store_model(model, filepath):
-    model.save_weights(filepath)
+    torch.save(model.state_dict(), filepath)
     print(f'Model saved at {filepath}')
 
 def retrieve_model(model, filepath):
-    model.load_weights(filepath)
+    model.load_state_dict(torch.load(filepath))
     print(f'Model loaded from {filepath}')
     return model
 
@@ -163,15 +167,15 @@ def main():
     triplet_data = prepare_dataset(instance_dict, snippet_paths)
     train_data, valid_data = np.array_split(np.array(triplet_data), 2)
     
-    train_loader = tf.data.Dataset.from_tensor_slices(train_data.tolist()).batch(32).shuffle(True)
-    valid_loader = tf.data.Dataset.from_tensor_slices(valid_data.tolist()).batch(32).shuffle(False)
+    train_loader = DataLoader(TripletDataset(train_data.tolist()), batch_size=32, shuffle=True)
+    valid_loader = DataLoader(TripletDataset(valid_data.tolist()), batch_size=32, shuffle=False)
     
     model = TripletModel(vocab_size=len(train_loader.dataset.data.tokenizer.classes_) + 1, embedding_dim=128)
     
     history = train_network(model, train_loader, valid_loader, epochs=5)
     visualize_results(history)
 
-    store_model(model, 'triplet_model.h5')
+    store_model(model, 'triplet_model.pth')
 
 if __name__ == "__main__":
     main()
