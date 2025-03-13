@@ -9,37 +9,33 @@ from tool_library import Tool, create_agent
 console = Console()
 
 def shuffle_data(samples):
-    random.shuffle(samples)
-    return samples
+    return random.sample(samples, len(samples))
 
 def categorize_samples(samples):
-    pos_samples = [item for item in samples if item['label'] == 1]
-    neg_samples = [item for item in samples if item['label'] == 0]
-    return pos_samples, neg_samples
+    return (
+        [item for item in samples if item['label'] == 1],
+        [item for item in samples if item['label'] == 0]
+    )
 
 def update_epoch(samples, epoch):
-    epoch += 1
-    samples = shuffle_data(samples)
-    return categorize_samples(samples), epoch
+    return categorize_samples(shuffle_data(samples)), epoch + 1
 
 def show_env_info(data: str) -> str:
     return f"Current environment settings: {dict(os.environ)}\n{data}"
 
 def package_installer(data: str) -> str:
     try:
-        result = run(
+        return run(
             ["pip", "install", data],
             text=True,
             capture_output=True,
             check=True
-        )
-        return result.stdout
+        ).stdout
     except CalledProcessError as error:
         return error.stderr
 
 def run_shell_command(cmd: str) -> tuple:
-    result = run(cmd, shell=True, text=True, capture_output=True)
-    return result.stdout, result.stderr
+    return run(cmd, shell=True, text=True, capture_output=True).stdout, run(cmd, shell=True, text=True, capture_output=True).stderr
 
 def setup_tools() -> list:
     return [
@@ -57,17 +53,17 @@ def execute_with_feedback(cmd: str) -> bool:
     return True
 
 def retry_command(agent, cmd: str, attempt: int, max_retries: int) -> bool:
-    if attempt < max_retries:
-        console.print(f"Attempt: {attempt + 1}/{max_retries}")
-        if execute_with_feedback(cmd):
-            console.print("Command was successful!", style="bold green")
-            return True
-        agent.run("Check environment variables and dependencies.")
-        agent.run("Try to fix environment issues by installing necessary packages.")
-        time.sleep(5)
-        return retry_command(agent, cmd, attempt + 1, max_retries)
-    console.print("Maximum attempts reached. Stopping execution.", style="bold red")
-    return False
+    if attempt >= max_retries:
+        console.print("Maximum attempts reached. Stopping execution.", style="bold red")
+        return False
+    console.print(f"Attempt: {attempt + 1}/{max_retries}")
+    if execute_with_feedback(cmd):
+        console.print("Command was successful!", style="bold green")
+        return True
+    agent.run("Check environment variables and dependencies.")
+    agent.run("Try to fix environment issues by installing necessary packages.")
+    time.sleep(5)
+    return retry_command(agent, cmd, attempt + 1, max_retries)
 
 def run_with_agent(cmd: str, max_retries: int):
     tools = setup_tools()
@@ -92,10 +88,14 @@ def record_command(cmd: str):
         log_file.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {cmd}\n")
 
 def countdown(seconds: int):
-    for second in range(seconds, 0, -1):
-        console.print(f"Countdown: {second} seconds left", style="bold magenta")
-        time.sleep(1)
-    console.print("Countdown completed!", style="bold green")
+    def countdown_helper(sec):
+        if sec > 0:
+            console.print(f"Countdown: {sec} seconds left", style="bold magenta")
+            time.sleep(1)
+            return countdown_helper(sec - 1)
+        console.print("Countdown completed!", style="bold green")
+
+    countdown_helper(seconds)
 
 @app.command()
 def main(cmd: str, max_retries: int = 5, countdown_time: int = 0):
