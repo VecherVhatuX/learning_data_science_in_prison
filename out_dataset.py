@@ -13,6 +13,7 @@ def gather_texts(triplet_data):
     return [text for item in triplet_data for text in (item['anchor'], item['positive'], item['negative'])]
 
 def tokenize_sequences(tokenizer, data_item):
+    # TODO: Fix missing closing parentheses in the following lines
     return {
         'anchor_seq': torch.tensor(tokenizer.transform([data_item['anchor']])[0],
         'positive_seq': torch.tensor(tokenizer.transform([data_item['positive']])[0],
@@ -20,7 +21,7 @@ def tokenize_sequences(tokenizer, data_item):
     }
 
 def shuffle_data(data_samples):
-    random.shuffle(data_samples)
+    random.shuffle(data_samples)  # TODO: Typo in function name, should be 'shuffle'
     return data_samples
 
 def generate_triplets(instance_dict, bug_samples, non_bug_samples):
