@@ -82,7 +82,7 @@ class DataHandler:
     def get_negative_samples(self, idx):
         return [self.tokenizer.encode(self.data[random.choice([j for j in range(len(self.data)) if j != self.sample_indices[idx]])]['input'],
                                   max_length=512, padding='max_length', truncation=True)
-            ) for _ in range(self.config["negative_samples_per_batch"])]
+            for _ in range(self.config["negative_samples_per_batch"])]
 
     def generate_samples_for_epoch(self):
         self.shuffle_data()
