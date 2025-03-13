@@ -37,7 +37,7 @@ def load_json(file_path, base_dir):
         data = json.load(f)
     mapping = {item['instance_id']: item['problem_statement'] for item in data}
     snippet_paths = [
-        (folder, os.path.join(folder, 'snippet.json'))
+        (folder, os.path.join(base_dir, 'snippet.json'))
         for folder in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, folder))
     ]
     return mapping, snippet_paths
