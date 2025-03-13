@@ -8,81 +8,81 @@ from tool_library import Tool, create_agent
 from loguru import logger
 from functools import reduce
 
-randomize_samples = lambda samples: random.sample(samples, len(samples))
+shuffle_data = lambda data: random.sample(data, len(data))
 
-split_samples = lambda samples: (
-    [item for item in samples if item['label'] == 1],
-    [item for item in samples if item['label'] == 0]
+partition_data = lambda data: (
+    [entry for entry in data if entry['label'] == 1],
+    [entry for entry in data if entry['label'] == 0]
 )
 
-increment_epoch = lambda samples, epoch: (split_samples(randomize_samples(samples)), epoch + 1)
+update_epoch = lambda data, epoch: (partition_data(shuffle_data(data)), epoch + 1)
 
-display_environment = lambda data: f"Current configurations: {dict(os.environ)}\n{data}"
+show_environment = lambda info: f"Current environment: {dict(os.environ)}\n{info}"
 
-install_package = lambda data: (
-    run(["pip", "install", data], text=True, capture_output=True, check=True).stdout
-    if not run(["pip", "install", data], text=True, capture_output=True).returncode
-    else run(["pip", "install", data], text=True, capture_output=True).stderr
+add_package = lambda package: (
+    run(["pip", "install", package], text=True, capture_output=True, check=True).stdout
+    if not run(["pip", "install", package], text=True, capture_output=True).returncode
+    else run(["pip", "install", package], text=True, capture_output=True).stderr
 )
 
-execute_command = lambda cmd: (
-    (run(cmd, shell=True, text=True, capture_output=True).stdout, 
-    run(cmd, shell=True, text=True, capture_output=True).stderr
-) if cmd else ("", "Command is empty or invalid.")
+run_shell_command = lambda command: (
+    (run(command, shell=True, text=True, capture_output=True).stdout, 
+    run(command, shell=True, text=True, capture_output=True).stderr
+) if command else ("", "Invalid or empty command.")
 
-initialize_tools = lambda: [
-    Tool(name="EnvironmentInspector", func=display_environment, description="Displays current environment settings."),
-    Tool(name="DependencyInstaller", func=install_package, description="Installs required dependencies.")
+setup_tools = lambda: [
+    Tool(name="EnvChecker", func=show_environment, description="Shows current environment settings."),
+    Tool(name="PackageManager", func=add_package, description="Installs necessary packages.")
 ]
 
-run_command_with_feedback = lambda cmd: (
-    logger.info(f"Executing command: {cmd}") or
+execute_with_logging = lambda command: (
+    logger.info(f"Running command: {command}") or
     (lambda output, error: (
-        logger.error(f"Execution failed: {error}") or False
-        if error else logger.success(f"Command executed successfully: {output}") or True
-    ))(*execute_command(cmd))
+        logger.error(f"Command failed: {error}") or False
+        if error else logger.success(f"Command succeeded: {output}") or True
+    ))(*run_shell_command(command))
 )
 
-attempt_command = lambda agent, cmd, attempt, max_retries: (
-    (logger.error("Reached maximum retries. Aborting.") or False)
-    if attempt >= max_retries else
-    (logger.info(f"Attempt number: {attempt + 1}/{max_retries}") or
-    (run_command_with_feedback(cmd) and (logger.success("Command executed successfully!") or True))
-    or (agent.run("Verify environment variables and dependencies.") or
-    agent.run("Attempt to resolve environment issues by installing required packages.") or
-    time.sleep(5) or attempt_command(agent, cmd, attempt + 1, max_retries))
+retry_command = lambda agent, command, attempt, max_attempts: (
+    (logger.error("Max retries reached. Stopping.") or False)
+    if attempt >= max_attempts else
+    (logger.info(f"Attempt: {attempt + 1}/{max_attempts}") or
+    (execute_with_logging(command) and (logger.success("Command executed!") or True))
+    or (agent.run("Check environment variables and dependencies.") or
+    agent.run("Try to fix environment issues by installing missing packages.") or
+    time.sleep(5) or retry_command(agent, command, attempt + 1, max_attempts))
 )
 
-execute_with_agent = lambda cmd, max_retries: (
-    lambda tools, agent: attempt_command(agent, cmd, 0, max_retries)
-)(initialize_tools(), create_agent(tools=initialize_tools()))
+run_with_agent = lambda command, max_attempts: (
+    lambda tools, agent: retry_command(agent, command, 0, max_attempts)
+)(setup_tools(), create_agent(tools=setup_tools()))
 
-time_tracker = lambda func: lambda *args, **kwargs: (
-    (lambda start_time: (
-        (lambda result: logger.info(f"Duration: {time.time() - start_time:.2f} seconds") or result
+time_function = lambda func: lambda *args, **kwargs: (
+    (lambda start: (
+        (lambda result: logger.info(f"Time taken: {time.time() - start:.2f} seconds") or result
         )(func(*args, **kwargs)))
     )(time.time())
 )
 
-start_process = time_tracker(lambda cmd, max_retries: (
-    logger.info("Process is starting...") or execute_with_agent(cmd, max_retries)
-))
-
-log_command = lambda cmd: (
-    (lambda log_file: log_file.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {cmd}\n"))
-    (open("command_log.txt", "a")) if not IOError else logger.error(f"Failed to log command: {e}")
+begin_process = time_function(lambda command, max_attempts: (
+    logger.info("Starting process...") or run_with_agent(command, max_attempts)
 )
 
-timer = lambda seconds: (
+record_command = lambda command: (
+    (lambda log: log.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {command}\n"))
+    (open("command_log.txt", "a")) if not IOError else logger.error(f"Logging failed: {e}")
+)
+
+countdown = lambda seconds: (
     (lambda sec: (
-        logger.info(f"Timer: {sec} seconds remaining") or time.sleep(1) or timer_helper(sec - 1)
-        if sec > 0 else logger.success("Timer finished!")
+        logger.info(f"Countdown: {sec} seconds left") or time.sleep(1) or countdown(sec - 1)
+        if sec > 0 else logger.success("Countdown complete!")
     )(seconds)
 )
 
-main = lambda cmd, max_retries=5, countdown_time=0: (
-    log_command(cmd) or (timer(countdown_time) if countdown_time > 0 else None) or start_process(cmd, max_retries)
+execute = lambda command, max_attempts=5, countdown_time=0: (
+    record_command(command) or (countdown(countdown_time) if countdown_time > 0 else None) or begin_process(command, max_attempts)
 )
 
 if __name__ == "__main__":
-    click.command()(main)()
+    click.command()(execute)()
