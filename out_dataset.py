@@ -7,9 +7,11 @@ from sklearn.preprocessing import LabelEncoder
 import matplotlib.pyplot as plt
 from tensorflow.keras import layers, models, optimizers
 
+# Function to gather all texts from triplet data
 def gather_all_texts(triplet_data):
     return [text for item in triplet_data for text in (item['anchor'], item['positive'], item['negative'])]
 
+# Function to transform text sequences using a tokenizer
 def transform_sequences(tokenizer, data_item):
     return {
         'anchor_seq': tf.convert_to_tensor(tokenizer.transform([data_item['anchor']])[0]),
@@ -17,10 +19,12 @@ def transform_sequences(tokenizer, data_item):
         'negative_seq': tf.convert_to_tensor(tokenizer.transform([data_item['negative']])[0])
     }
 
+# Function to shuffle data samples
 def shuffle_data(data_samples):
     random.shuffle(data_samples)
     return data_samples
 
+# Function to generate triplets from instance dictionary, bug samples, and non-bug samples
 def generate_triplets(instance_dict, bug_samples, non_bug_samples):
     return [
         {
@@ -32,6 +36,7 @@ def generate_triplets(instance_dict, bug_samples, non_bug_samples):
         for bug_sample in bug_samples
     ]
 
+# Function to load JSON data and prepare instance dictionary and snippet files
 def load_json_data(file_path, root_dir):
     with open(file_path, 'r') as f:
         json_content = json.load(f)
@@ -42,12 +47,14 @@ def load_json_data(file_path, root_dir):
     ]
     return instance_dict, snippet_files
 
+# Function to prepare triplet dataset from instance dictionary and snippet files
 def prepare_triplet_dataset(instance_dict, snippet_files):
     bug_samples, non_bug_samples = zip(*(map(lambda path: json.load(open(path)), snippet_files)))
     bug_samples = [s['snippet'] for s in bug_samples if s.get('is_bug') and s['snippet']]
     non_bug_samples = [s['snippet'] for s in non_bug_samples if not s.get('is_bug') and s['snippet']]
     return generate_triplets(instance_dict, bug_samples, non_bug_samples)
 
+# Class to handle triplet data and tokenization
 class TripletData:
     def __init__(self, triplet_data):
         self.triplet_data = triplet_data
@@ -57,6 +64,7 @@ class TripletData:
     def get_samples(self):
         return self.triplet_data
 
+# Custom TensorFlow Dataset class for triplet data
 class TripletDataset(tf.data.Dataset):
     def __init__(self, triplet_data):
         self.data = TripletData(triplet_data)
@@ -68,6 +76,7 @@ class TripletDataset(tf.data.Dataset):
         data_item = self.data.get_samples()[index]
         return transform_sequences(self.data.tokenizer, data_item)
 
+# Triplet model class with embedding and dense layers
 class TripletModel(models.Model):
     def __init__(self, vocab_size, embedding_dim):
         super(TripletModel, self).__init__()
@@ -85,10 +94,12 @@ class TripletModel(models.Model):
         negative_embed = self.dense_network(self.embedding_layer(negative))
         return anchor_embed, positive_embed, negative_embed
 
+# Function to calculate triplet loss
 def calculate_triplet_loss(anchor_embeds, positive_embeds, negative_embeds):
     return tf.reduce_mean(tf.maximum(0.2 + tf.norm(anchor_embeds - positive_embeds, axis=1) -
                           tf.norm(anchor_embeds - negative_embeds, axis=1), 0))
 
+# Function to train the model
 def train_model(model, train_loader, valid_loader, epochs):
     optimizer = optimizers.Adam(learning_rate=1e-5)
     history = []
@@ -109,6 +120,7 @@ def train_model(model, train_loader, valid_loader, epochs):
     
     return history
 
+# Function to evaluate the model
 def evaluate_model(model, valid_loader):
     model.eval()
     loss = 0
@@ -121,11 +133,13 @@ def evaluate_model(model, valid_loader):
     accuracy = correct / len(valid_loader.dataset)
     return loss / len(valid_loader), accuracy
 
+# Function to count correct predictions
 def count_correct(anchor_output, positive_output, negative_output):
     positive_similarity = tf.reduce_sum(anchor_output * positive_output, axis=1)
     negative_similarity = tf.reduce_sum(anchor_output * negative_output, axis=1)
     return tf.reduce_sum(tf.cast(positive_similarity > negative_similarity, tf.int32)).numpy()
 
+# Function to plot training results
 def plot_results(history):
     train_losses, val_losses, train_accuracies = zip(*history)
     plt.figure(figsize=(10, 5))
@@ -146,15 +160,18 @@ def plot_results(history):
     plt.legend()
     plt.show()
 
+# Function to save the model
 def save_model(model, filepath):
     model.save_weights(filepath)
     print(f'Model saved at {filepath}')
 
+# Function to load the model
 def load_model(model, filepath):
     model.load_weights(filepath)
     print(f'Model loaded from {filepath}')
     return model
 
+# Main function to execute the pipeline
 def main():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippets_directory = 'datasets/10_10_after_fix_pytest'
