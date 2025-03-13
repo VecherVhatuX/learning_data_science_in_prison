@@ -25,7 +25,7 @@ create_model_config = lambda: {
 
 TripletModel = lambda embedding_dim, vocab_size: Model(
     inputs=[layers.Input(shape=(None,))],
-    outputs=[layers.Dense(vocab_size)(layers.Dense(embedding_dim)(layers.LSTM(embedding_dim, return_sequences=True)(layers.Embedding(vocab_size, embedding_dim)(inputs))[:, -1, :])]
+    outputs=[layers.Dense(vocab_size)(layers.Dense(embedding_dim)(layers.LSTM(embedding_dim, return_sequences=True)(layers.Embedding(vocab_size, embedding_dim)(inputs))[:, -1, :]))]
 )
 
 compute_triplet_loss = lambda anchor, positive, negative: tf.reduce_mean(
