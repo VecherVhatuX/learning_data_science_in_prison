@@ -37,13 +37,13 @@ def find_impacted_tests(project_dir, changed_funcs):
     } for test in tests for call in test["method_calls"] if call in changed_funcs]
 
 @click.command()
-@click.option('--repo', required=True, help='Path to the repository')
-@click.option('--commit_id', required=True, help='Commit hash to analyze')
-@click.option('--project_path', required=True, help='Path to the project')
+@click.option('--repo', required=True, help='Location of the repository')
+@click.option('--commit_id', required=True, help='Hash of the commit to inspect')
+@click.option('--project_path', required=True, help='Directory of the project')
 def cli(repo, commit_id, project_path):
     changed_funcs = get_changed_functions(repo, commit_id)
     if not changed_funcs:
-        click.echo("No changes detected in functions.")
+        click.echo("No function modifications found.")
         return
     click.echo(json.dumps(find_impacted_tests(project_path, changed_funcs), indent=2)
 
