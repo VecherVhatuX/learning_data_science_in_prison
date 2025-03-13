@@ -13,13 +13,14 @@ create_embedding_model = lambda embedding_dim, feature_dim: tf.keras.Sequential(
     layers.LayerNormalization()
 ])
 
-generate_random_dataset = lambda size: (np.random.randint(0, 100, (size, 10)), np.random.randint(0, 2, size)
+generate_random_dataset = lambda size: (np.random.randint(0, 100, (size, 10)), np.random.randint(0, 2, size))
 
 create_triplet_data = lambda samples, labels, negative_count: tf.data.Dataset.from_tensor_slices((samples, labels)).map(
     lambda anchor, label: (
         anchor,
         tf.convert_to_tensor(random.choice(samples[labels == label.numpy()])),
         tf.convert_to_tensor(random.sample(samples[labels != label.numpy()].tolist(), negative_count))
+    )
 )
 
 triplet_loss_function = lambda margin=1.0: lambda anchor, positive, negative: tf.reduce_mean(
@@ -32,7 +33,8 @@ train_embedding_model = lambda model, dataset, epochs, learning_rate: (
             (lambda anchors, positives, negatives: (
                 (lambda loss: optimizer.apply_gradients(zip(tf.GradientTape().gradient(loss, model.trainable_variables), model.trainable_variables))(
                     loss_fn(anchors, positives, negatives)
-            ))(*batch) for batch in dataset.batch(32)
+                )
+            )(*batch) for batch in dataset.batch(32)
         ] and loss_history.append(epoch_loss / len(dataset)) for _ in range(epochs)
     ])(tf.keras.optimizers.Adam(learning_rate), triplet_loss_function()), []
 
@@ -41,7 +43,7 @@ evaluate_model = lambda model, samples, labels, k=5: (
         display_metrics(calculate_knn_metrics(embeddings, labels, k)),
         plot_embeddings(embeddings, labels)
     )
-)(model(tf.convert_to_tensor(samples, dtype=tf.int32)).numpy()
+)(model(tf.convert_to_tensor(samples, dtype=tf.int32)).numpy())
 
 display_metrics = lambda metrics: (
     print(f"Accuracy: {metrics[0]:.4f}"),
