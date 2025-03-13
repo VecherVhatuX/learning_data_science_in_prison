@@ -3,34 +3,27 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 import random
-from tensorflow.keras import layers, models, optimizers, losses, datasets
+from tensorflow.keras import layers, optimizers
 
 
-class Embedder(tf.keras.Model):
-    def __init__(self, emb_dim, feat_dim):
-        super(Embedder, self).__init__()
-        self.emb_layer = layers.Embedding(emb_dim, feat_dim)
-        self.avg_pool = layers.GlobalAveragePooling1D()
-        self.fc_layer = layers.Dense(feat_dim)
-        self.batch_norm = layers.BatchNormalization()
-        self.layer_norm = layers.LayerNormalization()
-
-    def call(self, input_data):
-        embedded = self.emb_layer(input_data)
-        pooled = self.avg_pool(embedded)
-        normalized = self.layer_norm(self.batch_norm(self.fc_layer(pooled)))
-        return normalized
+def create_embedder(emb_dim, feat_dim):
+    model = tf.keras.Sequential([
+        layers.Embedding(emb_dim, feat_dim),
+        layers.GlobalAveragePooling1D(),
+        layers.Dense(feat_dim),
+        layers.BatchNormalization(),
+        layers.LayerNormalization()
+    ])
+    return model
 
 
-class TripletData(tf.data.Dataset):
-    def __new__(cls, samples, labels, neg_count):
-        dataset = tf.data.Dataset.from_tensor_slices((samples, labels))
-        dataset = dataset.map(lambda anchor_sample, anchor_label: (
-            anchor_sample, 
-            tf.convert_to_tensor(random.choice(samples[np.where(labels == anchor_label)[0]])),
-            tf.convert_to_tensor(random.sample(samples[np.where(labels != anchor_label)[0]].tolist(), neg_count))
-        ))
-        return dataset
+def create_triplet_data(samples, labels, neg_count):
+    dataset = tf.data.Dataset.from_tensor_slices((samples, labels))
+    return dataset.map(lambda anchor_sample, anchor_label: (
+        anchor_sample, 
+        tf.convert_to_tensor(random.choice(samples[np.where(labels == anchor_label)[0]])),
+        tf.convert_to_tensor(random.sample(samples[np.where(labels != anchor_label)[0]].tolist(), neg_count))
+    ))
 
 
 def triplet_loss(margin=1.0):
@@ -60,10 +53,10 @@ def train(model, dataset, epochs, lr):
 
 def evaluate_model(model, samples, labels, k=5):
     model.evaluate(samples, labels)
-    embeddings = model(tf.convert_to_tensor(samples, dtype=tf.int32))
-    metrics = calculate_knn_metrics(embeddings.numpy(), labels, k)
+    embeddings = get_embeddings(model, samples)
+    metrics = calculate_knn_metrics(embeddings, labels, k)
     display_metrics(metrics)
-    plot_embeddings(embeddings.numpy(), labels)
+    plot_embeddings(embeddings, labels)
 
 
 def display_metrics(metrics):
@@ -126,39 +119,18 @@ def plot_training_loss(loss_history):
 
 def execute_training_pipeline(lr, batch_size, epochs, neg_count, emb_dim, feat_dim, data_size):
     samples, labels = generate_data(data_size)
-    triplet_data = TripletData(samples, labels, neg_count)
-    model = Embedder(emb_dim, feat_dim)
+    triplet_data = create_triplet_data(samples, labels, neg_count)
+    model = create_embedder(emb_dim, feat_dim)
     loss_history = train(model, triplet_data, epochs, lr)
     save_model(model, "triplet_model.h5")
     plot_training_loss(loss_history)
     evaluate_model(model, samples, labels)
 
 
-def create_additional_data(size):
-    return np.random.randn(size, 10), np.random.randint(0, 2, size)
-
-
-def plot_embedding_distribution(embeddings):
-    plt.figure(figsize=(10, 6))
-    plt.hist(embeddings.flatten(), bins=30, alpha=0.7, label='Embedding Values Distribution')
-    plt.title('Embedding Values Distribution Histogram')
-    plt.xlabel('Value')
-    plt.ylabel('Frequency')
-    plt.legend()
-    plt.show()
-
-
 def visualize_model_architecture(model):
     model.summary()
 
 
-def generate_synthetic_data_with_noise(size, noise_factor=0.1):
-    # Generate synthetic data with added noise
-    data = np.random.randn(size, 10)
-    noise = noise_factor * np.random.randn(size, 10)
-    return data + noise, np.random.randint(0, 2, size)
-
-
 if __name__ == "__main__":
     execute_training_pipeline(1e-4, 32, 10, 5, 101, 10, 100)
-    visualize_model_architecture(Embedder(101, 10))
+    visualize_model_architecture(create_embedder(101, 10))
