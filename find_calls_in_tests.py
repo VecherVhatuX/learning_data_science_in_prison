@@ -30,11 +30,7 @@ def locate_test_methods(project_dir):
                 module = parse(code)
                 for node in module.iter_funcdefs():
                     if "test" in node.name.value:
-                        calls = []
-                        for child in node.children:
-                            if isinstance(child, Function):
-                                for call in child.iter_call_names():
-                                    calls.append(call.value)
+                        calls = [call.value for child in node.children if isinstance(child, Function) for call in child.iter_call_names()]
                         test_methods.append({
                             "file": full_path,
                             "test_name": node.name.value,
@@ -44,18 +40,11 @@ def locate_test_methods(project_dir):
 
 def identify_affected_tests(project_dir, modified_funcs):
     test_methods = locate_test_methods(project_dir)
-    affected_tests = []
-    for test in test_methods:
-        file_path = test["file"]
-        test_name = test["test_name"]
-        calls = test["method_calls"]
-        for call in calls:
-            if call in modified_funcs:
-                affected_tests.append({
-                    "file": file_path,
-                    "test_name": test_name,
-                    "called_function": call
-                })
+    affected_tests = [{
+        "file": test["file"],
+        "test_name": test["test_name"],
+        "called_function": call
+    } for test in test_methods for call in test["method_calls"] if call in modified_funcs]
     return affected_tests
 
 @click.command()
