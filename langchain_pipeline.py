@@ -106,3 +106,9 @@ def main(cmd: str, max_retries: int = 5, countdown_time: int = 0):
 
 if __name__ == "__main__":
     typer.run(main)
+
+# TODO: Fix the syntax error in the `increment_epoch` function. There is an extra closing parenthesis.
+# TODO: The `run_command_with_feedback` function has a typo in the parameter name (`cmd` instead of `cmd`).
+# TODO: The `attempt_command` function does not handle the case where the agent fails to resolve environment issues. Add a fallback mechanism.
+# TODO: The `execute_command` function does not handle cases where the command is empty or invalid. Add validation.
+# TODO: The `log_command` function does not handle file write errors. Add error handling for file operations.
