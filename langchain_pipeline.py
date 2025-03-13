@@ -8,23 +8,19 @@ from tool_library import Tool, create_agent
 
 console = Console()
 
-class Dataset:
-    def __init__(self, samples):
-        self.samples = samples
-        self.epoch = 0
+def shuffle_samples(samples):
+    return random.sample(samples, len(samples))
 
-    def shuffle_samples(self):
-        self.samples = random.sample(self.samples, len(self.samples))
+def categorize_samples(samples):
+    return (
+        [item for item in samples if item['label'] == 1],
+        [item for item in samples if item['label'] == 0]
+    )
 
-    def categorize_samples(self):
-        positive_samples = [item for item in self.samples if item['label'] == 1]
-        negative_samples = [item for item in self.samples if item['label'] == 0]
-        return positive_samples, negative_samples
-
-    def update_epoch(self):
-        self.shuffle_samples()
-        self.epoch += 1
-        return self.categorize_samples(), self.epoch
+def update_epoch(samples, epoch):
+    shuffled_samples = shuffle_samples(samples)
+    categorized_samples = categorize_samples(shuffled_samples)
+    return categorized_samples, epoch + 1
 
 def show_env_info(data: str) -> str:
     return f"Current environment settings: {dict(os.environ)}\n{data}"
@@ -41,7 +37,8 @@ def package_installer(data: str) -> str:
         return error.stderr
 
 def run_shell_command(cmd: str) -> tuple:
-    return run(cmd, shell=True, text=True, capture_output=True).stdout, run(cmd, shell=True, text=True, capture_output=True).stderr
+    process = run(cmd, shell=True, text=True, capture_output=True)
+    return process.stdout, process.stderr
 
 def setup_tools() -> list:
     return [
