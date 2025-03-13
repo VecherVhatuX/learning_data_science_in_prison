@@ -1,23 +1,22 @@
 import os
 import time
 import random
-from rich.console import Console
 from subprocess import run, CalledProcessError
-import click
+import typer
+from typing import List, Dict, Tuple
 from tool_library import Tool, create_agent
+from loguru import logger
 
-console = Console()
-
-def randomize_samples(samples):
+def randomize_samples(samples: List[Dict]) -> List[Dict]:
     return random.sample(samples, len(samples))
 
-def split_samples(samples):
+def split_samples(samples: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
     return (
         [item for item in samples if item['label'] == 1],
         [item for item in samples if item['label'] == 0]
     )
 
-def increment_epoch(samples, epoch):
+def increment_epoch(samples: List[Dict], epoch: int) -> Tuple[Tuple[List[Dict], List[Dict]], int]:
     return split_samples(randomize_samples(samples)), epoch + 1
 
 def display_environment(data: str) -> str:
@@ -34,31 +33,32 @@ def install_package(data: str) -> str:
     except CalledProcessError as error:
         return error.stderr
 
-def execute_command(cmd: str) -> tuple:
-    return run(cmd, shell=True, text=True, capture_output=True).stdout, run(cmd, shell=True, text=True, capture_output=True).stderr
+def execute_command(cmd: str) -> Tuple[str, str]:
+    result = run(cmd, shell=True, text=True, capture_output=True)
+    return result.stdout, result.stderr
 
-def initialize_tools() -> list:
+def initialize_tools() -> List[Tool]:
     return [
         Tool(name="EnvironmentInspector", func=display_environment, description="Shows current configuration details."),
         Tool(name="DependencyInstaller", func=install_package, description="Installs necessary packages.")
     ]
 
 def run_command_with_feedback(cmd: str) -> bool:
-    console.print(f"Executing command: {cmd}")
+    logger.info(f"Executing command: {cmd}")
     output, error = execute_command(cmd)
     if error:
-        console.print(f"Execution failed: {error}", style="bold red")
+        logger.error(f"Execution failed: {error}")
         return False
-    console.print(f"Command executed successfully: {output}", style="bold green")
+    logger.success(f"Command executed successfully: {output}")
     return True
 
 def attempt_command(agent, cmd: str, attempt: int, max_retries: int) -> bool:
     if attempt >= max_retries:
-        console.print("Reached maximum retries. Aborting.", style="bold red")
+        logger.error("Reached maximum retries. Aborting.")
         return False
-    console.print(f"Attempt number: {attempt + 1}/{max_retries}")
+    logger.info(f"Attempt number: {attempt + 1}/{max_retries}")
     if run_command_with_feedback(cmd):
-        console.print("Command executed successfully!", style="bold green")
+        logger.success("Command executed successfully!")
         return True
     agent.run("Verify environment variables and dependencies.")
     agent.run("Attempt to resolve environment issues by installing required packages.")
@@ -74,13 +74,13 @@ def time_tracker(func):
     def wrapper(*args, **kwargs):
         start_time = time.time()
         result = func(*args, **kwargs)
-        console.print(f"Duration: {time.time() - start_time:.2f} seconds", style="bold yellow")
+        logger.info(f"Duration: {time.time() - start_time:.2f} seconds")
         return result
     return wrapper
 
 @time_tracker
 def start_process(cmd: str, max_retries: int):
-    console.print("Process is starting...", style="bold blue")
+    logger.info("Process is starting...")
     execute_with_agent(cmd, max_retries)
 
 def log_command(cmd: str):
@@ -90,23 +90,19 @@ def log_command(cmd: str):
 def timer(seconds: int):
     def timer_helper(sec):
         if sec > 0:
-            console.print(f"Timer: {sec} seconds remaining", style="bold magenta")
+            logger.info(f"Timer: {sec} seconds remaining")
             time.sleep(1)
             timer_helper(sec - 1)
         else:
-            console.print("Timer finished!", style="bold green")
+            logger.success("Timer finished!")
 
     timer_helper(seconds)
 
-@click.command()
-@click.argument('cmd')
-@click.option('--max-retries', default=5, help='Maximum number of command retries.')
-@click.option('--countdown-time', default=0, help='Countdown time before executing the command.')
-def main(cmd: str, max_retries: int, countdown_time: int):
+def main(cmd: str, max_retries: int = 5, countdown_time: int = 0):
     log_command(cmd)
     if countdown_time > 0:
         timer(countdown_time)
     start_process(cmd, max_retries)
 
 if __name__ == "__main__":
-    main()
+    typer.run(main)
