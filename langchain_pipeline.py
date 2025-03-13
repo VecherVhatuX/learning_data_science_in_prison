@@ -15,7 +15,7 @@ split_samples = lambda samples: (
     [item for item in samples if item['label'] == 0]
 )
 
-increment_epoch = lambda samples, epoch: (split_samples(randomize_samples(samples)), epoch + 1
+increment_epoch = lambda samples, epoch: (split_samples(randomize_samples(samples)), epoch + 1)
 
 display_environment = lambda data: f"Current configurations: {dict(os.environ)}\n{data}"
 
@@ -28,7 +28,7 @@ install_package = lambda data: (
 execute_command = lambda cmd: (
     (run(cmd, shell=True, text=True, capture_output=True).stdout, 
     run(cmd, shell=True, text=True, capture_output=True).stderr
-) if cmd else ("", "Command is empty or invalid.")
+) if cmd else ("", "Command is empty or invalid."))
 
 initialize_tools = lambda: [
     Tool(name="EnvironmentInspector", func=display_environment, description="Shows current configuration details."),
@@ -79,6 +79,18 @@ timer = lambda seconds: (
         if sec > 0 else logger.success("Timer finished!")
     )(seconds)
 )
+
+def backup_data(backup_dir: str = "backup"):
+    if not os.path.exists(backup_dir):
+        os.makedirs(backup_dir)
+    timestamp = time.strftime("%Y%m%d%H%M%S")
+    backup_file = os.path.join(backup_dir, f"backup_{timestamp}.txt")
+    with open(backup_file, "w") as f:
+        f.write(f"Backup created at {timestamp}\n")
+        f.write("Current environment variables:\n")
+        for key, value in dict(os.environ).items():
+            f.write(f"{key}={value}\n")
+    logger.success(f"Backup created successfully at {backup_file}")
 
 main = lambda cmd, max_retries=5, countdown_time=0: (
     log_command(cmd) or (timer(countdown_time) if countdown_time > 0 else None) or start_process(cmd, max_retries)
