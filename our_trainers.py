@@ -7,7 +7,7 @@ from tensorflow.keras import layers
 
 class Embedder(tf.keras.Model):
     def __init__(self, emb_dim, feat_dim):
-        super(Embedder, self).__init__()
+        super().__init__()
         self.embedding = layers.Embedding(emb_dim, feat_dim)
         self.pooling = layers.GlobalAveragePooling1D()
         self.dense = layers.Dense(feat_dim)
