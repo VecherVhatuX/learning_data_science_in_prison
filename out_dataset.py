@@ -45,7 +45,7 @@ def load_json_file(file_path, root_dir):
     return instance_dict, snippet_files
 
 def prepare_dataset(instance_dict, snippet_files):
-    bug_samples, non_bug_samples = zip(*(map(lambda path: json.load(open(path)), snippet_files)))
+    bug_samples, non_bug_samples = zip(*(map(lambda path: json.load(open(path)), snippet_files))
     bug_samples = [s['snippet'] for s in bug_samples if s.get('is_bug') and s['snippet']]
     non_bug_samples = [s['snippet'] for s in non_bug_samples if not s.get('is_bug') and s['snippet']]
     return create_triplets(instance_dict, bug_samples, non_bug_samples)
