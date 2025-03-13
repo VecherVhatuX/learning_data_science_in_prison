@@ -2,8 +2,7 @@ import os
 import subprocess
 import json
 import click
-from parso import parse
-from parso.python.tree import Function
+from libcst import parse_module, FunctionDef, Call, Name
 
 PYTHON = "python"
 
@@ -20,12 +19,15 @@ def find_test_functions(project_dir):
             if file.endswith(".py"):
                 full_path = os.path.join(root, file)
                 with open(full_path, "r", encoding="utf-8") as f:
-                    module = parse(f.read())
-                tests.extend({
-                    "file": full_path,
-                    "test_name": func.name.value,
-                    "calls": [call.value for child in func.children if isinstance(child, Function) for call in child.iter_call_names()]
-                } for func in module.iter_funcdefs() if "test" in func.name.value)
+                    module = parse_module(f.read())
+                for node in module.body:
+                    if isinstance(node, FunctionDef) and "test" in node.name.value:
+                        calls = [n.func.value for n in module.body if isinstance(n, Call) and isinstance(n.func, Name)]
+                        tests.append({
+                            "file": full_path,
+                            "test_name": node.name.value,
+                            "calls": calls
+                        })
     return tests
 
 def find_impacted_tests(project_dir, changed_funcs):
