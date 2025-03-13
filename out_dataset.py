@@ -14,9 +14,9 @@ def gather_texts(triplet_data):
 
 def tokenize_sequences(tokenizer, data_item):
     return {
-        'anchor_seq': torch.tensor(tokenizer.transform([data_item['anchor']])[0],
-        'positive_seq': torch.tensor(tokenizer.transform([data_item['positive']])[0],
-        'negative_seq': torch.tensor(tokenizer.transform([data_item['negative']])[0]
+        'anchor_seq': torch.tensor(tokenizer.transform([data_item['anchor']])[0]),
+        'positive_seq': torch.tensor(tokenizer.transform([data_item['positive']])[0]),
+        'negative_seq': torch.tensor(tokenizer.transform([data_item['negative']])[0])
     }
 
 def shuffle_data(data_samples):
