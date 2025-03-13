@@ -23,56 +23,54 @@ create_model_config = lambda: {
     "checkpoint_path": None, "negative_samples_per_batch": 5,
 }
 
-class TripletModel(Model):
-    def __init__(self, embedding_dim, vocab_size):
-        super().__init__()
-        self.embedding = layers.Embedding(vocab_size, embedding_dim)
-        self.lstm = layers.LSTM(embedding_dim, return_sequences=True)
-        self.dense = layers.Dense(embedding_dim)
-        self.output_layer = layers.Dense(vocab_size)
+TripletModel = lambda embedding_dim, vocab_size: Model(
+    inputs=[layers.Input(shape=(None,))],
+    outputs=[layers.Dense(vocab_size)(layers.Dense(embedding_dim)(layers.LSTM(embedding_dim, return_sequences=True)(layers.Embedding(vocab_size, embedding_dim)(inputs))[:, -1, :])]
+)
 
-    call = lambda self, inputs: self.output_layer(self.dense(self.lstm(self.embedding(inputs))[:, -1, :]))
-    compute_triplet_loss = lambda self, anchor, positive, negative: tf.reduce_mean(
-        tf.maximum(tf.reduce_mean(tf.square(anchor - positive), axis=-1) - 
-                   tf.reduce_mean(tf.square(anchor - negative), axis=-1) + 2.0, 0.0))
+compute_triplet_loss = lambda anchor, positive, negative: tf.reduce_mean(
+    tf.maximum(tf.reduce_mean(tf.square(anchor - positive), axis=-1) - 
+               tf.reduce_mean(tf.square(anchor - negative), axis=-1) + 2.0, 0.0))
 
-class DataHandler:
-    def __init__(self, data, config, tokenizer):
-        self.data, self.config, self.tokenizer = data, config, tokenizer
-        self.indices = list(range(len(data)))
+DataHandler = lambda data, config, tokenizer: {
+    "data": data, "config": config, "tokenizer": tokenizer, "indices": list(range(len(data))),
+    "shuffle_data": lambda self: random.shuffle(self["indices"], random.seed(self["config"]["seed"])),
+    "get_sample": lambda self, idx: (
+        self["tokenizer"].encode(self["data"][self["indices"][idx]]['input'], max_length=512, padding='max_length', truncation=True),
+        self["tokenizer"].encode(self["data"][self["indices"][idx]]['output'], max_length=512, padding='max_length', truncation=True),
+        self["get_negative_samples"](idx)
+    ),
+    "get_negative_samples": lambda self, idx: [
+        self["tokenizer"].encode(self["data"][random.choice([j for j in range(len(self["data"])) if j != self["indices"][idx]])]['input'],
+        max_length=512, padding='max_length', truncation=True) for _ in range(self["config"]["negative_samples_per_batch"])
+    ],
+    "generate_samples": lambda self: [self["get_sample"](i) for i in range(len(self["data"]))]
+}
 
-    shuffle_data = lambda self: random.shuffle(self.indices, random.seed(self.config["seed"]))
-    get_sample = lambda self, idx: (self.tokenizer.encode(self.data[self.indices[idx]]['input'], max_length=512, padding='max_length', truncation=True),
-                                    self.tokenizer.encode(self.data[self.indices[idx]]['output'], max_length=512, padding='max_length', truncation=True),
-                                    self.get_negative_samples(idx))
-    get_negative_samples = lambda self, idx: [self.tokenizer.encode(self.data[random.choice([j for j in range(len(self.data)) if j != self.indices[idx]])]['input'],
-                                              max_length=512, padding='max_length', truncation=True) for _ in range(self.config["negative_samples_per_batch"])]
-    generate_samples = lambda self: [self.get_sample(i) for i in range(len(self.data))]
-
-class DataLoader(tf.keras.utils.Sequence):
-    def __init__(self, dataset, config, tokenizer):
-        self.dataset, self.batch_size = DataHandler(dataset, config, tokenizer), config["batch_sizes"]['train']
-
-    __len__ = lambda self: len(self.dataset.data) // self.batch_size
-    __getitem__ = lambda self, index: tuple(np.array(x) for x in zip(*self.dataset.generate_samples()[index * self.batch_size:(index + 1) * self.batch_size]))
+DataLoader = lambda dataset, config, tokenizer: tf.keras.utils.Sequence(
+    dataset=DataHandler(dataset, config, tokenizer),
+    batch_size=config["batch_sizes"]['train'],
+    __len__=lambda self: len(self["dataset"]["data"]) // self["batch_size"],
+    __getitem__=lambda self, index: tuple(np.array(x) for x in zip(*self["dataset"]["generate_samples"]()[index * self["batch_size"]:(index + 1) * self["batch_size"]]))
+)
 
 load_data = lambda file_path: json.load(open(file_path, 'r')) if os.path.exists(file_path) else (print(f"File not found: {file_path}"), None)[1]
 initialize_tokenizer = lambda: T5Tokenizer.from_pretrained("t5-base")
 create_optimizer = lambda: tf.keras.optimizers.Adam(learning_rate=0.001)
-configure_training = lambda model, optimizer: model.compile(optimizer=optimizer, loss=lambda y_true, y_pred: model.compute_triplet_loss(y_true[0], y_true[1], y_pred))
+configure_training = lambda model, optimizer: model.compile(optimizer=optimizer, loss=lambda y_true, y_pred: compute_triplet_loss(y_true[0], y_true[1], y_pred))
 train_model = lambda model, config, data_loader: model.fit(data_loader, epochs=config["epochs"], optimizer=create_optimizer(), configure_training(model, create_optimizer()))
-evaluate_model = lambda model, data_loader: print(f"Mean Evaluation Loss: {sum(model.compute_triplet_loss(model(input_ids), model(labels), model(neg_samples)).numpy() for input_ids, labels, neg_samples in data_loader) / len(data_loader):.4f}")
+evaluate_model = lambda model, data_loader: print(f"Mean Evaluation Loss: {sum(compute_triplet_loss(model(input_ids), model(labels), model(neg_samples)).numpy() for input_ids, labels, neg_samples in data_loader) / len(data_loader):.4f}")
 save_model = lambda model, file_path: model.save_weights(file_path)
 save_logs = lambda history, file_path: json.dump(history.history, open(file_path, 'w'))
 
-def execute_training():
-    config, train_data, test_data, tokenizer = create_model_config(), load_data("train.json"), load_data("test.json"), initialize_tokenizer()
-    if train_data and test_data:
-        train_loader, test_loader = DataLoader(train_data, config, tokenizer), DataLoader(test_data, config, tokenizer)
-        model = TripletModel(128, 30522)
-        train_model(model, config, train_loader)
-        evaluate_model(model, test_loader)
-        save_model(model, os.path.join(config["results_dir"], "triplet_model.h5"))
+execute_training = lambda: (
+    lambda config, train_data, test_data, tokenizer: (
+        lambda train_loader, test_loader, model: (
+            train_model(model, config, train_loader),
+            evaluate_model(model, test_loader),
+            save_model(model, os.path.join(config["results_dir"], "triplet_model.h5"))
+        )(DataLoader(train_data, config, tokenizer), DataLoader(test_data, config, tokenizer), TripletModel(128, 30522))
+    )(create_model_config(), load_data("train.json"), load_data("test.json"), initialize_tokenizer()) if load_data("train.json") and load_data("test.json") else None
 
 if __name__ == "__main__":
     execute_training()
