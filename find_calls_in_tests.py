@@ -25,7 +25,7 @@ def locate_test_methods(project_root):
                     "file": file_path,
                     "test_name": func.name.value,
                     "method_calls": [call.value for child in func.children if isinstance(child, Function) for call in child.iter_call_names()]
-                } for func in parsed_module.iter_funcdefs() if "test" in func.name.value)
+                } for func in parsed_module.iter_funcdefs() if "test" in func.name.value.lower())
     return test_cases
 
 def identify_affected_tests(project_root, modified_funcs):
