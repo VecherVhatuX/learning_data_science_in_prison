@@ -125,9 +125,21 @@ def load_json(file_path):
         return None
 
 
-def train_triplet_network(model, config, data_loader):
-    optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
+def initialize_tokenizer():
+    return T5Tokenizer.from_pretrained("t5-base")
+
+
+def create_optimizer():
+    return tf.keras.optimizers.Adam(learning_rate=0.001)
+
+
+def compile_model(model, optimizer):
     model.compile(optimizer=optimizer, loss=lambda y_true, y_pred: model.compute_triplet_loss(y_true[0], y_true[1], y_pred))
+
+
+def train_triplet_network(model, config, data_loader):
+    optimizer = create_optimizer()
+    compile_model(model, optimizer)
     model.fit(data_loader, epochs=config["epochs"])
 
 
@@ -143,12 +155,13 @@ def evaluate_triplet_model(model, data_loader):
     print(f"Mean Evaluation Loss: {total_loss / len(data_loader):.4f}")
 
 
-def initialize_tokenizer():
-    return T5Tokenizer.from_pretrained("t5-base")
-
-
 def save_model(model, file_path):
     model.save_weights(file_path)
+
+
+def store_training_history(history, file_path):
+    with open(file_path, 'w') as f:
+        json.dump(history.history, f)
 
 
 def execute_training_pipeline():
@@ -168,11 +181,6 @@ def execute_training_pipeline():
     train_triplet_network(model, config, train_loader)
     evaluate_triplet_model(model, test_loader)
     save_model(model, os.path.join(config["results_directory"], "triplet_model.h5"))
-
-
-def store_training_history(history, file_path):
-    with open(file_path, 'w') as f:
-        json.dump(history.history, f)
 
 
 if __name__ == "__main__":
