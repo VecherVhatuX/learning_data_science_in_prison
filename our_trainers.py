@@ -24,7 +24,7 @@ generate_triplet_dataset = lambda samples, labels, neg_count: tf.data.Dataset.fr
 )
 
 create_triplet_loss = lambda margin=1.0: lambda anchor, positive, negative: tf.reduce_mean(
-    tf.maximum(tf.norm(anchor - positive, axis=1) - tf.reduce_min(tf.norm(anchor[:, tf.newaxis] - negative, axis=2), axis=1) + margin, 0.0
+    tf.maximum(tf.norm(anchor - positive, axis=1) - tf.reduce_min(tf.norm(anchor[:, tf.newaxis] - negative, axis=2), axis=1) + margin, 0.0)
 )
 
 train_model = lambda model, dataset, epochs, learning_rate: (
@@ -67,8 +67,8 @@ visualize_embeddings = lambda embeddings, labels: (
         plt.scatter(reduced_data[:, 0], reduced_data[:, 1], c=labels, cmap='viridis'),
         plt.colorbar(),
         plt.show()
-    )
-)()
+    ))()
+)
 
 compute_knn_metrics = lambda embeddings, labels, k=5: (
     (lambda dist_matrix=np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2), nearest_indices=np.argsort(dist_matrix, axis=1)[:, 1:k + 1]: (
