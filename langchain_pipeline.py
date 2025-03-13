@@ -8,81 +8,100 @@ from tool_library import Tool, create_agent
 from loguru import logger
 from functools import reduce
 
-shuffle_data = lambda data: random.sample(data, len(data))
+def shuffle_data(data):
+    return random.sample(data, len(data))
 
-partition_data = lambda data: (
-    [entry for entry in data if entry['label'] == 1],
-    [entry for entry in data if entry['label'] == 0]
-)
+def partition_data(data):
+    return (
+        [entry for entry in data if entry['label'] == 1],
+        [entry for entry in data if entry['label'] == 0]
+    )
 
-update_epoch = lambda data, epoch: (partition_data(shuffle_data(data)), epoch + 1)
+def update_epoch(data, epoch):
+    return (partition_data(shuffle_data(data)), epoch + 1
 
-show_environment = lambda info: f"Current environment: {dict(os.environ)}\n{info}"
+def show_environment(info):
+    return f"Current environment: {dict(os.environ)}\n{info}"
 
-add_package = lambda package: (
-    run(["pip", "install", package], text=True, capture_output=True, check=True).stdout
-    if not run(["pip", "install", package], text=True, capture_output=True, check=True).returncode
-    else run(["pip", "install", package], text=True, capture_output=True, check=True).stderr
-)
+def add_package(package):
+    try:
+        result = run(["pip", "install", package], text=True, capture_output=True, check=True)
+        return result.stdout
+    except CalledProcessError as e:
+        return e.stderr
 
-run_shell_command = lambda command: (
-    (run(command, shell=True, text=True, capture_output=True).stdout, run(command, shell=True, text=True, capture_output=True).stderr)
-    if command else ("", "Invalid or empty command.")
-)
+def run_shell_command(command):
+    if not command:
+        return "", "Invalid or empty command."
+    result = run(command, shell=True, text=True, capture_output=True)
+    return result.stdout, result.stderr
 
-setup_tools = lambda: [
-    Tool(name="EnvChecker", func=show_environment, description="Shows current environment settings."),
-    Tool(name="PackageManager", func=add_package, description="Installs necessary packages.")
-]
+def setup_tools():
+    return [
+        Tool(name="EnvChecker", func=show_environment, description="Shows current environment settings."),
+        Tool(name="PackageManager", func=add_package, description="Installs necessary packages.")
+    ]
 
-execute_with_logging = lambda command: (
-    logger.info(f"Running command: {command}") or
-    (lambda output, error: (
-        logger.error(f"Command failed: {error}") if error else
+def execute_with_logging(command):
+    logger.info(f"Running command: {command}")
+    output, error = run_shell_command(command)
+    if error:
+        logger.error(f"Command failed: {error}")
+    else:
         logger.success(f"Command succeeded: {output}")
-    ))(*run_shell_command(command)) and not error
+    return not error
 
-retry_command = lambda agent, command, attempt, max_attempts: (
-    logger.error("Max retries reached. Stopping.") if attempt >= max_attempts else
-    logger.info(f"Attempt: {attempt + 1}/{max_attempts}") or
-    (execute_with_logging(command) and logger.success("Command executed!")) or
-    (agent.run("Check environment variables and dependencies.") and
-     agent.run("Try to fix environment issues by installing missing packages.") and
-     time.sleep(5) and
-     retry_command(agent, command, attempt + 1, max_attempts)
-)
+def retry_command(agent, command, attempt, max_attempts):
+    if attempt >= max_attempts:
+        logger.error("Max retries reached. Stopping.")
+        return
+    logger.info(f"Attempt: {attempt + 1}/{max_attempts}")
+    if execute_with_logging(command):
+        logger.success("Command executed!")
+        return
+    agent.run("Check environment variables and dependencies.")
+    agent.run("Try to fix environment issues by installing missing packages.")
+    time.sleep(5)
+    retry_command(agent, command, attempt + 1, max_attempts)
 
-run_with_agent = lambda command, max_attempts: (
-    lambda tools, agent: retry_command(agent, command, 0, max_attempts)
-)(setup_tools(), create_agent(tools=setup_tools()))
+def run_with_agent(command, max_attempts):
+    tools = setup_tools()
+    agent = create_agent(tools=tools)
+    retry_command(agent, command, 0, max_attempts)
 
-time_function = lambda func: lambda *args, **kwargs: (
-    lambda start, result: (
-        logger.info(f"Time taken: {time.time() - start:.2f} seconds") or result
-    )(time.time(), func(*args, **kwargs))
-)
+def time_function(func):
+    def wrapper(*args, **kwargs):
+        start = time.time()
+        result = func(*args, **kwargs)
+        logger.info(f"Time taken: {time.time() - start:.2f} seconds")
+        return result
+    return wrapper
 
-begin_process = time_function(lambda command, max_attempts: (
-    logger.info("Starting process...") or
+@time_function
+def begin_process(command, max_attempts):
+    logger.info("Starting process...")
     run_with_agent(command, max_attempts)
-))
 
-record_command = lambda command: (
-    (lambda log: log.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {command}\n"))(open("command_log.txt", "a"))
-    if not IOError else logger.error(f"Logging failed: {IOError}")
-)
+def record_command(command):
+    try:
+        with open("command_log.txt", "a") as log:
+            log.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {command}\n")
+    except IOError as e:
+        logger.error(f"Logging failed: {e}")
 
-countdown = lambda seconds: (
-    logger.info(f"Countdown: {seconds} seconds left") and
-    time.sleep(1) and
-    countdown(seconds - 1)
-) if seconds > 0 else logger.success("Countdown complete!")
+def countdown(seconds):
+    if seconds > 0:
+        logger.info(f"Countdown: {seconds} seconds left")
+        time.sleep(1)
+        countdown(seconds - 1)
+    else:
+        logger.success("Countdown complete!")
 
-execute = lambda command, max_attempts=5, countdown_time=0: (
-    record_command(command) and
-    (countdown(countdown_time) if countdown_time > 0 else None) and
+def execute(command, max_attempts=5, countdown_time=0):
+    record_command(command)
+    if countdown_time > 0:
+        countdown(countdown_time)
     begin_process(command, max_attempts)
-)
 
 if __name__ == "__main__":
     click.command()(execute)()
