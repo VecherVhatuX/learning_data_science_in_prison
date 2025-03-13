@@ -5,6 +5,7 @@ from sklearn.manifold import TSNE
 import random
 from tensorflow.keras import layers
 
+# Model Definition
 class Embedder(tf.keras.Model):
     def __init__(self, emb_dim, feat_dim):
         super().__init__()
@@ -21,6 +22,10 @@ class Embedder(tf.keras.Model):
         x = self.batch_norm(x)
         return self.layer_norm(x)
 
+# Data Generation
+def create_random_data(size):
+    return np.random.randint(0, 100, (size, 10)), np.random.randint(0, 2, size)
+
 def generate_triplet_dataset(samples, labels, neg_count):
     dataset = tf.data.Dataset.from_tensor_slices((samples, labels))
     return dataset.map(lambda anchor, label: (
@@ -29,6 +34,7 @@ def generate_triplet_dataset(samples, labels, neg_count):
         tf.convert_to_tensor(random.sample(samples[labels != label.numpy()].tolist(), neg_count), dtype=tf.float32)
     ))
 
+# Loss Function
 def create_triplet_loss(margin=1.0):
     def loss_fn(anchor, positive, negative):
         pos_dist = tf.norm(anchor - positive, axis=1)
@@ -36,6 +42,7 @@ def create_triplet_loss(margin=1.0):
         return tf.reduce_mean(tf.maximum(pos_dist - tf.reduce_min(neg_dist, axis=1) + margin, 0.0))
     return loss_fn
 
+# Training
 def train_model(model, dataset, epochs, learning_rate):
     optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
     loss_fn = create_triplet_loss()
@@ -52,6 +59,7 @@ def train_model(model, dataset, epochs, learning_rate):
         losses.append(epoch_loss / len(dataset))
     return losses
 
+# Model Assessment
 def assess_model(model, samples, labels, k=5):
     model.evaluate(samples, labels)
     embeddings = extract_embeddings(model, samples)
@@ -65,9 +73,7 @@ def print_metrics(metrics):
     print(f"Recall: {metrics[2]:.4f}")
     print(f"F1-score: {metrics[3]:.4f}")
 
-def create_random_data(size):
-    return np.random.randint(0, 100, (size, 10)), np.random.randint(0, 2, size)
-
+# Model Saving and Loading
 def save_model_weights(model, filepath):
     model.save_weights(filepath)
 
@@ -76,9 +82,11 @@ def load_model_weights(model_class, filepath):
     model.load_weights(filepath)
     return model
 
+# Embedding Extraction
 def extract_embeddings(model, input_data):
     return model(tf.convert_to_tensor(input_data, dtype=tf.int32)).numpy()
 
+# Visualization
 def visualize_embeddings(embeddings, labels):
     tsne = TSNE(n_components=2)
     reduced_data = tsne.fit_transform(embeddings)
@@ -87,6 +95,7 @@ def visualize_embeddings(embeddings, labels):
     plt.colorbar()
     plt.show()
 
+# KNN Metrics Computation
 def compute_knn_metrics(embeddings, labels, k=5):
     dist_matrix = np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2)
     nearest_indices = np.argsort(dist_matrix, axis=1)[:, 1:k + 1]
@@ -100,6 +109,7 @@ def compute_knn_metrics(embeddings, labels, k=5):
 
     return accuracy, precision, recall, f1_score
 
+# Loss Plotting
 def plot_loss(loss_history):
     plt.figure(figsize=(10, 5))
     plt.plot(loss_history, label='Loss', color='blue')
@@ -109,6 +119,7 @@ def plot_loss(loss_history):
     plt.legend()
     plt.show()
 
+# Training Pipeline
 def run_training_pipeline(learning_rate, batch_size, epochs, neg_count, emb_dim, feat_dim, data_size):
     samples, labels = create_random_data(data_size)
     triplet_data = generate_triplet_dataset(samples, labels, neg_count)
@@ -118,9 +129,11 @@ def run_training_pipeline(learning_rate, batch_size, epochs, neg_count, emb_dim,
     plot_loss(loss_history)
     assess_model(model, samples, labels)
 
+# Model Summary
 def show_model_summary(model):
     model.summary()
 
+# Main Execution
 if __name__ == "__main__":
     run_training_pipeline(1e-4, 32, 10, 5, 101, 10, 100)
     show_model_summary(Embedder(101, 10))
