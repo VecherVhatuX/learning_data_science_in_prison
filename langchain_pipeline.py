@@ -8,17 +8,23 @@ from tool_library import Tool, create_agent
 
 console = Console()
 
-def shuffle_data(samples):
-    return random.sample(samples, len(samples))
+class Dataset:
+    def __init__(self, samples):
+        self.samples = samples
+        self.epoch = 0
 
-def categorize_samples(samples):
-    return (
-        [item for item in samples if item['label'] == 1],
-        [item for item in samples if item['label'] == 0]
-    )
+    def shuffle_samples(self):
+        self.samples = random.sample(self.samples, len(self.samples))
 
-def update_epoch(samples, epoch):
-    return categorize_samples(shuffle_data(samples)), epoch + 1
+    def categorize_samples(self):
+        positive_samples = [item for item in self.samples if item['label'] == 1]
+        negative_samples = [item for item in self.samples if item['label'] == 0]
+        return positive_samples, negative_samples
+
+    def update_epoch(self):
+        self.shuffle_samples()
+        self.epoch += 1
+        return self.categorize_samples(), self.epoch
 
 def show_env_info(data: str) -> str:
     return f"Current environment settings: {dict(os.environ)}\n{data}"
