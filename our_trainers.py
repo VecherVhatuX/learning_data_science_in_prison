@@ -20,7 +20,6 @@ create_triplet_data = lambda samples, labels, negative_count: tf.data.Dataset.fr
         anchor,
         tf.convert_to_tensor(random.choice(samples[labels == label.numpy()]), dtype=tf.float32),
         tf.convert_to_tensor(random.sample(samples[labels != label.numpy()].tolist(), negative_count), dtype=tf.float32)
-    )
 )
 
 triplet_loss_function = lambda margin=1.0: lambda anchor, positive, negative: tf.reduce_mean(
@@ -81,7 +80,7 @@ plot_embeddings = lambda embeddings, labels: (
         plt.scatter(reduced_data[:, 0], reduced_data[:, 1], c=labels, cmap='viridis'),
         plt.colorbar(),
         plt.show()
-    ))()
+    )()
 )
 
 calculate_knn_metrics = lambda embeddings, labels, k=5: (
