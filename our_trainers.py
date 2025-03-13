@@ -25,8 +25,8 @@ def generate_triplet_dataset(samples, labels, neg_count):
     dataset = tf.data.Dataset.from_tensor_slices((samples, labels))
     return dataset.map(lambda anchor, label: (
         anchor, 
-        tf.convert_to_tensor(random.choice(samples[labels == label])),
-        tf.convert_to_tensor(random.sample(samples[labels != label].tolist(), neg_count))
+        tf.convert_to_tensor(random.choice(samples[labels == label.numpy()]), dtype=tf.float32),
+        tf.convert_to_tensor(random.sample(samples[labels != label.numpy()].tolist(), neg_count), dtype=tf.float32)
     ))
 
 def create_triplet_loss(margin=1.0):
