@@ -14,9 +14,9 @@ def gather_texts(data):
 
 def transform_data(encoder, entry):
     return {
-        'anchor_seq': torch.tensor(encoder.transform([entry['anchor']])[0],
-        'positive_seq': torch.tensor(encoder.transform([entry['positive']])[0],
-        'negative_seq': torch.tensor(encoder.transform([entry['negative']])[0]
+        'anchor_seq': torch.tensor(encoder.transform([entry['anchor']])[0]),
+        'positive_seq': torch.tensor(encoder.transform([entry['positive']])[0]),
+        'negative_seq': torch.tensor(encoder.transform([entry['negative']])[0])
     }
 
 def randomize_data(data):
@@ -105,7 +105,7 @@ def evaluate_model(model, data):
     return total_loss / len(data), correct / len(data.dataset)
 
 def count_accuracy(anchor, positive, negative):
-    return torch.sum((torch.sum(anchor * positive, dim=1) > torch.sum(anchor * negative, dim=1)).item()
+    return torch.sum((torch.sum(anchor * positive, dim=1) > torch.sum(anchor * negative, dim=1)).item())
 
 def plot_history(history):
     plt.figure(figsize=(10, 5))
