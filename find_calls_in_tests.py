@@ -4,50 +4,50 @@ import json
 import click
 from libcst import parse_module, FunctionDef, Call, Name
 
-PYTHON = "python"
+PYTHON_EXEC = "python3"
 
-def get_changed_functions(repo_path, commit_hash):
-    os.chdir(repo_path)
-    diff = subprocess.check_output(["git", "diff", commit_hash, "--", "*.py"], text=True)
-    return {line.split()[3].split('(')[0].strip('+') for line in diff.split('\n') 
+def fetch_modified_functions(repo_dir, commit_id):
+    os.chdir(repo_dir)
+    git_diff = subprocess.check_output(["git", "diff", commit_id, "--", "*.py"], text=True)
+    return {line.split()[3].split('(')[0].strip('+') for line in git_diff.split('\n') 
             if line.startswith('@@') and len(line.split()) > 3 and '(' in line.split()[3]}
 
-def find_test_functions(project_dir):
-    tests = []
-    for root, _, files in os.walk(project_dir):
-        for file in files:
-            if file.endswith(".py"):
-                full_path = os.path.join(root, file)
-                with open(full_path, "r", encoding="utf-8") as f:
-                    module = parse_module(f.read())
-                for node in module.body:
+def locate_test_functions(project_root):
+    test_functions = []
+    for root_dir, _, filenames in os.walk(project_root):
+        for filename in filenames:
+            if filename.endswith(".py"):
+                file_path = os.path.join(root_dir, filename)
+                with open(file_path, "r", encoding="utf-8") as file:
+                    module_content = parse_module(file.read())
+                for node in module_content.body:
                     if isinstance(node, FunctionDef) and "test" in node.name.value:
-                        calls = [n.func.value for n in module.body if isinstance(n, Call) and isinstance(n.func, Name)]
-                        tests.append({
-                            "file": full_path,
-                            "test_name": node.name.value,
-                            "calls": calls
+                        function_calls = [n.func.value for n in module_content.body if isinstance(n, Call) and isinstance(n.func, Name)]
+                        test_functions.append({
+                            "file_path": file_path,
+                            "test_function": node.name.value,
+                            "function_calls": function_calls
                         })
-    return tests
+    return test_functions
 
-def find_impacted_tests(project_dir, changed_funcs):
-    tests = find_test_functions(project_dir)
+def identify_affected_tests(project_root, modified_functions):
+    test_functions = locate_test_functions(project_root)
     return [{
-        "file": test["file"],
-        "test_name": test["test_name"],
+        "file_path": test["file_path"],
+        "test_function": test["test_function"],
         "called_function": call
-    } for test in tests for call in test["calls"] if call in changed_funcs]
+    } for test in test_functions for call in test["function_calls"] if call in modified_functions]
 
 @click.command()
 @click.option('--repo', required=True, help='Path to the repository')
 @click.option('--commit', required=True, help='Commit hash to analyze')
 @click.option('--project', required=True, help='Path to the project root')
-def cli(repo, commit, project):
-    changed_funcs = get_changed_functions(repo, commit)
-    if not changed_funcs:
+def main(repo, commit, project):
+    modified_functions = fetch_modified_functions(repo, commit)
+    if not modified_functions:
         click.echo("No functions were modified.")
         return
-    click.echo(json.dumps(find_impacted_tests(project, changed_funcs), indent=2))
+    click.echo(json.dumps(identify_affected_tests(project, modified_functions), indent=2))
 
 if __name__ == "__main__":
-    cli()
+    main()
