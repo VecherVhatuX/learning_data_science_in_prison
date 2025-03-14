@@ -23,14 +23,10 @@ create_triplet_data = lambda samples, labels, negative_count: tf.data.Dataset.fr
     )
 )
 
-# TODO: The triplet loss function is not correctly implemented. The margin is not being applied correctly.
-# The current implementation may lead to incorrect gradient updates during training.
 triplet_loss_function = lambda margin=1.0: lambda anchor, positive, negative: tf.reduce_mean(
     tf.maximum(tf.norm(anchor - positive, axis=1) - tf.reduce_min(tf.norm(anchor[:, tf.newaxis] - negative, axis=2), axis=1) + margin, 0.0)
 )
 
-# TODO: The training loop is not correctly implemented. The loss is not being calculated or updated properly.
-# The optimizer is not being applied correctly, and the loss history is not being recorded.
 train_embedding_model = lambda model, dataset, epochs, learning_rate: (
     lambda optimizer, loss_fn: [
         (lambda epoch_loss: [
