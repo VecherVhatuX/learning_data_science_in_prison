@@ -100,7 +100,7 @@ def configure_training(model, optimizer):
     model.compile(optimizer=optimizer, loss=lambda y_true, y_pred: calculate_triplet_loss(y_true[0], y_true[1], y_pred))
 
 def train_model(model, config, data_loader):
-    model.fit(data_loader, epochs=config.epochs, optimizer=create_optimizer(), configure_training(model, create_optimizer()))
+    model.fit(data_loader, epochs=config.epochs, callbacks=[add_early_stopping()])
 
 def assess_model(model, data_loader):
     total_loss = sum(calculate_triplet_loss(model(input_ids), model(labels), model(neg_samples)).numpy() for input_ids, labels, neg_samples in data_loader)
@@ -122,6 +122,8 @@ def execute_training():
         train_loader = BatchGenerator(train_data, config, tokenizer)
         test_loader = BatchGenerator(test_data, config, tokenizer)
         model = create_triplet_network(128, 30522)
+        optimizer = add_lr_scheduler(create_optimizer(), config)
+        configure_training(model, optimizer)
         train_model(model, config, train_loader)
         assess_model(model, test_loader)
         store_weights(model, os.path.join(config.results_dir, "triplet_model.h5"))
