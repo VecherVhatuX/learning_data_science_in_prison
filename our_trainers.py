@@ -75,8 +75,8 @@ def show_metrics(metrics):
 def save_model(model, path):
     torch.save(model.state_dict(), path)
 
-def load_model(model_class, path):
-    model = model_class()
+def load_model(model_class, path, vocab_dim, embed_dim):
+    model = model_class(vocab_dim, embed_dim)
     model.load_state_dict(torch.load(path))
     return model
 
@@ -109,6 +109,11 @@ def plot_loss(losses):
     plt.legend()
     plt.show()
 
+def generate_random_data(data_size):
+    inputs = np.random.randint(0, 100, size=(data_size,))
+    labels = np.random.randint(0, 10, size=(data_size,))
+    return inputs, labels
+
 def run_training(lr, batch_size, epochs, neg_samples, vocab_dim, embed_dim, data_size):
     inputs, labels = generate_random_data(data_size)
     data = TripletData(inputs, labels, neg_samples)
@@ -138,7 +143,7 @@ def early_stop_train(model, data, epochs, lr, patience=5):
             loss.backward()
             opt.step()
             total_loss += loss.item()
-        avg_loss = total_loss / len(data))
+        avg_loss = total_loss / len(data)
         losses.append(avg_loss)
 
         if avg_loss < best_loss:
