@@ -127,6 +127,37 @@ def run_training_pipeline(lr, batch_size, num_epochs, num_negatives, embedding_s
 def display_network_summary(network):
     print(network)
 
+def add_early_stopping(network, dataset, num_epochs, lr, patience=5):
+    optimizer = optim.Adam(network.parameters(), lr=lr)
+    loss_fn = compute_triplet_loss()
+    loss_history = []
+    best_loss = float('inf')
+    epochs_without_improvement = 0
+
+    for epoch in range(num_epochs):
+        epoch_loss = 0.0
+        for anchors, positives, negatives in DataLoader(dataset, batch_size=32, shuffle=True):
+            optimizer.zero_grad()
+            anchors_emb = network(anchors)
+            positives_emb = network(positives)
+            negatives_emb = network(negatives)
+            loss = loss_fn(anchors_emb, positives_emb, negatives_emb)
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item()
+        avg_epoch_loss = epoch_loss / len(dataset)
+        loss_history.append(avg_epoch_loss)
+
+        if avg_epoch_loss < best_loss:
+            best_loss = avg_epoch_loss
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
+            if epochs_without_improvement >= patience:
+                print(f"Early stopping at epoch {epoch}")
+                break
+    return loss_history
+
 if __name__ == "__main__":
     run_training_pipeline(1e-4, 32, 10, 5, 101, 10, 100)
     display_network_summary(EmbeddingNetwork(101, 10))
