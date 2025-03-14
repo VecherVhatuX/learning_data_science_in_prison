@@ -226,5 +226,9 @@ def run_cmd(cmd, max_attempts=5, timer_duration=0):
         countdown(timer_duration)
     start_process(cmd, max_attempts)
 
+# TODO: Fix the bug in the `process_epoch` function where the return value is incorrectly formatted.
+# The function currently returns a tuple of (separated_lists, epoch + 1), but the epoch increment is not being used correctly.
+# This may cause issues in the calling code where the epoch is expected to be updated properly.
+
 if __name__ == "__main__":
     click.command()(run_cmd)()
