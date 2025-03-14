@@ -138,7 +138,7 @@ def train_with_early_stop(model, dataset, epochs, lr, patience=5):
             loss.backward()
             opt.step()
             epoch_loss += loss.item()
-        avg_loss = epoch_loss / len(dataset))
+        avg_loss = epoch_loss / len(dataset)
         loss_hist.append(avg_loss)
 
         if avg_loss < best_loss:
@@ -150,6 +150,11 @@ def train_with_early_stop(model, dataset, epochs, lr, patience=5):
                 print(f"Early stopping at epoch {epoch}")
                 break
     return loss_hist
+
+def generate_random_data(data_size):
+    data = np.random.randint(0, 100, (data_size, 10))
+    labels = np.random.randint(0, 10, data_size)
+    return data, labels
 
 if __name__ == "__main__":
     run_training(1e-4, 32, 10, 5, 101, 10, 100)
