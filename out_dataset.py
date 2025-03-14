@@ -11,34 +11,42 @@ from torch.utils.data import Dataset, DataLoader
 from functools import reduce
 from operator import add
 
+# Gather all texts from the data (anchor, positive, negative) into a single list
 gather_texts = lambda data: [text for item in data for text in (item['anchor'], item['positive'], item['negative'])]
 
+# Encode the sequences (anchor, positive, negative) using the provided encoder
 encode_sequences = lambda encoder, item: {
     'anchor_seq': torch.tensor(encoder.transform([item['anchor']])[0],
     'positive_seq': torch.tensor(encoder.transform([item['positive']])[0]),
     'negative_seq': torch.tensor(encoder.transform([item['negative']])[0])
 }
 
+# Shuffle the data and return it
 shuffle_data = lambda data: random.shuffle(data) or data
 
+# Generate triplets (anchor, positive, negative) from the given mapping, bug samples, and non-bug samples
 generate_triplets = lambda mapping, bug_samples, non_bug_samples: [
     {'anchor': mapping[os.path.basename(dir)], 'positive': bug_sample, 'negative': random.choice(non_bug_samples)}
     for dir, _ in snippet_files for bug_sample in bug_samples
 ]
 
+# Fetch data from the given file path and root directory, returning a mapping and snippet files
 fetch_data = lambda file_path, root_dir: (
     lambda data: ({item['instance_id']: item['problem_statement'] for item in data}, 
                   [(dir, os.path.join(root_dir, 'snippet.json')) for dir in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, dir))])
 )(json.load(open(file_path)))
 
+# Process the data by generating triplets from the mapping and snippet files
 process_data = lambda mapping, snippet_files: generate_triplets(mapping, *zip(*[json.load(open(path)) for path in snippet_files]))
 
+# DataManager class to manage and encode the data
 class DataManager:
     def __init__(self, data):
         self.data = data
         self.encoder = LabelEncoder().fit(gather_texts(data))
     retrieve_data = lambda self: self.data
 
+# TripletDataset class to handle the dataset for training and validation
 class TripletDataset(Dataset):
     def __init__(self, data):
         self.data = DataManager(data)
@@ -46,6 +54,7 @@ class TripletDataset(Dataset):
     __len__ = lambda self: len(self.samples)
     __getitem__ = lambda self, idx: encode_sequences(self.data.encoder, self.samples[idx])
 
+# EmbeddingModel class to define the neural network model for embeddings
 class EmbeddingModel(nn.Module):
     def __init__(self, vocab_size, embed_dim):
         super(EmbeddingModel, self).__init__()
@@ -63,8 +72,10 @@ class EmbeddingModel(nn.Module):
         self.network(self.embedding(negative))
     )
 
+# Calculate the triplet loss
 calculate_loss = lambda anchor, positive, negative: torch.mean(torch.clamp(0.2 + torch.norm(anchor - positive, dim=1) - torch.norm(anchor - negative, dim=1), min=0))
 
+# Train the model using the provided training and validation data
 train_model = lambda model, train_data, valid_data, epochs: reduce(
     lambda history, _: history + [(lambda loss, eval_result: (loss.item(), *eval_result))(
         (lambda anchor, positive, negative: (lambda loss: (loss.backward(), optimizer.step(), loss))(
@@ -76,13 +87,16 @@ train_model = lambda model, train_data, valid_data, epochs: reduce(
     []
 )
 
+# Evaluate the model on the provided data
 evaluate_model = lambda model, data: (
     sum(calculate_loss(*model(batch['anchor_seq'], batch['positive_seq'], batch['negative_seq'])).item() for batch in data) / len(data),
     sum(count_correct(*model(batch['anchor_seq'], batch['positive_seq'], batch['negative_seq'])) for batch in data) / len(data.dataset)
 )
 
+# Count the number of correct predictions
 count_correct = lambda anchor, positive, negative: torch.sum((torch.sum(anchor * positive, dim=1) > torch.sum(anchor * negative, dim=1)).item()
 
+# Plot the training and validation history
 plot_history = lambda history: (
     plt.figure(figsize=(10, 5)),
     plt.subplot(1, 2, 1),
@@ -100,10 +114,13 @@ plot_history = lambda history: (
     plt.show()
 )
 
+# Save the model to the specified path
 save_model = lambda model, path: (torch.save(model.state_dict(), path), print(f'Model saved at {path}'))
 
+# Load the model from the specified path
 load_model = lambda model, path: (model.load_state_dict(torch.load(path)), print(f'Model loaded from {path}'), model)
 
+# Visualize the embeddings in a 2D scatter plot
 visualize_embeddings = lambda model, data: (
     plt.figure(figsize=(10, 10)),
     plt.scatter(*zip(*[(anchor.detach().numpy(), batch['anchor_seq'].numpy()) for batch in data for anchor, _, _ in [model(batch['anchor_seq'], batch['positive_seq'], batch['negative_seq'])])), c='Spectral'),
@@ -112,6 +129,7 @@ visualize_embeddings = lambda model, data: (
     plt.show()
 )
 
+# Main function to run the entire pipeline
 run = lambda: (
     lambda dataset_path, snippets_dir: (
         lambda mapping, snippet_files: (
