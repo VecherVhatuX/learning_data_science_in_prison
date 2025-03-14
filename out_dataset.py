@@ -8,7 +8,6 @@ import torch.optim as optim
 from sklearn.preprocessing import LabelEncoder
 import matplotlib.pyplot as plt
 from torch.utils.data import Dataset, DataLoader
-from functools import reduce
 
 def collect_texts(data):
     return [text for item in data for text in (item['anchor'], item['positive'], item['negative'])]
@@ -17,7 +16,7 @@ def encode_data(encoder, item):
     return {
         'anchor_seq': torch.tensor(encoder.transform([item['anchor']])[0],
         'positive_seq': torch.tensor(encoder.transform([item['positive']])[0],
-        'negative_seq': torch.tensor(encoder.transform([item['negative']])[0])
+        'negative_seq': torch.tensor(encoder.transform([item['negative']])[0]
     }
 
 def shuffle_dataset(data):
