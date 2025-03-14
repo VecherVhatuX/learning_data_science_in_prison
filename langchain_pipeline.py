@@ -6,102 +6,103 @@ import click
 from typing import List, Dict, Tuple
 from tool_library import Tool, create_agent
 from loguru import logger
-from functools import reduce
+from functools import wraps
 
-def shuffle_data(data):
+def randomize_data(data):
     return random.sample(data, len(data))
 
-def partition_data(data):
+def split_data(data):
     return (
-        [entry for entry in data if entry['label'] == 1],
-        [entry for entry in data if entry['label'] == 0]
+        [item for item in data if item['label'] == 1],
+        [item for item in data if item['label'] == 0]
     )
 
-def update_epoch(data, epoch):
-    return (partition_data(shuffle_data(data)), epoch + 1)
+def process_epoch(data, epoch):
+    return (split_data(randomize_data(data)), epoch + 1)
 
-def show_environment(info):
-    return f"Current environment: {dict(os.environ)}\n{info}"
+def display_environment(info):
+    return f"Environment details: {dict(os.environ)}\n{info}"
 
-def add_package(package):
+def install_package(package):
     try:
         result = run(["pip", "install", package], text=True, capture_output=True, check=True)
         return result.stdout
     except CalledProcessError as e:
         return e.stderr
 
-def run_shell_command(command):
+def execute_command(command):
     if not command:
-        return "", "Invalid or empty command."
+        return "", "Command is empty or invalid."
     result = run(command, shell=True, text=True, capture_output=True)
     return result.stdout, result.stderr
 
-def setup_tools():
+def initialize_tools():
     return [
-        Tool(name="EnvChecker", func=show_environment, description="Displays the current environment configuration."),
-        Tool(name="PackageManager", func=add_package, description="Handles the installation of required packages.")
+        Tool(name="EnvDisplay", func=display_environment, description="Shows the current environment settings."),
+        Tool(name="PackageInstaller", func=install_package, description="Installs necessary packages.")
     ]
 
-def execute_with_logging(command):
-    logger.info(f"Running command: {command}")
-    output, error = run_shell_command(command)
+def log_command_execution(command):
+    logger.info(f"Executing command: {command}")
+    output, error = execute_command(command)
     if error:
-        logger.error(f"Command failed: {error}")
+        logger.error(f"Execution failed: {error}")
     else:
-        logger.success(f"Command succeeded: {output}")
+        logger.success(f"Execution successful: {output}")
     return not error
 
-def retry_command(agent, command, attempt, max_attempts):
+def retry_execution(agent, command, attempt, max_attempts):
     if attempt >= max_attempts:
-        logger.error("Maximum retry attempts reached. Aborting.")
+        logger.error("Max retries reached. Stopping.")
         return
     logger.info(f"Attempt: {attempt + 1}/{max_attempts}")
-    if execute_with_logging(command):
+    if log_command_execution(command):
         logger.success("Command executed successfully!")
         return
-    agent.run("Verify environment variables and dependencies.")
-    agent.run("Attempt to resolve environment issues by installing missing packages.")
+    agent.run("Check environment variables and dependencies.")
+    agent.run("Attempt to fix environment issues by installing missing packages.")
     time.sleep(5)
-    retry_command(agent, command, attempt + 1, max_attempts)
+    retry_execution(agent, command, attempt + 1, max_attempts)
 
-def run_with_agent(command, max_attempts):
-    tools = setup_tools()
+def execute_with_agent(command, max_attempts):
+    tools = initialize_tools()
     agent = create_agent(tools=tools)
-    retry_command(agent, command, 0, max_attempts)
+    retry_execution(agent, command, 0, max_attempts)
 
-def time_function(func):
-    def wrapper(*args, **kwargs):
+def time_execution(func):
+    @wraps(func)
+    def timed_wrapper(*args, **kwargs):
         start = time.time()
         result = func(*args, **kwargs)
-        logger.info(f"Execution time: {time.time() - start:.2f} seconds")
+        logger.info(f"Time taken: {time.time() - start:.2f} seconds")
         return result
-    return wrapper
+    return timed_wrapper
 
-@time_function
-def begin_process(command, max_attempts):
-    logger.info("Process initiation...")
-    run_with_agent(command, max_attempts)
+@time_execution
+def start_process(command, max_attempts):
+    logger.info("Starting process...")
+    execute_with_agent(command, max_attempts)
 
-def record_command(command):
+def log_command(command):
     try:
         with open("command_log.txt", "a") as log:
             log.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {command}\n")
     except IOError as e:
-        logger.error(f"Failed to log command: {e}")
+        logger.error(f"Logging failed: {e}")
 
-def countdown(seconds):
+def start_countdown(seconds):
     if seconds > 0:
-        logger.info(f"Countdown: {seconds} seconds remaining")
+        logger.info(f"Countdown: {seconds} seconds left")
         time.sleep(1)
-        countdown(seconds - 1)
+        start_countdown(seconds - 1)
     else:
-        logger.success("Countdown finished!")
+        logger.success("Countdown complete!")
 
-def execute(command, max_attempts=5, countdown_time=0):
-    record_command(command)
+def run_command(command, max_attempts=5, countdown_time=0):
+    log_command(command)
     if countdown_time > 0:
-        countdown(countdown_time)
-    begin_process(command, max_attempts)
+        start_countdown(countdown_time)
+    start_process(command, max_attempts)
 
 if __name__ == "__main__":
-    click.command()(execute)()
+    click.command()(run_command)()
