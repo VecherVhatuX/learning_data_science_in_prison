@@ -82,7 +82,7 @@ class BatchGenerator(tf.keras.utils.Sequence):
 
     def __getitem__(self, index):
         samples = self.dataset.generate_batch_samples()[index * self.batch_size:(index + 1) * self.batch_size]
-        return tuple(np.array(x) for x in zip(*samples)
+        return tuple(np.array(x) for x in zip(*samples))
 
 def load_data_file(file_path):
     if os.path.exists(file_path):
