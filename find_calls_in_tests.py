@@ -2,52 +2,52 @@ import os
 import subprocess
 import json
 import click
-from ast import parse, FunctionDef, Call, Name, AST
+from ast import parse, FunctionDef, Call, Name
 
 PYTHON_EXEC = "python3"
 
-def fetch_modified_functions(repo_dir, commit_id):
-    os.chdir(repo_dir)
-    git_diff = subprocess.check_output(["git", "diff", commit_id, "--", "*.py"], text=True)
-    return {line.split()[3].split('(')[0].strip('+') for line in git_diff.split('\n') 
+def get_changed_functions(repo_path, commit_hash):
+    os.chdir(repo_path)
+    diff_output = subprocess.check_output(["git", "diff", commit_hash, "--", "*.py"], text=True)
+    return {line.split()[3].split('(')[0].strip('+') for line in diff_output.split('\n') 
             if line.startswith('@@') and len(line.split()) > 3 and '(' in line.split()[3]}
 
-def locate_test_functions(project_root):
-    test_functions = []
-    for root_dir, _, filenames in os.walk(project_root):
-        for filename in filenames:
-            if filename.endswith(".py"):
-                file_path = os.path.join(root_dir, filename)
-                with open(file_path, "r", encoding="utf-8") as file:
-                    module_content = parse(file.read(), filename=file_path)
-                for node in module_content.body:
+def find_test_functions(project_path):
+    tests = []
+    for root, _, files in os.walk(project_path):
+        for file in files:
+            if file.endswith(".py"):
+                full_path = os.path.join(root, file)
+                with open(full_path, "r", encoding="utf-8") as f:
+                    ast_tree = parse(f.read(), filename=full_path)
+                for node in ast_tree.body:
                     if isinstance(node, FunctionDef) and "test" in node.name:
-                        function_calls = [n.func.id for n in module_content.body if isinstance(n, Call) and isinstance(n.func, Name)]
-                        test_functions.append({
-                            "file_path": file_path,
-                            "test_function": node.name,
-                            "function_calls": function_calls
+                        calls = [n.func.id for n in ast_tree.body if isinstance(n, Call) and isinstance(n.func, Name)]
+                        tests.append({
+                            "path": full_path,
+                            "name": node.name,
+                            "calls": calls
                         })
-    return test_functions
+    return tests
 
-def identify_affected_tests(project_root, modified_functions):
-    test_functions = locate_test_functions(project_root)
+def get_impacted_tests(project_path, changed_functions):
+    tests = find_test_functions(project_path)
     return [{
-        "file_path": test["file_path"],
-        "test_function": test["test_function"],
-        "called_function": call
-    } for test in test_functions for call in test["function_calls"] if call in modified_functions]
+        "path": test["path"],
+        "test": test["name"],
+        "called": call
+    } for test in tests for call in test["calls"] if call in changed_functions]
 
 @click.command()
-@click.option('--repo', required=True, help='Path to the repository')
-@click.option('--commit', required=True, help='Commit hash to analyze')
-@click.option('--project', required=True, help='Path to the project root')
-def main(repo, commit, project):
-    modified_functions = fetch_modified_functions(repo, commit)
-    if not modified_functions:
-        click.echo("No functions were modified.")
+@click.option('--repo', required=True, help='Repository directory')
+@click.option('--commit', required=True, help='Commit ID')
+@click.option('--project', required=True, help='Project root directory')
+def cli(repo, commit, project):
+    changed_functions = get_changed_functions(repo, commit)
+    if not changed_functions:
+        click.echo("No functions changed.")
         return
-    click.echo(json.dumps(identify_affected_tests(project, modified_functions), indent=2))
+    click.echo(json.dumps(get_impacted_tests(project, changed_functions), indent=2))
 
 if __name__ == "__main__":
-    main()
+    cli()
