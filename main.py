@@ -121,5 +121,8 @@ def add_lr_scheduler(optimizer, config):
         decay_rate=0.9)
     return tf.keras.optimizers.Adam(learning_rate=lr_schedule)
 
+def add_early_stopping():
+    return tf.keras.callbacks.EarlyStopping(monitor='loss', patience=3, restore_best_weights=True)
+
 if __name__ == "__main__":
     execute_training()
