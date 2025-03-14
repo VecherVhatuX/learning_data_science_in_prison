@@ -6,156 +6,151 @@ import random
 from torch import nn, optim
 from torch.utils.data import Dataset, DataLoader
 
-class EmbeddingModel(nn.Module):
-    def __init__(self, vocab_dim, embed_dim):
-        super(EmbeddingModel, self).__init__()
-        self.embed = nn.Embedding(vocab_dim, embed_dim)
-        self.pool = nn.AdaptiveAvgPool1d(1)
-        self.proj = nn.Linear(embed_dim, embed_dim)
-        self.bn = nn.BatchNorm1d(embed_dim)
-        self.ln = nn.LayerNorm(embed_dim)
+class NeuralEmbedder(nn.Module):
+    def __init__(self, vocab_size, embed_size):
+        super(NeuralEmbedder, self).__init__()
+        self.embedding_layer = nn.Embedding(vocab_size, embed_size)
+        self.pooling_layer = nn.AdaptiveAvgPool1d(1)
+        self.projection_layer = nn.Linear(embed_size, embed_size)
+        self.batch_norm = nn.BatchNorm1d(embed_size)
+        self.layer_norm = nn.LayerNorm(embed_size)
 
     def forward(self, x):
-        x = self.embed(x)
-        x = self.pool(x.transpose(1, 2)).squeeze(2)
-        x = self.proj(x)
-        x = self.bn(x)
-        return self.ln(x)
+        x = self.embedding_layer(x)
+        x = self.pooling_layer(x.transpose(1, 2)).squeeze(2)
+        x = self.projection_layer(x)
+        x = self.batch_norm(x)
+        return self.layer_norm(x)
 
-class TripletData(Dataset):
-    def __init__(self, inputs, labels, neg_samples):
-        self.inputs = inputs
+class TripletDataset(Dataset):
+    def __init__(self, data, labels, negative_samples):
+        self.data = data
         self.labels = labels
-        self.neg_samples = neg_samples
+        self.negative_samples = negative_samples
 
     def __len__(self):
-        return len(self.inputs)
+        return len(self.data)
 
     def __getitem__(self, idx):
-        anchor = self.inputs[idx]
+        anchor = self.data[idx]
         label = self.labels[idx]
-        pos = random.choice(self.inputs[self.labels == label])
-        negs = random.sample(self.inputs[self.labels != label].tolist(), self.neg_samples)
-        return torch.tensor(anchor, dtype=torch.long), torch.tensor(pos, dtype=torch.long), torch.tensor(negs, dtype=torch.long)
+        positive = random.choice(self.data[self.labels == label])
+        negatives = random.sample(self.data[self.labels != label].tolist(), self.negative_samples)
+        return torch.tensor(anchor, dtype=torch.long), torch.tensor(positive, dtype=torch.long), torch.tensor(negatives, dtype=torch.long)
 
-def triplet_loss(anchor, pos, neg, margin=1.0):
-    pos_dist = torch.norm(anchor - pos, dim=1)
-    neg_dist = torch.min(torch.norm(anchor.unsqueeze(1) - neg, dim=2), dim=1)[0]
-    return torch.mean(torch.clamp(pos_dist - neg_dist + margin, min=0.0))
+def compute_triplet_loss(anchor, positive, negative, margin=1.0):
+    positive_distance = torch.norm(anchor - positive, dim=1)
+    negative_distance = torch.min(torch.norm(anchor.unsqueeze(1) - negative, dim=2), dim=1)[0]
+    return torch.mean(torch.clamp(positive_distance - negative_distance + margin, min=0.0))
 
-def train_model(model, data, epochs, lr):
-    opt = optim.Adam(model.parameters(), lr=lr)
-    losses = []
+def train_neural_embedder(model, dataset, num_epochs, learning_rate):
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    loss_history = []
 
-    for epoch in range(epochs):
-        total_loss = 0.0
-        for anchor, pos, neg in DataLoader(data, batch_size=32, shuffle=True):
-            opt.zero_grad()
-            anchor_emb = model(anchor)
-            pos_emb = model(pos)
-            neg_emb = model(neg)
-            loss = triplet_loss(anchor_emb, pos_emb, neg_emb)
+    for epoch in range(num_epochs):
+        epoch_loss = 0.0
+        for anchor, positive, negative in DataLoader(dataset, batch_size=32, shuffle=True):
+            optimizer.zero_grad()
+            anchor_embedding = model(anchor)
+            positive_embedding = model(positive)
+            negative_embedding = model(negative)
+            loss = compute_triplet_loss(anchor_embedding, positive_embedding, negative_embedding)
             loss.backward()
-            opt.step()
-            total_loss += loss.item()
-        losses.append(total_loss / len(data))
-    return losses
+            optimizer.step()
+            epoch_loss += loss.item()
+        loss_history.append(epoch_loss / len(dataset))
+    return loss_history
 
-def evaluate_model(model, inputs, labels, k=5):
-    embs = model(torch.tensor(inputs, dtype=torch.long)).detach().numpy()
-    show_metrics(calc_metrics(embs, labels, k))
-    plot_embs(embs, labels)
+def evaluate_neural_embedder(model, data, labels, k=5):
+    embeddings = model(torch.tensor(data, dtype=torch.long)).detach().numpy()
+    display_metrics(calculate_metrics(embeddings, labels, k))
+    visualize_embeddings(embeddings, labels)
 
-def show_metrics(metrics):
+def display_metrics(metrics):
     print(f"Accuracy: {metrics[0]:.4f}")
     print(f"Precision: {metrics[1]:.4f}")
     print(f"Recall: {metrics[2]:.4f}")
     print(f"F1-score: {metrics[3]:.4f}")
 
-def save_model(model, path):
-    torch.save(model.state_dict(), path)
+def save_neural_embedder(model, filepath):
+    torch.save(model.state_dict(), filepath)
 
-def load_model(model_class, path, vocab_dim, embed_dim):
-    model = model_class(vocab_dim, embed_dim)
-    model.load_state_dict(torch.load(path))
+def load_neural_embedder(model_class, filepath):
+    model = model_class()
+    model.load_state_dict(torch.load(filepath))
     return model
 
-def get_embs(model, inputs):
-    return model(torch.tensor(inputs, dtype=torch.long)).detach().numpy()
+def get_embeddings(model, data):
+    return model(torch.tensor(data, dtype=torch.long)).detach().numpy()
 
-def plot_embs(embs, labels):
+def visualize_embeddings(embeddings, labels):
     plt.figure(figsize=(8, 8))
-    tsne = TSNE(n_components=2).fit_transform(embs)
-    plt.scatter(tsne[:, 0], tsne[:, 1], c=labels, cmap='viridis')
+    tsne_result = TSNE(n_components=2).fit_transform(embeddings)
+    plt.scatter(tsne_result[:, 0], tsne_result[:, 1], c=labels, cmap='viridis')
     plt.colorbar()
     plt.show()
 
-def calc_metrics(embs, labels, k=5):
-    dist_mat = np.linalg.norm(embs[:, np.newaxis] - embs, axis=2)
-    nn = np.argsort(dist_mat, axis=1)[:, 1:k + 1]
-    tp = np.sum(labels[nn] == labels[:, np.newaxis], axis=1)
-    acc = np.mean(np.any(labels[nn] == labels[:, np.newaxis], axis=1))
-    prec = np.mean(tp / k)
-    rec = np.mean(tp / np.sum(labels == labels[:, np.newaxis], axis=1))
-    f1 = 2 * (prec * rec) / (prec + rec) if (prec + rec) > 0 else 0
-    return acc, prec, rec, f1
+def calculate_metrics(embeddings, labels, k=5):
+    distance_matrix = np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2)
+    nearest_neighbors = np.argsort(distance_matrix, axis=1)[:, 1:k + 1]
+    true_positives = np.sum(labels[nearest_neighbors] == labels[:, np.newaxis], axis=1)
+    accuracy = np.mean(np.any(labels[nearest_neighbors] == labels[:, np.newaxis], axis=1))
+    precision = np.mean(true_positives / k)
+    recall = np.mean(true_positives / np.sum(labels == labels[:, np.newaxis], axis=1))
+    f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+    return accuracy, precision, recall, f1_score
 
-def plot_loss(losses):
+def plot_training_loss(loss_history):
     plt.figure(figsize=(10, 5))
-    plt.plot(losses, label='Loss', color='blue')
+    plt.plot(loss_history, label='Loss', color='blue')
     plt.title('Training Loss Over Epochs')
     plt.xlabel('Epochs')
     plt.ylabel('Loss')
     plt.legend()
     plt.show()
 
-def generate_random_data(data_size):
-    inputs = np.random.randint(0, 100, size=(data_size,))
-    labels = np.random.randint(0, 10, size=(data_size,))
-    return inputs, labels
+def execute_training(learning_rate, batch_size, num_epochs, negative_samples, vocab_size, embed_size, data_size):
+    data, labels = generate_random_data(data_size)
+    dataset = TripletDataset(data, labels, negative_samples)
+    model = NeuralEmbedder(vocab_size, embed_size)
+    save_neural_embedder(model, "neural_embedder.pth")
+    loss_history = train_neural_embedder(model, dataset, num_epochs, learning_rate)
+    plot_training_loss(loss_history)
+    evaluate_neural_embedder(model, data, labels)
 
-def run_training(lr, batch_size, epochs, neg_samples, vocab_dim, embed_dim, data_size):
-    inputs, labels = generate_random_data(data_size)
-    data = TripletData(inputs, labels, neg_samples)
-    model = EmbeddingModel(vocab_dim, embed_dim)
-    save_model(model, "embedder.pth")
-    losses = train_model(model, data, epochs, lr)
-    plot_loss(losses)
-    evaluate_model(model, inputs, labels)
-
-def show_summary(model):
+def display_model_summary(model):
     print(model)
 
-def early_stop_train(model, data, epochs, lr, patience=5):
-    opt = optim.Adam(model.parameters(), lr=lr)
-    losses = []
+def train_with_early_stopping(model, dataset, num_epochs, learning_rate, patience=5):
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    loss_history = []
     best_loss = float('inf')
-    no_improve = 0
+    no_improvement = 0
 
-    for epoch in range(epochs):
-        total_loss = 0.0
-        for anchor, pos, neg in DataLoader(data, batch_size=32, shuffle=True):
-            opt.zero_grad()
-            anchor_emb = model(anchor)
-            pos_emb = model(pos)
-            neg_emb = model(neg)
-            loss = triplet_loss(anchor_emb, pos_emb, neg_emb)
+    for epoch in range(num_epochs):
+        epoch_loss = 0.0
+        for anchor, positive, negative in DataLoader(dataset, batch_size=32, shuffle=True):
+            optimizer.zero_grad()
+            anchor_embedding = model(anchor)
+            positive_embedding = model(positive)
+            negative_embedding = model(negative)
+            loss = compute_triplet_loss(anchor_embedding, positive_embedding, negative_embedding)
             loss.backward()
-            opt.step()
-            total_loss += loss.item()
-        avg_loss = total_loss / len(data)
-        losses.append(avg_loss)
+            optimizer.step()
+            epoch_loss += loss.item()
+        avg_loss = epoch_loss / len(dataset))
+        loss_history.append(avg_loss)
 
         if avg_loss < best_loss:
             best_loss = avg_loss
-            no_improve = 0
+            no_improvement = 0
         else:
-            no_improve += 1
-            if no_improve >= patience:
+            no_improvement += 1
+            if no_improvement >= patience:
                 print(f"Early stopping at epoch {epoch}")
                 break
-    return losses
+    return loss_history
 
 if __name__ == "__main__":
-    run_training(1e-4, 32, 10, 5, 101, 10, 100)
-    show_summary(EmbeddingModel(101, 10))
+    execute_training(1e-4, 32, 10, 5, 101, 10, 100)
+    display_model_summary(NeuralEmbedder(101, 10))
