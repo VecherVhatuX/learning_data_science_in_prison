@@ -23,6 +23,6 @@ tree-sitter=0.20.2
 tree-sitter-languages==1.8.0
 scikit-learn==1.4.1
 matplotlib==3.8.2
-tensorflow==2.15.0
+tensorflow==2.16.0
 numpy==1.26.3
 subprocess-run==1.0.0
