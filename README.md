@@ -2,4 +2,4 @@ This project explores Parameter Efficient Fine-Tuning (PEFT) combined with Tripl
 
 PEFT allows fine-tuning only a small subset of model parameters, making it computationally feasible to work with large pre-trained models even in a resource-constrained environment. By applying this to prompt tuning, the author focuses on adjusting just the input prompts to tailor the model for specific tasks, minimizing the need for extensive model updates.
 
-Additionally, Priplett Loss is integrated as a novel loss function aimed at improving robustness and generalization during prompt tuning. The goal is to prevent overfitting while ensuring that the models can still adapt to diverse tasks with minimal changes.
+Additionally, Triplett Loss is integrated as a novel loss function aimed at improving robustness and generalization during prompt tuning. The goal is to prevent overfitting while ensuring that the models can still adapt to diverse tasks with minimal changes.
