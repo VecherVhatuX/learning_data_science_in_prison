@@ -18,7 +18,7 @@ def split_by_label(items):
     )
 
 def process_epoch(items, epoch):
-    return (split_by_label(randomize_items(items)), epoch + 1)
+    return (split_by_label(randomize_items(items)), epoch + 1
 
 def display_env(info):
     return f"Environment details: {dict(os.environ)}\n{info}"
