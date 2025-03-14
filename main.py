@@ -42,7 +42,7 @@ create_triplet_network = lambda embedding_size, vocab_count: Model(
         layers.LSTM(embedding_size, return_sequences=True)(
             layers.Embedding(vocab_count, embedding_size)(inputs)
         )[:, -1, :]
-    )
+    ))
 )
 
 calculate_triplet_loss = lambda anchor, positive, negative: tf.reduce_mean(
@@ -55,7 +55,7 @@ DataHandler = lambda data, config, tokenizer: type('DataHandler', (), {
     "config": config,
     "tokenizer": tokenizer,
     "indices": list(range(len(data))),
-    "randomize": lambda self: random.shuffle(self.indices, random.seed(self.config.seed)),
+    "randomize": lambda self: random.shuffle(self.indices),
     "fetch_sample": lambda self, idx: (
         self.tokenizer.encode(self.data[self.indices[idx]]['input'], max_length=512, padding='max_length', truncation=True),
         self.tokenizer.encode(self.data[self.indices[idx]]['output'], max_length=512, padding='max_length', truncation=True),
