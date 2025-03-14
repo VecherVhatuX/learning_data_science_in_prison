@@ -29,16 +29,31 @@ def find_impacted_tests(project_root, changed_funcs):
     tests = find_test_functions(project_root)
     return [{"path": test["path"], "test_name": test["test_name"], "called_func": call} for test in tests for call in test["calls"] if call in changed_funcs]
 
+def run_tests(test_path, test_name):
+    result = subprocess.run([PYTHON_EXECUTABLE, "-m", "pytest", f"{test_path}::{test_name}"], capture_output=True, text=True)
+    return result.returncode == 0
+
 @click.command()
 @click.option('--repo', required=True, help='Path to the repository')
 @click.option('--commit', required=True, help='Commit hash to analyze')
 @click.option('--project', required=True, help='Base directory of the project')
-def execute_analysis(repo, commit, project):
+@click.option('--run-tests', is_flag=True, help='Run impacted tests automatically')
+def execute_analysis(repo, commit, project, run_tests):
     changed_funcs = get_changed_functions(repo, commit)
     if not changed_funcs:
         click.echo("No function changes detected.")
         return
-    click.echo(json.dumps(find_impacted_tests(project, changed_funcs), indent=2))
+    impacted_tests = find_impacted_tests(project, changed_funcs)
+    click.echo(json.dumps(impacted_tests, indent=2))
+    
+    if run_tests:
+        for test in impacted_tests:
+            click.echo(f"Running test: {test['test_name']} in {test['path']}")
+            success = run_tests(test['path'], test['test_name'])
+            if success:
+                click.echo(f"Test {test['test_name']} passed.")
+            else:
+                click.echo(f"Test {test['test_name']} failed.")
 
 if __name__ == "__main__":
     execute_analysis()
