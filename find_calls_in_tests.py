@@ -33,12 +33,28 @@ def run_tests(test_path, test_name):
     result = subprocess.run([PYTHON_EXECUTABLE, "-m", "pytest", f"{test_path}::{test_name}"], capture_output=True, text=True)
     return result.returncode == 0
 
+def generate_test_report(impacted_tests, results):
+    report = {
+        "total_tests": len(impacted_tests),
+        "passed_tests": sum(results),
+        "failed_tests": len(impacted_tests) - sum(results),
+        "details": []
+    }
+    for test, result in zip(impacted_tests, results):
+        report["details"].append({
+            "test_name": test["test_name"],
+            "path": test["path"],
+            "status": "passed" if result else "failed"
+        })
+    return report
+
 @click.command()
 @click.option('--repo', required=True, help='Path to the repository')
 @click.option('--commit', required=True, help='Commit hash to analyze')
 @click.option('--project', required=True, help='Base directory of the project')
 @click.option('--run-tests', is_flag=True, help='Run impacted tests automatically')
-def execute_analysis(repo, commit, project, run_tests):
+@click.option('--generate-report', is_flag=True, help='Generate a test report')
+def execute_analysis(repo, commit, project, run_tests, generate_report):
     changed_funcs = get_changed_functions(repo, commit)
     if not changed_funcs:
         click.echo("No function changes detected.")
@@ -47,13 +63,19 @@ def execute_analysis(repo, commit, project, run_tests):
     click.echo(json.dumps(impacted_tests, indent=2))
     
     if run_tests:
+        results = []
         for test in impacted_tests:
             click.echo(f"Running test: {test['test_name']} in {test['path']}")
             success = run_tests(test['path'], test['test_name'])
+            results.append(success)
             if success:
                 click.echo(f"Test {test['test_name']} passed.")
             else:
                 click.echo(f"Test {test['test_name']} failed.")
+        
+        if generate_report:
+            report = generate_test_report(impacted_tests, results)
+            click.echo(json.dumps(report, indent=2))
 
 if __name__ == "__main__":
     execute_analysis()
