@@ -3,10 +3,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 import random
-from torch import nn
+from torch import nn, optim
 from torch.utils.data import Dataset, DataLoader
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
 class EmbeddingNetwork(nn.Module):
     def __init__(self, embedding_size, feature_size):
@@ -52,9 +50,10 @@ def compute_triplet_loss(margin=1.0):
     return loss_fn
 
 def train_embedding_network(network, dataset, num_epochs, lr):
-    optimizer = torch.optim.Adam(network.parameters(), lr=lr)
+    optimizer = optim.Adam(network.parameters(), lr=lr)
     loss_fn = compute_triplet_loss()
     loss_history = []
+
     for epoch in range(num_epochs):
         epoch_loss = 0.0
         for anchors, positives, negatives in DataLoader(dataset, batch_size=32, shuffle=True):
@@ -98,14 +97,14 @@ def visualize_embeddings(embeddings, labels):
     plt.show()
 
 def compute_knn_metrics(embeddings, labels, k=5):
-    knn = KNeighborsClassifier(n_neighbors=k)
-    knn.fit(embeddings, labels)
-    predictions = knn.predict(embeddings)
-    accuracy = accuracy_score(labels, predictions)
-    precision = precision_score(labels, predictions)
-    recall = recall_score(labels, predictions)
-    f1 = f1_score(labels, predictions)
-    return accuracy, precision, recall, f1
+    distance_matrix = np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2)
+    nearest_neighbors = np.argsort(distance_matrix, axis=1)[:, 1:k + 1]
+    true_positives = np.sum(labels[nearest_neighbors] == labels[:, np.newaxis], axis=1)
+    accuracy = np.mean(np.any(labels[nearest_neighbors] == labels[:, np.newaxis], axis=1))
+    precision = np.mean(true_positives / k)
+    recall = np.mean(true_positives / np.sum(labels == labels[:, np.newaxis], axis=1))
+    f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+    return accuracy, precision, recall, f1_score
 
 def plot_loss_history(loss_history):
     plt.figure(figsize=(10, 5))
@@ -120,8 +119,8 @@ def run_training_pipeline(lr, batch_size, num_epochs, num_negatives, embedding_s
     data_samples, data_labels = generate_random_data(data_size)
     triplet_dataset = TripletDataset(data_samples, data_labels, num_negatives)
     network = EmbeddingNetwork(embedding_size, feature_size)
-    loss_history = train_embedding_network(network, triplet_dataset, num_epochs, lr)
     save_network(network, "triplet_network.pth")
+    loss_history = train_embedding_network(network, triplet_dataset, num_epochs, lr)
     plot_loss_history(loss_history)
     evaluate_network(network, data_samples, data_labels)
 
