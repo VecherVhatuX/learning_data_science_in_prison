@@ -6,101 +6,101 @@ import random
 from torch import nn, optim
 from torch.utils.data import Dataset, DataLoader
 
-class NeuralEmbedder(nn.Module):
+class WordVectorGenerator(nn.Module):
     def __init__(self, vocab_size, embed_size):
-        super(NeuralEmbedder, self).__init__()
-        self.embedding_layer = nn.Embedding(vocab_size, embed_size)
-        self.pooling_layer = nn.AdaptiveAvgPool1d(1)
-        self.projection_layer = nn.Linear(embed_size, embed_size)
+        super(WordVectorGenerator, self).__init__()
+        self.embedding = nn.Embedding(vocab_size, embed_size)
+        self.pooling = nn.AdaptiveAvgPool1d(1)
+        self.projection = nn.Linear(embed_size, embed_size)
         self.batch_norm = nn.BatchNorm1d(embed_size)
         self.layer_norm = nn.LayerNorm(embed_size)
 
     def forward(self, input_ids):
-        embedded = self.embedding_layer(input_ids)
-        pooled = self.pooling_layer(embedded.transpose(1, 2)).squeeze(2)
-        projected = self.projection_layer(pooled)
+        embedded = self.embedding(input_ids)
+        pooled = self.pooling(embedded.transpose(1, 2)).squeeze(2)
+        projected = self.projection(pooled)
         batch_normed = self.batch_norm(projected)
         return self.layer_norm(batch_normed)
 
-class TripletDataset(Dataset):
-    def __init__(self, samples, targets, num_negatives):
+class TripletDataLoader(Dataset):
+    def __init__(self, samples, labels, num_negatives):
         self.samples = samples
-        self.targets = targets
+        self.labels = labels
         self.num_negatives = num_negatives
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, index):
-        anchor_sample = self.samples[index]
-        anchor_label = self.targets[index]
-        positive_sample = random.choice(self.samples[self.targets == anchor_label])
-        negative_samples = random.sample(self.samples[self.targets != anchor_label].tolist(), self.num_negatives)
-        return torch.tensor(anchor_sample, dtype=torch.long), torch.tensor(positive_sample, dtype=torch.long), torch.tensor(negative_samples, dtype=torch.long)
+        anchor = self.samples[index]
+        anchor_label = self.labels[index]
+        positive = random.choice(self.samples[self.labels == anchor_label])
+        negatives = random.sample(self.samples[self.labels != anchor_label].tolist(), self.num_negatives)
+        return torch.tensor(anchor, dtype=torch.long), torch.tensor(positive, dtype=torch.long), torch.tensor(negatives, dtype=torch.long)
 
-def compute_triplet_loss(anchor, positive, negative, margin=1.0):
-    positive_distance = torch.norm(anchor - positive, dim=1)
-    negative_distance = torch.min(torch.norm(anchor.unsqueeze(1) - negative, dim=2), dim=1)[0]
-    return torch.mean(torch.clamp(positive_distance - negative_distance + margin, min=0.0))
+def calculate_triplet_loss(anchor, positive, negative, margin=1.0):
+    pos_dist = torch.norm(anchor - positive, dim=1)
+    neg_dist = torch.min(torch.norm(anchor.unsqueeze(1) - negative, dim=2), dim=1)[0]
+    return torch.mean(torch.clamp(pos_dist - neg_dist + margin, min=0.0))
 
-def train_embedder(model, dataset, num_epochs, learning_rate):
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+def train_model(model, dataset, epochs, lr):
+    optimizer = optim.Adam(model.parameters(), lr=lr)
     loss_history = []
 
-    for epoch in range(num_epochs):
+    for epoch in range(epochs):
         total_loss = 0.0
         for anchor, positive, negative in DataLoader(dataset, batch_size=32, shuffle=True):
             optimizer.zero_grad()
-            anchor_embedding = model(anchor)
-            positive_embedding = model(positive)
-            negative_embedding = model(negative)
-            loss = compute_triplet_loss(anchor_embedding, positive_embedding, negative_embedding)
+            anchor_vec = model(anchor)
+            positive_vec = model(positive)
+            negative_vec = model(negative)
+            loss = calculate_triplet_loss(anchor_vec, positive_vec, negative_vec)
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
         loss_history.append(total_loss / len(dataset))
     return loss_history
 
-def evaluate_embedder(model, samples, targets, k=5):
+def evaluate_model(model, samples, labels, k=5):
     embeddings = model(torch.tensor(samples, dtype=torch.long)).detach().numpy()
-    display_metrics(calculate_metrics(embeddings, targets, k))
-    visualize_embeddings(embeddings, targets)
+    show_metrics(compute_metrics(embeddings, labels, k))
+    plot_embeddings(embeddings, labels)
 
-def display_metrics(metrics):
+def show_metrics(metrics):
     print(f"Accuracy: {metrics[0]:.4f}")
     print(f"Precision: {metrics[1]:.4f}")
     print(f"Recall: {metrics[2]:.4f}")
     print(f"F1-score: {metrics[3]:.4f}")
 
-def save_embedder(model, filepath):
-    torch.save(model.state_dict(), filepath)
+def save_model(model, path):
+    torch.save(model.state_dict(), path)
 
-def load_embedder(model_class, filepath):
+def load_model(model_class, path):
     model = model_class()
-    model.load_state_dict(torch.load(filepath))
+    model.load_state_dict(torch.load(path))
     return model
 
-def extract_embeddings(model, samples):
+def get_embeddings(model, samples):
     return model(torch.tensor(samples, dtype=torch.long)).detach().numpy()
 
-def visualize_embeddings(embeddings, targets):
+def plot_embeddings(embeddings, labels):
     plt.figure(figsize=(8, 8))
-    tsne_results = TSNE(n_components=2).fit_transform(embeddings)
-    plt.scatter(tsne_results[:, 0], tsne_results[:, 1], c=targets, cmap='viridis')
+    tsne = TSNE(n_components=2).fit_transform(embeddings)
+    plt.scatter(tsne[:, 0], tsne[:, 1], c=labels, cmap='viridis')
     plt.colorbar()
     plt.show()
 
-def calculate_metrics(embeddings, targets, k=5):
-    distance_matrix = np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2)
-    nearest_neighbors = np.argsort(distance_matrix, axis=1)[:, 1:k + 1]
-    true_positives = np.sum(targets[nearest_neighbors] == targets[:, np.newaxis], axis=1)
-    accuracy = np.mean(np.any(targets[nearest_neighbors] == targets[:, np.newaxis], axis=1))
-    precision = np.mean(true_positives / k)
-    recall = np.mean(true_positives / np.sum(targets == targets[:, np.newaxis], axis=1))
-    f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-    return accuracy, precision, recall, f1_score
+def compute_metrics(embeddings, labels, k=5):
+    dist_matrix = np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2)
+    nearest = np.argsort(dist_matrix, axis=1)[:, 1:k + 1]
+    true_pos = np.sum(labels[nearest] == labels[:, np.newaxis], axis=1)
+    accuracy = np.mean(np.any(labels[nearest] == labels[:, np.newaxis], axis=1))
+    precision = np.mean(true_pos / k)
+    recall = np.mean(true_pos / np.sum(labels == labels[:, np.newaxis], axis=1))
+    f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+    return accuracy, precision, recall, f1
 
-def plot_training_loss(loss_history):
+def plot_loss(loss_history):
     plt.figure(figsize=(10, 5))
     plt.plot(loss_history, label='Loss', color='blue')
     plt.title('Training Loss Over Epochs')
@@ -109,40 +109,40 @@ def plot_training_loss(loss_history):
     plt.legend()
     plt.show()
 
-def execute_training(learning_rate, batch_size, num_epochs, num_negatives, vocab_size, embed_size, data_size):
-    samples, targets = generate_random_samples(data_size)
-    dataset = TripletDataset(samples, targets, num_negatives)
-    model = NeuralEmbedder(vocab_size, embed_size)
-    save_embedder(model, "embedder_model.pth")
-    loss_history = train_embedder(model, dataset, num_epochs, learning_rate)
-    plot_training_loss(loss_history)
-    evaluate_embedder(model, samples, targets)
+def run_training(lr, batch_size, epochs, num_negatives, vocab_size, embed_size, data_size):
+    samples, labels = generate_data(data_size)
+    dataset = TripletDataLoader(samples, labels, num_negatives)
+    model = WordVectorGenerator(vocab_size, embed_size)
+    save_model(model, "embedder_model.pth")
+    loss_history = train_model(model, dataset, epochs, lr)
+    plot_loss(loss_history)
+    evaluate_model(model, samples, labels)
 
-def display_model_architecture(model):
+def show_architecture(model):
     print(model)
 
-def train_with_early_stopping(model, dataset, num_epochs, learning_rate, patience=5):
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+def train_with_early_stop(model, dataset, epochs, lr, patience=5):
+    optimizer = optim.Adam(model.parameters(), lr=lr)
     loss_history = []
     best_loss = float('inf')
     no_improvement = 0
 
-    for epoch in range(num_epochs):
+    for epoch in range(epochs):
         total_loss = 0.0
         for anchor, positive, negative in DataLoader(dataset, batch_size=32, shuffle=True):
             optimizer.zero_grad()
-            anchor_embedding = model(anchor)
-            positive_embedding = model(positive)
-            negative_embedding = model(negative)
-            loss = compute_triplet_loss(anchor_embedding, positive_embedding, negative_embedding)
+            anchor_vec = model(anchor)
+            positive_vec = model(positive)
+            negative_vec = model(negative)
+            loss = calculate_triplet_loss(anchor_vec, positive_vec, negative_vec)
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
-        average_loss = total_loss / len(dataset)
-        loss_history.append(average_loss)
+        avg_loss = total_loss / len(dataset)
+        loss_history.append(avg_loss)
 
-        if average_loss < best_loss:
-            best_loss = average_loss
+        if avg_loss < best_loss:
+            best_loss = avg_loss
             no_improvement = 0
         else:
             no_improvement += 1
@@ -151,11 +151,11 @@ def train_with_early_stopping(model, dataset, num_epochs, learning_rate, patienc
                 break
     return loss_history
 
-def generate_random_samples(data_size):
+def generate_data(data_size):
     samples = np.random.randint(0, 100, (data_size, 10))
-    targets = np.random.randint(0, 10, data_size)
-    return samples, targets
+    labels = np.random.randint(0, 10, data_size)
+    return samples, labels
 
 if __name__ == "__main__":
-    execute_training(1e-4, 32, 10, 5, 101, 10, 100)
-    display_model_architecture(NeuralEmbedder(101, 10))
+    run_training(1e-4, 32, 10, 5, 101, 10, 100)
+    show_architecture(WordVectorGenerator(101, 10))
