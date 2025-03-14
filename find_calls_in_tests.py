@@ -2,7 +2,7 @@ import os
 import subprocess
 import json
 import click
-from libcst import parse_module, FunctionDef, Call, Name
+from ast import parse, FunctionDef, Call, Name, AST
 
 PYTHON_EXEC = "python3"
 
@@ -19,13 +19,13 @@ def locate_test_functions(project_root):
             if filename.endswith(".py"):
                 file_path = os.path.join(root_dir, filename)
                 with open(file_path, "r", encoding="utf-8") as file:
-                    module_content = parse_module(file.read())
+                    module_content = parse(file.read(), filename=file_path)
                 for node in module_content.body:
-                    if isinstance(node, FunctionDef) and "test" in node.name.value:
-                        function_calls = [n.func.value for n in module_content.body if isinstance(n, Call) and isinstance(n.func, Name)]
+                    if isinstance(node, FunctionDef) and "test" in node.name:
+                        function_calls = [n.func.id for n in module_content.body if isinstance(n, Call) and isinstance(n.func, Name)]
                         test_functions.append({
                             "file_path": file_path,
-                            "test_function": node.name.value,
+                            "test_function": node.name,
                             "function_calls": function_calls
                         })
     return test_functions
