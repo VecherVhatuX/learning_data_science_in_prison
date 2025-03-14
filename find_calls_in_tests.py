@@ -39,13 +39,13 @@ def identify_affected_tests(project_root, modified_functions):
     } for test in test_functions for call in test["function_calls"] if call in modified_functions]
 
 @click.command()
-@click.option('--repo', required=True, help='Path to the repository')
-@click.option('--commit', required=True, help='Commit hash to analyze')
-@click.option('--project', required=True, help='Path to the project root')
+@click.option('--repo', required=True, help='Directory containing the repository')
+@click.option('--commit', required=True, help='Specific commit to examine')
+@click.option('--project', required=True, help='Root directory of the project')
 def main(repo, commit, project):
     modified_functions = fetch_modified_functions(repo, commit)
     if not modified_functions:
-        click.echo("No functions were modified.")
+        click.echo("No changes detected in functions.")
         return
     click.echo(json.dumps(identify_affected_tests(project, modified_functions), indent=2))
 
