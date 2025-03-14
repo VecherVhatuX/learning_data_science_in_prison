@@ -2,7 +2,7 @@ import os
 import time
 import random
 from subprocess import run, CalledProcessError
-import click
+import typer
 from typing import List, Dict, Tuple
 from tool_library import Tool, create_agent
 from loguru import logger
@@ -18,7 +18,7 @@ def categorize_items(items):
     )
 
 def process_data(items, epoch):
-    return (categorize_items(shuffle_items(items)), epoch + 1)
+    return (categorize_items(shuffle_items(items)), epoch + 1
 
 def show_environment(info):
     return f"Environment details: {dict(os.environ)}\n{info}"
@@ -94,11 +94,11 @@ def start_timer(seconds):
     else:
         logger.success("Timer finished!")
 
-def execute_command(cmd, max_attempts=5, timer_duration=0):
+def execute_command(cmd: str, max_attempts: int = 5, timer_duration: int = 0):
     log_command_history(cmd)
     if timer_duration > 0:
         start_timer(timer_duration)
     start_execution(cmd, max_attempts)
 
 if __name__ == "__main__":
-    click.command()(execute_command)()
+    typer.run(execute_command)
