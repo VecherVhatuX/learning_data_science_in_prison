@@ -7,21 +7,21 @@ from sklearn.preprocessing import LabelEncoder
 import matplotlib.pyplot as plt
 from tensorflow.keras import layers, optimizers, losses
 
-def extract_texts(data):
+def gather_texts(data):
     return [text for item in data for text in (item['anchor'], item['positive'], item['negative'])]
 
-def tokenize_data(tokenizer, item):
+def encode_sequences(tokenizer, item):
     return {
         'anchor_seq': tf.convert_to_tensor(tokenizer.transform([item['anchor']])[0]),
         'positive_seq': tf.convert_to_tensor(tokenizer.transform([item['positive']])[0]),
         'negative_seq': tf.convert_to_tensor(tokenizer.transform([item['negative']])[0])
     }
 
-def randomize_samples(samples):
+def shuffle_samples(samples):
     random.shuffle(samples)
     return samples
 
-def create_triplets(mapping, bug_samples, non_bug_samples):
+def generate_triplets(mapping, bug_samples, non_bug_samples):
     return [
         {
             'anchor': mapping[os.path.basename(folder)],
@@ -32,38 +32,38 @@ def create_triplets(mapping, bug_samples, non_bug_samples):
         for bug_sample in bug_samples
     ]
 
-def load_data(file_path, root_dir):
+def load_dataset(file_path, root_dir):
     with open(file_path, 'r') as f:
         data = json.load(f)
     mapping = {entry['instance_id']: entry['problem_statement'] for entry in data}
     snippet_files = [(folder, os.path.join(root_dir, 'snippet.json')) for folder in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, folder))]
     return mapping, snippet_files
 
-def prepare_data(mapping, snippet_files):
-    return create_triplets(mapping, *zip(*[json.load(open(path)) for path in snippet_files]))
+def prepare_dataset(mapping, snippet_files):
+    return generate_triplets(mapping, *zip(*[json.load(open(path)) for path in snippet_files]))
 
-class DataHandler:
+class DatasetManager:
     def __init__(self, data):
         self.data = data
-        self.tokenizer = LabelEncoder().fit(extract_texts(data))
+        self.tokenizer = LabelEncoder().fit(gather_texts(data))
 
-    def get_data(self):
+    def get_dataset(self):
         return self.data
 
-class CustomDataset(tf.data.Dataset):
+class TripletDataset(tf.data.Dataset):
     def __init__(self, data):
-        self.data = DataHandler(data)
-        self.samples = self.data.get_data()
+        self.data = DatasetManager(data)
+        self.samples = self.data.get_dataset()
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, index):
-        return tokenize_data(self.data.tokenizer, self.samples[index])
+        return encode_sequences(self.data.tokenizer, self.samples[index])
 
-class NeuralModel(tf.keras.Model):
+class EmbeddingModel(tf.keras.Model):
     def __init__(self, vocab_size, embedding_dim):
-        super(NeuralModel, self).__init__()
+        super(EmbeddingModel, self).__init__()
         self.embedding = layers.Embedding(vocab_size, embedding_dim)
         self.network = tf.keras.Sequential([
             layers.Dense(128, activation='relu'),
@@ -79,31 +79,31 @@ class NeuralModel(tf.keras.Model):
             self.network(self.embedding(negative))
         )
 
-def compute_loss(anchor, positive, negative):
+def calculate_loss(anchor, positive, negative):
     return tf.reduce_mean(tf.maximum(0.2 + tf.norm(anchor - positive, axis=1) - tf.norm(anchor - negative, axis=1), 0))
 
-def train(model, train_data, valid_data, epochs):
+def train_model(model, train_data, valid_data, epochs):
     optimizer = optimizers.Adam(learning_rate=1e-5)
     history = []
     for _ in range(epochs):
         for batch in train_data:
             with tf.GradientTape() as tape:
                 anchor, positive, negative = model(batch['anchor_seq'], batch['positive_seq'], batch['negative_seq'])
-                loss = compute_loss(anchor, positive, negative)
+                loss = calculate_loss(anchor, positive, negative)
             gradients = tape.gradient(loss, model.trainable_variables)
             optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-            history.append((loss.numpy(), *evaluate(model, valid_data)))
+            history.append((loss.numpy(), *evaluate_model(model, valid_data)))
     return history
 
-def evaluate(model, data):
-    loss = sum(compute_loss(*model(batch['anchor_seq'], batch['positive_seq'], batch['negative_seq'])).numpy() for batch in data)
-    correct = sum(count(*model(batch['anchor_seq'], batch['positive_seq'], batch['negative_seq'])) for batch in data)
+def evaluate_model(model, data):
+    loss = sum(calculate_loss(*model(batch['anchor_seq'], batch['positive_seq'], batch['negative_seq'])).numpy() for batch in data)
+    correct = sum(count_correct(*model(batch['anchor_seq'], batch['positive_seq'], batch['negative_seq'])) for batch in data)
     return loss / len(data), correct / len(data.dataset)
 
-def count(anchor, positive, negative):
+def count_correct(anchor, positive, negative):
     return tf.reduce_sum(tf.cast(tf.reduce_sum(anchor * positive, axis=1) > tf.reduce_sum(anchor * negative, axis=1), tf.int32)).numpy()
 
-def plot(history):
+def plot_history(history):
     train_loss, val_loss, train_acc = zip(*history)
     plt.figure(figsize=(10, 5))
     plt.subplot(1, 2, 1)
@@ -121,16 +121,16 @@ def plot(history):
     plt.legend()
     plt.show()
 
-def save(model, path):
+def save_model(model, path):
     model.save_weights(path)
     print(f'Model saved at {path}')
 
-def load(model, path):
+def load_model(model, path):
     model.load_weights(path)
     print(f'Model loaded from {path}')
     return model
 
-def visualize(model, data):
+def visualize_embeddings(model, data):
     embeddings = []
     labels = []
     for batch in data:
@@ -145,19 +145,19 @@ def visualize(model, data):
     plt.title('2D Embedding Visualization')
     plt.show()
 
-def execute():
+def run():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippets_directory = 'datasets/10_10_after_fix_pytest'
-    mapping, snippet_files = load_data(dataset_path, snippets_directory)
-    data = prepare_data(mapping, snippet_files)
+    mapping, snippet_files = load_dataset(dataset_path, snippets_directory)
+    data = prepare_dataset(mapping, snippet_files)
     train_data, valid_data = np.array_split(np.array(data), 2)
     train_loader = tf.data.Dataset.from_tensor_slices(train_data.tolist()).batch(32).shuffle(len(train_data))
     valid_loader = tf.data.Dataset.from_tensor_slices(valid_data.tolist()).batch(32)
-    model = NeuralModel(vocab_size=len(train_loader.dataset.data.tokenizer.classes_) + 1, embedding_dim=128)
-    history = train(model, train_loader, valid_loader, epochs=5)
-    plot(history)
-    save(model, 'model.h5')
-    visualize(model, valid_loader)
+    model = EmbeddingModel(vocab_size=len(train_loader.dataset.data.tokenizer.classes_) + 1, embedding_dim=128)
+    history = train_model(model, train_loader, valid_loader, epochs=5)
+    plot_history(history)
+    save_model(model, 'model.h5')
+    visualize_embeddings(model, valid_loader)
 
 if __name__ == "__main__":
-    execute()
+    run()
