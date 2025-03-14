@@ -77,6 +77,7 @@ def calculate_loss(anchor, positive, negative):
 
 def train_model(model, train_data, valid_data, epochs):
     optimizer = optim.Adam(model.parameters())
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
     history = []
     for _ in range(epochs):
         model.train()
@@ -88,6 +89,7 @@ def train_model(model, train_data, valid_data, epochs):
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
+        scheduler.step()
         train_loss /= len(train_data)
         eval_loss, accuracy = evaluate_model(model, valid_data)
         history.append((train_loss, eval_loss, accuracy))
@@ -160,10 +162,5 @@ def run_pipeline():
     save_model(model, 'model.pth')
     visualize_embeddings(model, valid_loader)
 
-def add_feature():
-    print("New feature added: Custom Learning Rate Scheduler")
-    return optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
-
 if __name__ == "__main__":
     run_pipeline()
-    add_feature()
