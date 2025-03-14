@@ -75,8 +75,8 @@ def display_metrics(metrics):
 def store_model(model, path):
     torch.save(model.state_dict(), path)
 
-def retrieve_model(model_class, path):
-    model = model_class()
+def retrieve_model(model_class, path, vocab_dim, embed_dim):
+    model = model_class(vocab_dim, embed_dim)
     model.load_state_dict(torch.load(path))
     return model
 
