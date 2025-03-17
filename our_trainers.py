@@ -138,7 +138,7 @@ def train_with_early_termination(model, dataset, num_epochs, learning_rate, pati
             loss.backward()
             optimizer.step()
             epoch_loss += loss.item()
-        avg_loss = epoch_loss / len(dataset)
+        avg_loss = epoch_loss / len(dataset))
         loss_history.append(avg_loss)
 
         if avg_loss < best_loss:
@@ -173,6 +173,12 @@ def visualize_embeddings_interactive(model, data, labels):
     
     plt.gcf().canvas.mpl_connect('button_press_event', on_click)
     plt.show()
+
+def add_custom_regularization(model, lambda_reg=0.01):
+    regularization_loss = 0
+    for param in model.parameters():
+        regularization_loss += torch.norm(param, p=2)
+    return lambda_reg * regularization_loss
 
 if __name__ == "__main__":
     run_training(1e-4, 32, 10, 5, 101, 10, 100)
