@@ -9,11 +9,9 @@ from tensorflow.keras import layers, models, optimizers, losses
 from tensorflow.data import Dataset
 
 def collect_texts(data):
-    # Extract all text entries from the dataset
     return [text for item in data for text in (item['anchor'], item['positive'], item['negative'])]
 
 def encode_data(encoder, item):
-    # Convert text data into tensor format using the encoder
     return {
         'anchor_seq': tf.convert_to_tensor(encoder.transform([item['anchor']])[0]),
         'positive_seq': tf.convert_to_tensor(encoder.transform([item['positive']])[0]),
@@ -21,52 +19,42 @@ def encode_data(encoder, item):
     }
 
 def shuffle_data(data):
-    # Randomly shuffle the dataset
     random.shuffle(data)
     return data
 
 def create_triplets(mapping, bug_samples, non_bug_samples):
-    # Generate triplets for training
     return [
         {'anchor': mapping[os.path.basename(dir)], 'positive': bug_sample, 'negative': random.choice(non_bug_samples)}
         for dir, _ in snippet_files for bug_sample in bug_samples
     ]
 
 def load_data(file_path, root_dir):
-    # Load data from JSON and map instance IDs to problem statements
     data = json.load(open(file_path))
     mapping = {item['instance_id']: item['problem_statement'] for item in data}
     snippet_files = [(dir, os.path.join(root_dir, 'snippet.json')) for dir in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, dir))]
     return mapping, snippet_files
 
 def prepare_data(mapping, snippet_files):
-    # Prepare data by creating triplets
     return create_triplets(mapping, *zip(*[json.load(open(path)) for path in snippet_files]))
 
 class DataHandler:
     def __init__(self, data):
-        # Initialize data handler with the dataset
         self.data = data
         self.encoder = LabelEncoder().fit(collect_texts(data))
     def get_data(self):
-        # Retrieve the dataset
         return self.data
 
 class TripletData(Dataset):
     def __init__(self, data):
-        # Initialize triplet dataset
         self.data = DataHandler(data)
         self.samples = self.data.get_data()
     def __len__(self):
-        # Return the number of samples
         return len(self.samples)
     def __getitem__(self, idx):
-        # Get a specific sample by index
         return encode_data(self.data.encoder, self.samples[idx])
 
 class EmbeddingNet(models.Model):
     def __init__(self, vocab_size, embed_dim):
-        # Initialize embedding network
         super(EmbeddingNet, self).__init__()
         self.embedding = layers.Embedding(vocab_size, embed_dim)
         self.network = models.Sequential([
@@ -76,7 +64,6 @@ class EmbeddingNet(models.Model):
             layers.Dense(128)
         ])
     def call(self, anchor, positive, negative):
-        # Process anchor, positive, and negative samples
         return (
             self.network(self.embedding(anchor)),
             self.network(self.embedding(positive)),
@@ -84,11 +71,9 @@ class EmbeddingNet(models.Model):
         )
 
 def compute_loss(anchor, positive, negative):
-    # Calculate triplet loss
     return tf.reduce_mean(tf.maximum(0.2 + tf.norm(anchor - positive, axis=1) - tf.norm(anchor - negative, axis=1), 0))
 
 def train_net(model, train_data, valid_data, epochs):
-    # Train the model
     optimizer = optimizers.Adam()
     scheduler = optimizers.schedules.ExponentialDecay(0.001, decay_steps=10, decay_rate=0.1)
     history = []
@@ -109,7 +94,6 @@ def train_net(model, train_data, valid_data, epochs):
     return history
 
 def evaluate_net(model, data):
-    # Evaluate the model
     model.eval()
     total_loss = 0
     correct = 0
@@ -120,11 +104,9 @@ def evaluate_net(model, data):
     return total_loss / len(data), correct / len(data.dataset)
 
 def count_correct(anchor, positive, negative):
-    # Count correct predictions
     return tf.reduce_sum(tf.cast(tf.reduce_sum(anchor * positive, axis=1) > tf.reduce_sum(anchor * negative, axis=1), tf.float32))
 
 def plot_results(history):
-    # Plot training and validation results
     plt.figure(figsize=(10, 5))
     plt.subplot(1, 2, 1)
     plt.plot([x[0] for x in history], label='Training Loss')
@@ -142,18 +124,15 @@ def plot_results(history):
     plt.show()
 
 def save_net(model, path):
-    # Save the model weights
     model.save_weights(path)
     print(f'Model saved at {path}')
 
 def load_net(model, path):
-    # Load the model weights
     model.load_weights(path)
     print(f'Model loaded from {path}')
     return model
 
 def visualize_embeddings_3d(model, data):
-    # Visualize embeddings in 3D space
     model.eval()
     embeddings = []
     for batch in data:
@@ -167,7 +146,6 @@ def visualize_embeddings_3d(model, data):
     plt.show()
 
 def execute_pipeline():
-    # Execute the entire pipeline
     dataset_path, snippets_dir = 'datasets/SWE-bench_oracle.npy', 'datasets/10_10_after_fix_pytest'
     mapping, snippet_files = load_data(dataset_path, snippets_dir)
     data = prepare_data(mapping, snippet_files)
@@ -181,7 +159,6 @@ def execute_pipeline():
     visualize_embeddings_3d(model, valid_loader)
 
 def add_new_feature():
-    # Add a new feature to the pipeline
     print("New feature added: Enhanced visualization with 3D embeddings.")
     return
 
