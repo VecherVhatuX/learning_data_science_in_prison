@@ -7,7 +7,7 @@ from tool_library import Tool, create_agent
 from loguru import logger
 from functools import wraps
 
-def randomize_and_sort(items):
+def shuffle_and_categorize(items):
     """
     Randomizes the order of items and sorts them based on their 'label' attribute.
     
@@ -17,13 +17,13 @@ def randomize_and_sort(items):
     Returns:
         tuple: Two lists, one containing items with label == 1, the other with label == 0.
     """
-    randomized = random.sample(items, len(items))
+    shuffled = random.sample(items, len(items))
     return (
-        [item for item in randomized if item['label'] == 1],
-        [item for item in randomized if item['label'] == 0]
+        [item for item in shuffled if item['label'] == 1],
+        [item for item in shuffled if item['label'] == 0]
     )
 
-def handle_data(items, iteration):
+def process_data(items, iteration):
     """
     Handles data by randomizing and sorting it, and increments the iteration counter.
     
@@ -34,9 +34,9 @@ def handle_data(items, iteration):
     Returns:
         tuple: A tuple containing the randomized and sorted items, and the incremented iteration count.
     """
-    return (randomize_and_sort(items), iteration + 1)
+    return (shuffle_and_categorize(items), iteration + 1)
 
-def display_environment(info):
+def show_environment(info):
     """
     Displays the current environment settings along with additional information.
     
@@ -48,7 +48,7 @@ def display_environment(info):
     """
     return f"Environment details: {dict(os.environ)}\n{info}"
 
-def install_package(package):
+def add_package(package):
     """
     Installs a Python package using pip.
     
@@ -61,7 +61,7 @@ def install_package(package):
     result = run(["pip", "install", package], text=True, capture_output=True, check=True)
     return result.stdout if not result.returncode else result.stderr
 
-def execute_shell_command(cmd):
+def run_shell_command(cmd):
     """
     Executes a shell command and captures its output and error.
     
@@ -76,7 +76,7 @@ def execute_shell_command(cmd):
     result = run(cmd, shell=True, text=True, capture_output=True)
     return result.stdout, result.stderr
 
-def initialize_tools():
+def setup_tools():
     """
     Initializes and returns a list of tools available for use.
     
@@ -84,11 +84,11 @@ def initialize_tools():
         list: A list of Tool objects, each representing a specific functionality.
     """
     return [
-        Tool(name="EnvViewer", func=display_environment, description="Displays the current environment settings."),
-        Tool(name="PackageManager", func=install_package, description="Installs required packages.")
+        Tool(name="EnvViewer", func=show_environment, description="Displays the current environment settings."),
+        Tool(name="PackageManager", func=add_package, description="Installs required packages.")
     ]
 
-def log_command(cmd):
+def log_shell_command(cmd):
     """
     Logs the execution of a shell command and its output.
     
@@ -99,14 +99,14 @@ def log_command(cmd):
         bool: True if the command succeeds, False otherwise.
     """
     logger.info(f"Running command: {cmd}")
-    output, error = execute_shell_command(cmd)
+    output, error = run_shell_command(cmd)
     if error:
         logger.error(f"Command failed: {error}")
         return False
     logger.success(f"Command succeeded: {output}")
     return True
 
-def retry_command(agent, cmd, attempt, max_attempts):
+def retry_shell_command(agent, cmd, attempt, max_attempts):
     """
     Retries a shell command up to a maximum number of attempts.
     
@@ -120,15 +120,15 @@ def retry_command(agent, cmd, attempt, max_attempts):
         logger.error("Maximum retries reached. Aborting.")
         return
     logger.info(f"Attempt: {attempt + 1}/{max_attempts}")
-    if log_command(cmd):
+    if log_shell_command(cmd):
         logger.success("Command executed successfully!")
         return
     agent.run("Verify environment variables and dependencies.")
     agent.run("Attempt to resolve environment issues by installing missing packages.")
     time.sleep(5)
-    retry_command(agent, cmd, attempt + 1, max_attempts)
+    retry_shell_command(agent, cmd, attempt + 1, max_attempts)
 
-def execute_with_retry(cmd, max_attempts):
+def execute_with_retries(cmd, max_attempts):
     """
     Executes a shell command with retry logic.
     
@@ -136,11 +136,11 @@ def execute_with_retry(cmd, max_attempts):
         cmd (str): The shell command to execute.
         max_attempts (int): The maximum number of retry attempts.
     """
-    tools = initialize_tools()
+    tools = setup_tools()
     agent = create_agent(tools=tools)
-    retry_command(agent, cmd, 0, max_attempts)
+    retry_shell_command(agent, cmd, 0, max_attempts)
 
-def time_execution(func):
+def measure_execution_time(func):
     """
     A decorator that logs the execution time of a function.
     
@@ -157,8 +157,8 @@ def time_execution(func):
         return result
     return wrapper
 
-@time_execution
-def begin_process(cmd, max_attempts):
+@measure_execution_time
+def start_execution(cmd, max_attempts):
     """
     Begins the process of executing a shell command with retries.
     
@@ -167,9 +167,9 @@ def begin_process(cmd, max_attempts):
         max_attempts (int): The maximum number of retry attempts.
     """
     logger.info("Starting process...")
-    execute_with_retry(cmd, max_attempts)
+    execute_with_retries(cmd, max_attempts)
 
-def log_command_history(cmd):
+def record_command(cmd):
     """
     Logs the executed command to a history file.
     
@@ -182,7 +182,7 @@ def log_command_history(cmd):
     except IOError as e:
         logger.error(f"Failed to log command: {e}")
 
-def start_timer(seconds):
+def countdown_timer(seconds):
     """
     Starts a countdown timer and logs the remaining time.
     
@@ -192,11 +192,11 @@ def start_timer(seconds):
     if seconds > 0:
         logger.info(f"Timer: {seconds} seconds remaining")
         time.sleep(1)
-        start_timer(seconds - 1)
+        countdown_timer(seconds - 1)
     else:
         logger.success("Timer finished!")
 
-def run_command(cmd: str, max_attempts: int = 5, timer_duration: int = 0):
+def execute_command(cmd: str, max_attempts: int = 5, timer_duration: int = 0):
     """
     Runs a shell command with optional retries and a timer.
     
@@ -205,10 +205,10 @@ def run_command(cmd: str, max_attempts: int = 5, timer_duration: int = 0):
         max_attempts (int): The maximum number of retry attempts.
         timer_duration (int): The duration of the timer in seconds.
     """
-    log_command_history(cmd)
+    record_command(cmd)
     if timer_duration > 0:
-        start_timer(timer_duration)
-    begin_process(cmd, max_attempts)
+        countdown_timer(timer_duration)
+    start_execution(cmd, max_attempts)
 
 if __name__ == "__main__":
-    typer.run(run_command)
+    typer.run(execute_command)
