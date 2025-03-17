@@ -1,9 +1,8 @@
 import os
 import json
 import random
-import torch
-from torch import nn, optim
-from torch.utils.data import DataLoader, Dataset
+import tensorflow as tf
+from tensorflow.keras import layers, optimizers
 from transformers import T5Tokenizer
 
 class TrainingSettings:
@@ -36,25 +35,25 @@ class TrainingSettings:
         self.checkpoint_path = None
         self.negative_samples_per_batch = 5
 
-class EmbeddingModel(nn.Module):
+class EmbeddingModel(tf.keras.Model):
     def __init__(self, embedding_dim, vocab_size):
         super(EmbeddingModel, self).__init__()
-        self.embedding = nn.Embedding(vocab_size, embedding_dim)
-        self.lstm = nn.LSTM(embedding_dim, embedding_dim, batch_first=True)
-        self.linear1 = nn.Linear(embedding_dim, embedding_dim)
-        self.linear2 = nn.Linear(embedding_dim, vocab_size)
+        self.embedding = layers.Embedding(vocab_size, embedding_dim)
+        self.lstm = layers.LSTM(embedding_dim, return_sequences=True)
+        self.linear1 = layers.Dense(embedding_dim)
+        self.linear2 = layers.Dense(vocab_size)
 
-    def forward(self, x):
+    def call(self, x):
         x = self.embedding(x)
-        x, _ = self.lstm(x)
+        x = self.lstm(x)
         x = x[:, -1, :]
         x = self.linear1(x)
         x = self.linear2(x)
         return x
 
 def compute_triplet_loss(anchor, positive, negative):
-    return torch.mean(torch.clamp(torch.mean((anchor - positive) ** 2, dim=-1) - 
-                      torch.mean((anchor - negative) ** 2, dim=-1) + 2.0, 0.0))
+    return tf.reduce_mean(tf.maximum(tf.reduce_mean(tf.square(anchor - positive), axis=-1) - 
+                      tf.reduce_mean(tf.square(anchor - negative), axis=-1) + 2.0, 0.0))
 
 class DataProcessor:
     def __init__(self, data, settings, tokenizer):
@@ -80,7 +79,7 @@ class DataProcessor:
     def generate_batch(self):
         return [self.get_sample(i) for i in range(len(self.data))]
 
-class DataLoaderWrapper(Dataset):
+class DataLoaderWrapper(tf.keras.utils.Sequence):
     def __init__(self, dataset, settings, tokenizer):
         self.dataset = DataProcessor(dataset, settings, tokenizer)
         self.batch_size = settings.batch_sizes['train']
@@ -90,7 +89,7 @@ class DataLoaderWrapper(Dataset):
 
     def __getitem__(self, index):
         samples = self.dataset.generate_batch()[index * self.batch_size:(index + 1) * self.batch_size]
-        return tuple(torch.tensor(x) for x in zip(*samples))
+        return tuple(tf.convert_to_tensor(x) for x in zip(*samples)
 
 def load_dataset(file_path):
     if os.path.exists(file_path):
@@ -103,7 +102,7 @@ def get_tokenizer():
     return T5Tokenizer.from_pretrained("t5-base")
 
 def setup_optimizer(model):
-    return optim.Adam(model.parameters(), lr=0.001)
+    return optimizers.Adam(learning_rate=0.001)
 
 def prepare_training(model, optimizer):
     loss_function = compute_triplet_loss
@@ -114,31 +113,30 @@ def run_training(model, settings, data_loader, optimizer, loss_function):
     for epoch in range(settings.epochs):
         for batch in data_loader:
             input_ids, labels, neg_samples = batch
-            optimizer.zero_grad()
-            outputs = model(input_ids)
-            loss = loss_function(outputs, labels, neg_samples)
-            loss.backward()
-            optimizer.step()
+            with tf.GradientTape() as tape:
+                outputs = model(input_ids)
+                loss = loss_function(outputs, labels, neg_samples)
+            gradients = tape.gradient(loss, model.trainable_variables)
+            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
 
 def evaluate_model(model, data_loader, loss_function):
     model.eval()
     total_loss = 0
-    with torch.no_grad():
-        for batch in data_loader:
-            input_ids, labels, neg_samples = batch
-            outputs = model(input_ids)
-            total_loss += loss_function(outputs, labels, neg_samples).item()
+    for batch in data_loader:
+        input_ids, labels, neg_samples = batch
+        outputs = model(input_ids)
+        total_loss += loss_function(outputs, labels, neg_samples).numpy()
     print(f"Mean Evaluation Loss: {total_loss / len(data_loader):.4f}")
 
 def save_model(model, file_path):
-    torch.save(model.state_dict(), file_path)
+    model.save_weights(file_path)
 
 def save_training_logs(history, file_path):
     with open(file_path, 'w') as f:
         json.dump(history, f)
 
 def add_scheduler(optimizer, settings):
-    return optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
+    return optimizers.schedules.ExponentialDecay(initial_learning_rate=0.001, decay_steps=1000, decay_rate=0.9)
 
 def start_training():
     settings = TrainingSettings()
@@ -146,15 +144,15 @@ def start_training():
     test_data = load_dataset("test.json")
     tokenizer = get_tokenizer()
     if train_data and test_data:
-        train_loader = DataLoader(DataLoaderWrapper(train_data, settings, tokenizer), batch_size=settings.batch_sizes['train'], shuffle=True)
-        test_loader = DataLoader(DataLoaderWrapper(test_data, settings, tokenizer), batch_size=settings.batch_sizes['eval'])
+        train_loader = DataLoaderWrapper(train_data, settings, tokenizer)
+        test_loader = DataLoaderWrapper(test_data, settings, tokenizer)
         model = EmbeddingModel(128, 30522)
         optimizer = setup_optimizer(model)
         model, optimizer, loss_function = prepare_training(model, optimizer)
         scheduler = add_scheduler(optimizer, settings)
         run_training(model, settings, train_loader, optimizer, loss_function)
         evaluate_model(model, test_loader, loss_function)
-        save_model(model, os.path.join(settings.results_dir, "triplet_model.pth"))
+        save_model(model, os.path.join(settings.results_dir, "triplet_model.h5"))
 
 def add_early_stopping(patience=3):
     class EarlyStopping:
