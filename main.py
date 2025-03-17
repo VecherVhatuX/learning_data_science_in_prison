@@ -89,7 +89,7 @@ class DataLoaderWrapper(tf.keras.utils.Sequence):
 
     def __getitem__(self, index):
         samples = self.dataset.generate_batch()[index * self.batch_size:(index + 1) * self.batch_size]
-        return tuple(tf.convert_to_tensor(x) for x in zip(*samples)
+        return tuple(tf.convert_to_tensor(x) for x in zip(*samples))
 
 def load_dataset(file_path):
     if os.path.exists(file_path):
@@ -110,6 +110,7 @@ def prepare_training(model, optimizer):
 
 def run_training(model, settings, data_loader, optimizer, loss_function):
     model.train()
+    early_stopping = add_early_stopping(patience=3)
     for epoch in range(settings.epochs):
         for batch in data_loader:
             input_ids, labels, neg_samples = batch
@@ -118,6 +119,9 @@ def run_training(model, settings, data_loader, optimizer, loss_function):
                 loss = loss_function(outputs, labels, neg_samples)
             gradients = tape.gradient(loss, model.trainable_variables)
             optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+        if early_stopping(loss.numpy()):
+            print("Early stopping triggered.")
+            break
 
 def evaluate_model(model, data_loader, loss_function):
     model.eval()
@@ -138,22 +142,6 @@ def save_training_logs(history, file_path):
 def add_scheduler(optimizer, settings):
     return optimizers.schedules.ExponentialDecay(initial_learning_rate=0.001, decay_steps=1000, decay_rate=0.9)
 
-def start_training():
-    settings = TrainingSettings()
-    train_data = load_dataset("train.json")
-    test_data = load_dataset("test.json")
-    tokenizer = get_tokenizer()
-    if train_data and test_data:
-        train_loader = DataLoaderWrapper(train_data, settings, tokenizer)
-        test_loader = DataLoaderWrapper(test_data, settings, tokenizer)
-        model = EmbeddingModel(128, 30522)
-        optimizer = setup_optimizer(model)
-        model, optimizer, loss_function = prepare_training(model, optimizer)
-        scheduler = add_scheduler(optimizer, settings)
-        run_training(model, settings, train_loader, optimizer, loss_function)
-        evaluate_model(model, test_loader, loss_function)
-        save_model(model, os.path.join(settings.results_dir, "triplet_model.h5"))
-
 def add_early_stopping(patience=3):
     class EarlyStopping:
         def __init__(self, patience):
@@ -171,6 +159,22 @@ def add_early_stopping(patience=3):
                     return True
             return False
     return EarlyStopping(patience)
+
+def start_training():
+    settings = TrainingSettings()
+    train_data = load_dataset("train.json")
+    test_data = load_dataset("test.json")
+    tokenizer = get_tokenizer()
+    if train_data and test_data:
+        train_loader = DataLoaderWrapper(train_data, settings, tokenizer)
+        test_loader = DataLoaderWrapper(test_data, settings, tokenizer)
+        model = EmbeddingModel(128, 30522)
+        optimizer = setup_optimizer(model)
+        model, optimizer, loss_function = prepare_training(model, optimizer)
+        scheduler = add_scheduler(optimizer, settings)
+        run_training(model, settings, train_loader, optimizer, loss_function)
+        evaluate_model(model, test_loader, loss_function)
+        save_model(model, os.path.join(settings.results_dir, "triplet_model.h5"))
 
 if __name__ == "__main__":
     start_training()
