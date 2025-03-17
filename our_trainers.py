@@ -180,6 +180,9 @@ def add_custom_regularization(model, lambda_reg=0.01):
         regularization_loss += torch.norm(param, p=2)
     return lambda_reg * regularization_loss
 
+def add_learning_rate_scheduler(optimizer, step_size=30, gamma=0.1):
+    return optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
+
 if __name__ == "__main__":
     run_training(1e-4, 32, 10, 5, 101, 10, 100)
     display_model_architecture(WordVectorGenerator(101, 10))
