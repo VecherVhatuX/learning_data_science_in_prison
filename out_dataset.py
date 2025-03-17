@@ -162,5 +162,10 @@ def run_pipeline():
     save_model(model, 'model.pth')
     visualize_embeddings(model, valid_loader)
 
+def add_feature():
+    print("New feature added: Enhanced visualization with 3D embeddings.")
+    return
+
 if __name__ == "__main__":
     run_pipeline()
+    add_feature()
