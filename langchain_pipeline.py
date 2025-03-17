@@ -15,7 +15,7 @@ def randomize_and_sort(items):
     )
 
 def handle_data(items, iteration):
-    return (randomize_and_sort(items), iteration + 1)
+    return (randomize_and_sort(items), iteration + 1
 
 def display_environment(info):
     return f"Environment details: {dict(os.environ)}\n{info}"
