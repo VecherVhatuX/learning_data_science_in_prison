@@ -3,6 +3,7 @@ import subprocess
 import json
 import click
 from ast import parse, FunctionDef, Call, Name
+from pathlib import Path
 
 PYTHON_EXECUTABLE = "python3"
 
@@ -13,16 +14,13 @@ def fetch_modified_methods(repo_path, commit_sha):
 
 def locate_test_methods(project_root):
     test_methods = []
-    for root, _, files in os.walk(project_root):
-        for file in files:
-            if file.endswith(".py"):
-                full_path = os.path.join(root, file)
-                with open(full_path, "r", encoding="utf-8") as f:
-                    ast_tree = parse(f.read(), filename=full_path)
-                for node in ast_tree.body:
-                    if isinstance(node, FunctionDef) and "test" in node.name:
-                        called_methods = [n.func.id for n in ast_tree.body if isinstance(n, Call) and isinstance(n.func, Name)]
-                        test_methods.append({"path": full_path, "test_name": node.name, "calls": called_methods})
+    for file_path in Path(project_root).rglob("*.py"):
+        with open(file_path, "r", encoding="utf-8") as f:
+            ast_tree = parse(f.read(), filename=str(file_path))
+        for node in ast_tree.body:
+            if isinstance(node, FunctionDef) and "test" in node.name:
+                called_methods = [n.func.id for n in ast_tree.body if isinstance(n, Call) and isinstance(n.func, Name)]
+                test_methods.append({"path": str(file_path), "test_name": node.name, "calls": called_methods})
     return test_methods
 
 def identify_affected_tests(project_root, modified_methods):
