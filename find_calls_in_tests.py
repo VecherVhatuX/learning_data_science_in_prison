@@ -77,3 +77,8 @@ def analyze(repo, commit, project, run, report):
 
 if __name__ == "__main__":
     analyze()
+
+# TODO: The `find_test_functions` function incorrectly identifies called functions.
+# It currently collects all function calls in the entire file, not just within the test function.
+# This can lead to false positives when determining impacted tests.
+# Fix: Modify the function to only collect calls within the test function's body.
