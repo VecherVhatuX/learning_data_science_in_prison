@@ -2,21 +2,20 @@ import json
 import os
 import random
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
+import tensorflow as tf
 from sklearn.preprocessing import LabelEncoder
 import matplotlib.pyplot as plt
-from torch.utils.data import Dataset, DataLoader
+from tensorflow.keras import layers, models, optimizers, losses
+from tensorflow.data import Dataset
 
 def collect_texts(data):
     return [text for item in data for text in (item['anchor'], item['positive'], item['negative'])]
 
 def encode_data(encoder, item):
     return {
-        'anchor_seq': torch.tensor(encoder.transform([item['anchor']])[0]),
-        'positive_seq': torch.tensor(encoder.transform([item['positive']])[0]),
-        'negative_seq': torch.tensor(encoder.transform([item['negative']])[0])
+        'anchor_seq': tf.convert_to_tensor(encoder.transform([item['anchor']])[0]),
+        'positive_seq': tf.convert_to_tensor(encoder.transform([item['positive']])[0]),
+        'negative_seq': tf.convert_to_tensor(encoder.transform([item['negative']])[0])
     }
 
 def shuffle_data(data):
@@ -54,18 +53,17 @@ class TripletData(Dataset):
     def __getitem__(self, idx):
         return encode_data(self.data.encoder, self.samples[idx])
 
-class EmbeddingNet(nn.Module):
+class EmbeddingNet(models.Model):
     def __init__(self, vocab_size, embed_dim):
         super(EmbeddingNet, self).__init__()
-        self.embedding = nn.Embedding(vocab_size, embed_dim)
-        self.network = nn.Sequential(
-            nn.Linear(embed_dim, 128),
-            nn.ReLU(),
-            nn.BatchNorm1d(128),
-            nn.Dropout(0.2),
-            nn.Linear(128, 128)
-        )
-    def forward(self, anchor, positive, negative):
+        self.embedding = layers.Embedding(vocab_size, embed_dim)
+        self.network = models.Sequential([
+            layers.Dense(128, activation='relu'),
+            layers.BatchNormalization(),
+            layers.Dropout(0.2),
+            layers.Dense(128)
+        ])
+    def call(self, anchor, positive, negative):
         return (
             self.network(self.embedding(anchor)),
             self.network(self.embedding(positive)),
@@ -73,22 +71,22 @@ class EmbeddingNet(nn.Module):
         )
 
 def compute_loss(anchor, positive, negative):
-    return torch.mean(torch.clamp(0.2 + torch.norm(anchor - positive, dim=1) - torch.norm(anchor - negative, dim=1), min=0))
+    return tf.reduce_mean(tf.maximum(0.2 + tf.norm(anchor - positive, axis=1) - tf.norm(anchor - negative, axis=1), 0))
 
 def train_net(model, train_data, valid_data, epochs):
-    optimizer = optim.Adam(model.parameters())
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+    optimizer = optimizers.Adam()
+    scheduler = optimizers.schedules.ExponentialDecay(0.001, decay_steps=10, decay_rate=0.1)
     history = []
     for _ in range(epochs):
         model.train()
         train_loss = 0
         for batch in train_data:
-            optimizer.zero_grad()
-            anchor, positive, negative = model(batch['anchor_seq'], batch['positive_seq'], batch['negative_seq'])
-            loss = compute_loss(anchor, positive, negative)
-            loss.backward()
-            optimizer.step()
-            train_loss += loss.item()
+            with tf.GradientTape() as tape:
+                anchor, positive, negative = model(batch['anchor_seq'], batch['positive_seq'], batch['negative_seq'])
+                loss = compute_loss(anchor, positive, negative)
+            gradients = tape.gradient(loss, model.trainable_variables)
+            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+            train_loss += loss.numpy()
         scheduler.step()
         train_loss /= len(train_data)
         eval_loss, accuracy = evaluate_net(model, valid_data)
@@ -99,15 +97,14 @@ def evaluate_net(model, data):
     model.eval()
     total_loss = 0
     correct = 0
-    with torch.no_grad():
-        for batch in data:
-            anchor, positive, negative = model(batch['anchor_seq'], batch['positive_seq'], batch['negative_seq'])
-            total_loss += compute_loss(anchor, positive, negative).item()
-            correct += count_correct(anchor, positive, negative)
+    for batch in data:
+        anchor, positive, negative = model(batch['anchor_seq'], batch['positive_seq'], batch['negative_seq'])
+        total_loss += compute_loss(anchor, positive, negative).numpy()
+        correct += count_correct(anchor, positive, negative)
     return total_loss / len(data), correct / len(data.dataset)
 
 def count_correct(anchor, positive, negative):
-    return torch.sum((torch.sum(anchor * positive, dim=1) > torch.sum(anchor * negative, dim=1)).item())
+    return tf.reduce_sum(tf.cast(tf.reduce_sum(anchor * positive, axis=1) > tf.reduce_sum(anchor * negative, axis=1), tf.float32))
 
 def plot_results(history):
     plt.figure(figsize=(10, 5))
@@ -127,21 +124,20 @@ def plot_results(history):
     plt.show()
 
 def save_net(model, path):
-    torch.save(model.state_dict(), path)
+    model.save_weights(path)
     print(f'Model saved at {path}')
 
 def load_net(model, path):
-    model.load_state_dict(torch.load(path))
+    model.load_weights(path)
     print(f'Model loaded from {path}')
     return model
 
 def visualize_embeddings_3d(model, data):
     model.eval()
     embeddings = []
-    with torch.no_grad():
-        for batch in data:
-            anchor, _, _ = model(batch['anchor_seq'], batch['positive_seq'], batch['negative_seq'])
-            embeddings.append(anchor.detach().numpy())
+    for batch in data:
+        anchor, _, _ = model(batch['anchor_seq'], batch['positive_seq'], batch['negative_seq'])
+        embeddings.append(anchor.numpy())
     embeddings = np.concatenate(embeddings)
     fig = plt.figure(figsize=(10, 10))
     ax = fig.add_subplot(111, projection='3d')
@@ -154,12 +150,12 @@ def execute_pipeline():
     mapping, snippet_files = load_data(dataset_path, snippets_dir)
     data = prepare_data(mapping, snippet_files)
     train_data, valid_data = np.array_split(np.array(data), 2)
-    train_loader = DataLoader(TripletData(train_data.tolist()), batch_size=32, shuffle=True)
-    valid_loader = DataLoader(TripletData(valid_data.tolist()), batch_size=32)
+    train_loader = Dataset.from_tensor_slices(train_data.tolist()).batch(32).shuffle(1000)
+    valid_loader = Dataset.from_tensor_slices(valid_data.tolist()).batch(32)
     model = EmbeddingNet(vocab_size=len(train_loader.dataset.data.encoder.classes_) + 1, embed_dim=128)
     history = train_net(model, train_loader, valid_loader, epochs=5)
     plot_results(history)
-    save_net(model, 'model.pth')
+    save_net(model, 'model.h5')
     visualize_embeddings_3d(model, valid_loader)
 
 def add_new_feature():
