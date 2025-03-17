@@ -5,176 +5,134 @@ import tensorflow as tf
 from tensorflow.keras import layers, optimizers
 from transformers import T5Tokenizer
 
-class ModelConfigurations:
-    def __init__(self):
-        self.model_name = "t5-base"
-        self.alpha = 16
-        self.dropout_rate = 0.1
-        self.decomposition_rank = 64
-        self.layers_to_modify = ["q_proj", "k_proj", "v_proj", "o_proj", "down_proj", "up_proj", "gate_proj"]
-        self.quantization_config = {
-            "nested_quantization": False, "four_bit_dtype": "float16", "storage_dtype": "uint8",
-            "quantization_strategy": "nf4", "flash_attention": False, "low_rank_peft": False,
-            "eight_bit_quantization": False, "four_bit_quantization": False, "reentrant_training": False,
-            "unsloth_training": False,
-        }
-        self.use_triplet_loss = True
-        self.data_source = "timdettmers/openassistant-guanaco"
-        self.token_flags = {"use_special_token": False, "include_special_tokens": False}
-        self.data_splits = ["train", "test"]
-        self.tokenized_file = None
-        self.results_dir = "./results"
-        self.epochs = 3
-        self.batch_sizes = {"train": 16, "eval": 64}
-        self.warmup_steps = 500
-        self.weight_decay = 0.01
-        self.logging_dir = "./logs"
-        self.model_save_interval = 500
-        self.max_checkpoints = 2
-        self.seed = 42
-        self.checkpoint_path = None
-        self.negative_samples_per_batch = 5
+ModelConfigurations = lambda: {
+    "model_name": "t5-base",
+    "alpha": 16,
+    "dropout_rate": 0.1,
+    "decomposition_rank": 64,
+    "layers_to_modify": ["q_proj", "k_proj", "v_proj", "o_proj", "down_proj", "up_proj", "gate_proj"],
+    "quantization_config": {
+        "nested_quantization": False, "four_bit_dtype": "float16", "storage_dtype": "uint8",
+        "quantization_strategy": "nf4", "flash_attention": False, "low_rank_peft": False,
+        "eight_bit_quantization": False, "four_bit_quantization": False, "reentrant_training": False,
+        "unsloth_training": False,
+    },
+    "use_triplet_loss": True,
+    "data_source": "timdettmers/openassistant-guanaco",
+    "token_flags": {"use_special_token": False, "include_special_tokens": False},
+    "data_splits": ["train", "test"],
+    "tokenized_file": None,
+    "results_dir": "./results",
+    "epochs": 3,
+    "batch_sizes": {"train": 16, "eval": 64},
+    "warmup_steps": 500,
+    "weight_decay": 0.01,
+    "logging_dir": "./logs",
+    "model_save_interval": 500,
+    "max_checkpoints": 2,
+    "seed": 42,
+    "checkpoint_path": None,
+    "negative_samples_per_batch": 5
+}
 
-class TextEmbeddingModel(tf.keras.Model):
-    def __init__(self, embedding_dim, vocab_size):
-        super(TextEmbeddingModel, self).__init__()
-        self.embedding = layers.Embedding(vocab_size, embedding_dim)
-        self.lstm = layers.LSTM(embedding_dim, return_sequences=True)
-        self.dense1 = layers.Dense(embedding_dim)
-        self.dense2 = layers.Dense(vocab_size)
+TextEmbeddingModel = lambda embedding_dim, vocab_size: tf.keras.Sequential([
+    layers.Embedding(vocab_size, embedding_dim),
+    layers.LSTM(embedding_dim, return_sequences=True),
+    lambda x: x[:, -1, :],
+    layers.Dense(embedding_dim),
+    layers.Dense(vocab_size)
+])
 
-    def call(self, x):
-        x = self.embedding(x)
-        x = self.lstm(x)
-        x = x[:, -1, :]
-        x = self.dense1(x)
-        x = self.dense2(x)
-        return x
+calculate_triplet_loss = lambda anchor, positive, negative: tf.reduce_mean(
+    tf.maximum(tf.reduce_mean(tf.square(anchor - positive), axis=-1) - 
+    tf.reduce_mean(tf.square(anchor - negative), axis=-1) + 2.0, 0.0)
+)
 
-def calculate_triplet_loss(anchor, positive, negative):
-    return tf.reduce_mean(tf.maximum(tf.reduce_mean(tf.square(anchor - positive), axis=-1) - 
-                      tf.reduce_mean(tf.square(anchor - negative), axis=-1) + 2.0, 0.0))
+DatasetHandler = lambda data, config, tokenizer: {
+    "data": data,
+    "config": config,
+    "tokenizer": tokenizer,
+    "indices": list(range(len(data))),
+    "shuffle_dataset": lambda self: random.shuffle(self["indices"]),
+    "fetch_sample": lambda self, idx: (
+        self["tokenizer"].encode(self["data"][self["indices"][idx]]['input'], max_length=512, padding='max_length', truncation=True),
+        self["tokenizer"].encode(self["data"][self["indices"][idx]]['output'], max_length=512, padding='max_length', truncation=True),
+        self["fetch_negative_samples"](idx)
+    ),
+    "fetch_negative_samples": lambda self, idx: [
+        self["tokenizer"].encode(self["data"][random.choice([j for j in range(len(self["data"])) if j != self["indices"][idx]])]['input'],
+        max_length=512, padding='max_length', truncation=True) 
+        for _ in range(self["config"]["negative_samples_per_batch"])
+    ],
+    "create_batch": lambda self: [self["fetch_sample"](i) for i in range(len(self["data"]))]
+}
 
-class DatasetHandler:
-    def __init__(self, data, config, tokenizer):
-        self.data = data
-        self.config = config
-        self.tokenizer = tokenizer
-        self.indices = list(range(len(data)))
+DataLoaderAdapter = lambda dataset, config, tokenizer: {
+    "dataset": DatasetHandler(dataset, config, tokenizer),
+    "batch_size": config["batch_sizes"]['train'],
+    "__len__": lambda self: len(self["dataset"]["data"]) // self["batch_size"],
+    "__getitem__": lambda self, index: tuple(tf.convert_to_tensor(x) for x in zip(*self["dataset"]["create_batch"]()[index * self["batch_size"]:(index + 1) * self["batch_size"]]))
+}
 
-    def shuffle_dataset(self):
-        random.shuffle(self.indices)
+load_data = lambda file_path: json.load(open(file_path, 'r')) if os.path.exists(file_path) else print(f"File not found: {file_path}")
 
-    def fetch_sample(self, idx):
-        input_ids = self.tokenizer.encode(self.data[self.indices[idx]]['input'], max_length=512, padding='max_length', truncation=True)
-        labels = self.tokenizer.encode(self.data[self.indices[idx]]['output'], max_length=512, padding='max_length', truncation=True)
-        neg_samples = self.fetch_negative_samples(idx)
-        return input_ids, labels, neg_samples
+initialize_tokenizer = lambda: T5Tokenizer.from_pretrained("t5-base")
 
-    def fetch_negative_samples(self, idx):
-        return [self.tokenizer.encode(self.data[random.choice([j for j in range(len(self.data)) if j != self.indices[idx]])]['input'],
-                                     max_length=512, padding='max_length', truncation=True) 
-                for _ in range(self.config.negative_samples_per_batch)]
+configure_optimizer = lambda model: optimizers.Adam(learning_rate=0.001)
 
-    def create_batch(self):
-        return [self.fetch_sample(i) for i in range(len(self.data))]
+setup_training = lambda model, optimizer: (model, optimizer, calculate_triplet_loss)
 
-class DataLoaderAdapter(tf.keras.utils.Sequence):
-    def __init__(self, dataset, config, tokenizer):
-        self.dataset = DatasetHandler(dataset, config, tokenizer)
-        self.batch_size = config.batch_sizes['train']
-
-    def __len__(self):
-        return len(self.dataset.data) // self.batch_size
-
-    def __getitem__(self, index):
-        samples = self.dataset.create_batch()[index * self.batch_size:(index + 1) * self.batch_size]
-        return tuple(tf.convert_to_tensor(x) for x in zip(*samples))
-
-def load_data(file_path):
-    if os.path.exists(file_path):
-        return json.load(open(file_path, 'r'))
-    else:
-        print(f"File not found: {file_path}")
-        return None
-
-def initialize_tokenizer():
-    return T5Tokenizer.from_pretrained("t5-base")
-
-def configure_optimizer(model):
-    return optimizers.Adam(learning_rate=0.001)
-
-def setup_training(model, optimizer):
-    loss_function = calculate_triplet_loss
-    return model, optimizer, loss_function
-
-def execute_training(model, config, data_loader, optimizer, loss_function):
-    model.train()
-    early_stopping = add_early_stopping(patience=3)
-    for epoch in range(config.epochs):
-        for batch in data_loader:
-            input_ids, labels, neg_samples = batch
-            with tf.GradientTape() as tape:
-                outputs = model(input_ids)
-                loss = loss_function(outputs, labels, neg_samples)
-            gradients = tape.gradient(loss, model.trainable_variables)
+execute_training = lambda model, config, data_loader, optimizer, loss_function: (
+    model.train(),
+    add_early_stopping(patience=3),
+    [(
+        [(
+            (input_ids, labels, neg_samples) := batch,
+            (outputs := model(input_ids)),
+            (loss := loss_function(outputs, labels, neg_samples)),
+            (gradients := tf.GradientTape().gradient(loss, model.trainable_variables)),
             optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-        if early_stopping(loss.numpy()):
-            print("Early stopping triggered.")
-            break
+        ) for batch in data_loader],
+        early_stopping(loss.numpy()) and print("Early stopping triggered.") and break
+    ) for epoch in range(config["epochs"])]
+)
 
-def assess_model(model, data_loader, loss_function):
-    model.eval()
-    total_loss = 0
-    for batch in data_loader:
-        input_ids, labels, neg_samples = batch
-        outputs = model(input_ids)
-        total_loss += loss_function(outputs, labels, neg_samples).numpy()
-    print(f"Mean Evaluation Loss: {total_loss / len(data_loader):.4f}")
+assess_model = lambda model, data_loader, loss_function: (
+    model.eval(),
+    print(f"Mean Evaluation Loss: {sum(loss_function(model(input_ids), labels, neg_samples).numpy() for input_ids, labels, neg_samples in data_loader) / len(data_loader):.4f}")
+)
 
-def store_model(model, file_path):
-    model.save_weights(file_path)
+store_model = lambda model, file_path: model.save_weights(file_path)
 
-def store_training_logs(history, file_path):
-    with open(file_path, 'w') as f:
-        json.dump(history, f)
+store_training_logs = lambda history, file_path: json.dump(history, open(file_path, 'w'))
 
-def add_learning_rate_scheduler(optimizer, config):
-    return optimizers.schedules.ExponentialDecay(initial_learning_rate=0.001, decay_steps=1000, decay_rate=0.9)
+add_learning_rate_scheduler = lambda optimizer, config: optimizers.schedules.ExponentialDecay(initial_learning_rate=0.001, decay_steps=1000, decay_rate=0.9)
 
-def add_early_stopping(patience=3):
-    class EarlyStopping:
-        def __init__(self, patience):
-            self.patience = patience
-            self.counter = 0
-            self.best_loss = float('inf')
+add_early_stopping = lambda patience=3: (
+    lambda current_loss: (
+        (current_loss < best_loss) and (best_loss := current_loss) and (counter := 0) or
+        (counter := counter + 1) and (counter >= patience)
+    ) if 'best_loss' in locals() else (best_loss := float('inf'), counter := 0, lambda current_loss: (
+        (current_loss < best_loss) and (best_loss := current_loss) and (counter := 0) or
+        (counter := counter + 1) and (counter >= patience)
+    )
+)
 
-        def __call__(self, current_loss):
-            if current_loss < self.best_loss:
-                self.best_loss = current_loss
-                self.counter = 0
-            else:
-                self.counter += 1
-                if self.counter >= self.patience:
-                    return True
-            return False
-    return EarlyStopping(patience)
-
-def initiate_training():
-    config = ModelConfigurations()
-    train_data = load_data("train.json")
-    test_data = load_data("test.json")
-    tokenizer = initialize_tokenizer()
-    if train_data and test_data:
-        train_loader = DataLoaderAdapter(train_data, config, tokenizer)
-        test_loader = DataLoaderAdapter(test_data, config, tokenizer)
-        model = TextEmbeddingModel(128, 30522)
-        optimizer = configure_optimizer(model)
-        model, optimizer, loss_function = setup_training(model, optimizer)
-        scheduler = add_learning_rate_scheduler(optimizer, config)
-        execute_training(model, config, train_loader, optimizer, loss_function)
-        assess_model(model, test_loader, loss_function)
-        store_model(model, os.path.join(config.results_dir, "triplet_model.h5"))
+initiate_training = lambda: (
+    (config := ModelConfigurations()),
+    (train_data := load_data("train.json")),
+    (test_data := load_data("test.json")),
+    (tokenizer := initialize_tokenizer()),
+    (train_loader := DataLoaderAdapter(train_data, config, tokenizer)),
+    (test_loader := DataLoaderAdapter(test_data, config, tokenizer)),
+    (model := TextEmbeddingModel(128, 30522)),
+    (optimizer := configure_optimizer(model)),
+    (model, optimizer, loss_function := setup_training(model, optimizer)),
+    (scheduler := add_learning_rate_scheduler(optimizer, config)),
+    execute_training(model, config, train_loader, optimizer, loss_function),
+    assess_model(model, test_loader, loss_function),
+    store_model(model, os.path.join(config["results_dir"], "triplet_model.h5"))
+)
 
 if __name__ == "__main__":
     initiate_training()
