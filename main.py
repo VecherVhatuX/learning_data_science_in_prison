@@ -7,7 +7,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 from transformers import T5Tokenizer
 
-ModelConfigurations = lambda: {
+ModelSettings = lambda: {
     "model_name": "t5-base",
     "alpha": 16,
     "dropout_rate": 0.1,
@@ -37,9 +37,9 @@ ModelConfigurations = lambda: {
     "negative_samples_per_batch": 5
 }
 
-class TextEmbeddingModel(nn.Module):  # TODO: Typo in class name, should be `nn.Module`
+class TextEncoder(nn.Module):
     def __init__(self, embedding_dim, vocab_size):
-        super(TextEmbeddingModel, self).__init__()
+        super(TextEncoder, self).__init__()
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
         self.lstm = nn.LSTM(embedding_dim, embedding_dim, batch_first=True)
         self.fc1 = nn.Linear(embedding_dim, embedding_dim)
@@ -53,12 +53,12 @@ class TextEmbeddingModel(nn.Module):  # TODO: Typo in class name, should be `nn.
         x = self.fc2(x)
         return x
 
-calculate_triplet_loss = lambda anchor, positive, negative: torch.mean(
+compute_triplet_loss = lambda anchor, positive, negative: torch.mean(
     torch.maximum(torch.mean(torch.square(anchor - positive), dim=-1) - 
-    torch.mean(torch.square(anchor - negative), dim=-1) + 2.0, torch.tensor(0.0)  # TODO: Missing closing parenthesis
+    torch.mean(torch.square(anchor - negative), dim=-1) + 2.0, torch.tensor(0.0)
 )
 
-class CustomDataset(Dataset):
+class TextDataset(Dataset):
     def __init__(self, data, config, tokenizer):
         self.data = data
         self.config = config
@@ -71,11 +71,11 @@ class CustomDataset(Dataset):
     def __getitem__(self, idx):
         input_ids = self.tokenizer.encode(self.data[self.indices[idx]]['input'], max_length=512, padding='max_length', truncation=True)
         labels = self.tokenizer.encode(self.data[self.indices[idx]]['output'], max_length=512, padding='max_length', truncation=True)
-        neg_samples = [self.tokenizer.encode(self.data[random.choice([j for j in range(len(self.data)) if j != self.indices[idx]])]['input'],  # TODO: Missing closing parenthesis
+        neg_samples = [self.tokenizer.encode(self.data[random.choice([j for j in range(len(self.data)) if j != self.indices[idx]])]['input'],
                        max_length=512, padding='max_length', truncation=True) for _ in range(self.config["negative_samples_per_batch"])]
         return torch.tensor(input_ids), torch.tensor(labels), torch.tensor(neg_samples)
 
-def load_data(file_path):
+def load_dataset(file_path):
     if os.path.exists(file_path):
         return json.load(open(file_path, 'r'))
     else:
@@ -84,12 +84,12 @@ def load_data(file_path):
 
 initialize_tokenizer = lambda: T5Tokenizer.from_pretrained("t5-base")
 
-configure_optimizer = lambda model: optim.Adam(model.parameters(), lr=0.001)
+setup_optimizer = lambda model: optim.Adam(model.parameters(), lr=0.001)
 
-def setup_training(model, optimizer):
-    return model, optimizer, calculate_triplet_loss
+def prepare_training(model, optimizer):
+    return model, optimizer, compute_triplet_loss
 
-def execute_training(model, config, data_loader, optimizer, loss_function):
+def train_model(model, config, data_loader, optimizer, loss_function):
     model.train()
     for epoch in range(config["epochs"]):
         for batch in data_loader:
@@ -103,7 +103,7 @@ def execute_training(model, config, data_loader, optimizer, loss_function):
             print("Early stopping triggered.")
             break
 
-def assess_model(model, data_loader, loss_function):
+def evaluate_model(model, data_loader, loss_function):
     model.eval()
     total_loss = 0
     with torch.no_grad():
@@ -111,15 +111,15 @@ def assess_model(model, data_loader, loss_function):
             input_ids, labels, neg_samples = batch
             outputs = model(input_ids)
             total_loss += loss_function(outputs, labels, neg_samples).item()
-    print(f"Mean Evaluation Loss: {total_loss / len(data_loader):.4f}")  # TODO: Missing closing parenthesis
+    print(f"Mean Evaluation Loss: {total_loss / len(data_loader):.4f}")
 
-def store_model(model, file_path):
+def save_model(model, file_path):
     torch.save(model.state_dict(), file_path)
 
-def store_training_logs(history, file_path):
+def save_training_logs(history, file_path):
     json.dump(history, open(file_path, 'w'))
 
-def add_learning_rate_scheduler(optimizer, config):
+def add_scheduler(optimizer, config):
     return optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
 
 def add_early_stopping(patience=3):
@@ -135,22 +135,22 @@ def add_early_stopping(patience=3):
         return counter >= patience
     return early_stopping
 
-def initiate_training():
-    config = ModelConfigurations()
-    train_data = load_data("train.json")
-    test_data = load_data("test.json")
+def start_training():
+    config = ModelSettings()
+    train_data = load_dataset("train.json")
+    test_data = load_dataset("test.json")
     tokenizer = initialize_tokenizer()
-    train_dataset = CustomDataset(train_data, config, tokenizer)
-    test_dataset = CustomDataset(test_data, config, tokenizer)
+    train_dataset = TextDataset(train_data, config, tokenizer)
+    test_dataset = TextDataset(test_data, config, tokenizer)
     train_loader = DataLoader(train_dataset, batch_size=config["batch_sizes"]['train'], shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=config["batch_sizes"]['eval'], shuffle=False)
-    model = TextEmbeddingModel(128, 30522)
-    optimizer = configure_optimizer(model)
-    model, optimizer, loss_function = setup_training(model, optimizer)
-    scheduler = add_learning_rate_scheduler(optimizer, config)
-    execute_training(model, config, train_loader, optimizer, loss_function)
-    assess_model(model, test_loader, loss_function)
-    store_model(model, os.path.join(config["results_dir"], "triplet_model.pth"))
+    model = TextEncoder(128, 30522)
+    optimizer = setup_optimizer(model)
+    model, optimizer, loss_function = prepare_training(model, optimizer)
+    scheduler = add_scheduler(optimizer, config)
+    train_model(model, config, train_loader, optimizer, loss_function)
+    evaluate_model(model, test_loader, loss_function)
+    save_model(model, os.path.join(config["results_dir"], "triplet_model.pth"))
 
 if __name__ == "__main__":
-    initiate_training()
+    start_training()
