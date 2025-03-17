@@ -7,73 +7,73 @@ from pathlib import Path
 
 PYTHON_CMD = "python3"
 
-def fetch_modified_methods(repo_path, commit_id):
+def get_changed_functions(repo_path, commit_id):
     os.chdir(repo_path)
     diff_output = subprocess.check_output(["git", "diff", commit_id, "--", "*.py"], text=True)
-    return {method.split('(')[0].strip('+') for line in diff_output.split('\n') if line.startswith('@@') and len(line.split()) > 3 and '(' in (method := line.split()[3])}
+    return {func.split('(')[0].strip('+') for line in diff_output.split('\n') if line.startswith('@@') and len(line.split()) > 3 and '(' in (func := line.split()[3])}
 
-def locate_test_methods(project_path):
-    test_methods = []
+def find_test_functions(project_path):
+    test_functions = []
     for py_file in Path(project_path).rglob("*.py"):
         with open(py_file, "r", encoding="utf-8") as file:
             ast_tree = parse(file.read(), filename=str(py_file))
         for node in ast_tree.body:
             if isinstance(node, FunctionDef) and "test" in node.name:
-                called_methods = [n.func.id for n in ast_tree.body if isinstance(n, Call) and isinstance(n.func, Name)]
-                test_methods.append({"file": str(py_file), "name": node.name, "calls": called_methods})
-    return test_methods
+                called_functions = [n.func.id for n in ast_tree.body if isinstance(n, Call) and isinstance(n.func, Name)]
+                test_functions.append({"file": str(py_file), "name": node.name, "calls": called_functions})
+    return test_functions
 
-def identify_affected_tests(project_path, modified_methods):
-    test_methods = locate_test_methods(project_path)
-    return [{"file": test["file"], "name": test["name"], "called": call} for test in test_methods for call in test["calls"] if call in modified_methods]
+def determine_impacted_tests(project_path, changed_functions):
+    test_functions = find_test_functions(project_path)
+    return [{"file": test["file"], "name": test["name"], "called": call} for test in test_functions for call in test["calls"] if call in changed_functions]
 
-def execute_test(test_file, test_name):
+def run_test(test_file, test_name):
     result = subprocess.run([PYTHON_CMD, "-m", "pytest", f"{test_file}::{test_name}"], capture_output=True, text=True)
     return result.returncode == 0
 
-def create_test_report(affected_tests, test_results):
-    report = {
-        "total": len(affected_tests),
-        "passed": sum(test_results),
-        "failed": len(affected_tests) - sum(test_results),
+def generate_test_summary(impacted_tests, test_outcomes):
+    summary = {
+        "total": len(impacted_tests),
+        "passed": sum(test_outcomes),
+        "failed": len(impacted_tests) - sum(test_outcomes),
         "info": []
     }
-    for test, result in zip(affected_tests, test_results):
-        report["info"].append({
+    for test, outcome in zip(impacted_tests, test_outcomes):
+        summary["info"].append({
             "name": test["name"],
             "file": test["file"],
-            "result": "passed" if result else "failed"
+            "result": "passed" if outcome else "failed"
         })
-    return report
+    return summary
 
 @click.command()
 @click.option('--repo', required=True, help='Repository path')
 @click.option('--commit', required=True, help='Commit hash')
 @click.option('--project', required=True, help='Project directory')
-@click.option('--run', is_flag=True, help='Run affected tests')
-@click.option('--report', is_flag=True, help='Generate test report')
-def analyze_repository(repo, commit, project, run, report):
-    modified_methods = fetch_modified_methods(repo, commit)
-    if not modified_methods:
+@click.option('--run', is_flag=True, help='Run impacted tests')
+@click.option('--report', is_flag=True, help='Generate test summary')
+def evaluate_repository(repo, commit, project, run, report):
+    changed_functions = get_changed_functions(repo, commit)
+    if not changed_functions:
         click.echo("No function changes found.")
         return
-    affected_tests = identify_affected_tests(project, modified_methods)
-    click.echo(json.dumps(affected_tests, indent=2))
+    impacted_tests = determine_impacted_tests(project, changed_functions)
+    click.echo(json.dumps(impacted_tests, indent=2))
     
     if run:
-        results = []
-        for test in affected_tests:
+        outcomes = []
+        for test in impacted_tests:
             click.echo(f"Executing test: {test['name']} in {test['file']}")
-            success = execute_test(test['file'], test['name'])
-            results.append(success)
+            success = run_test(test['file'], test['name'])
+            outcomes.append(success)
             if success:
                 click.echo(f"Test {test['name']} succeeded.")
             else:
                 click.echo(f"Test {test['name']} failed.")
         
         if report:
-            report_data = create_test_report(affected_tests, results)
-            click.echo(json.dumps(report_data, indent=2))
+            summary_data = generate_test_summary(impacted_tests, outcomes)
+            click.echo(json.dumps(summary_data, indent=2))
 
 if __name__ == "__main__":
-    analyze_repository()
+    evaluate_repository()
