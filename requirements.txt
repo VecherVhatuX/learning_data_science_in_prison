@@ -25,4 +25,4 @@ scikit-learn==1.4.1
 matplotlib==3.8.2
 tensorflow==2.16.1
 numpy==1.26.4
-subprocess-run==1.0.28
+subprocess-run==1.0.29
