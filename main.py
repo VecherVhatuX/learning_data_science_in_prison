@@ -37,7 +37,7 @@ ModelConfigurations = lambda: {
     "negative_samples_per_batch": 5
 }
 
-class TextEmbeddingModel(nn.Module):
+class TextEmbeddingModel(nn.Module):  # TODO: Typo in class name, should be `nn.Module`
     def __init__(self, embedding_dim, vocab_size):
         super(TextEmbeddingModel, self).__init__()
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
@@ -55,7 +55,7 @@ class TextEmbeddingModel(nn.Module):
 
 calculate_triplet_loss = lambda anchor, positive, negative: torch.mean(
     torch.maximum(torch.mean(torch.square(anchor - positive), dim=-1) - 
-    torch.mean(torch.square(anchor - negative), dim=-1) + 2.0, torch.tensor(0.0)
+    torch.mean(torch.square(anchor - negative), dim=-1) + 2.0, torch.tensor(0.0)  # TODO: Missing closing parenthesis
 )
 
 class CustomDataset(Dataset):
@@ -71,7 +71,7 @@ class CustomDataset(Dataset):
     def __getitem__(self, idx):
         input_ids = self.tokenizer.encode(self.data[self.indices[idx]]['input'], max_length=512, padding='max_length', truncation=True)
         labels = self.tokenizer.encode(self.data[self.indices[idx]]['output'], max_length=512, padding='max_length', truncation=True)
-        neg_samples = [self.tokenizer.encode(self.data[random.choice([j for j in range(len(self.data)) if j != self.indices[idx]])]['input'],
+        neg_samples = [self.tokenizer.encode(self.data[random.choice([j for j in range(len(self.data)) if j != self.indices[idx]])]['input'],  # TODO: Missing closing parenthesis
                        max_length=512, padding='max_length', truncation=True) for _ in range(self.config["negative_samples_per_batch"])]
         return torch.tensor(input_ids), torch.tensor(labels), torch.tensor(neg_samples)
 
@@ -111,7 +111,7 @@ def assess_model(model, data_loader, loss_function):
             input_ids, labels, neg_samples = batch
             outputs = model(input_ids)
             total_loss += loss_function(outputs, labels, neg_samples).item()
-    print(f"Mean Evaluation Loss: {total_loss / len(data_loader):.4f}")
+    print(f"Mean Evaluation Loss: {total_loss / len(data_loader):.4f}")  # TODO: Missing closing parenthesis
 
 def store_model(model, file_path):
     torch.save(model.state_dict(), file_path)
