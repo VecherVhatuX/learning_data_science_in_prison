@@ -156,6 +156,27 @@ def generate_data(data_size):
     labels = np.random.randint(0, 10, data_size)
     return data, labels
 
+def visualize_embeddings_interactive(model, data, labels):
+    embeddings = generate_embeddings(model, data)
+    tsne_result = TSNE(n_components=2).fit_transform(embeddings)
+    
+    plt.figure(figsize=(8, 8))
+    scatter = plt.scatter(tsne_result[:, 0], tsne_result[:, 1], c=labels, cmap='viridis')
+    plt.colorbar(scatter)
+    
+    def on_click(event):
+        if event.inaxes is not None:
+            x, y = event.xdata, event.ydata
+            distances = np.linalg.norm(tsne_result - np.array([x, y]), axis=1)
+            closest_index = np.argmin(distances)
+            print(f"Clicked on point with label: {labels[closest_index]}")
+    
+    plt.gcf().canvas.mpl_connect('button_press_event', on_click)
+    plt.show()
+
 if __name__ == "__main__":
     run_training(1e-4, 32, 10, 5, 101, 10, 100)
     display_model_architecture(WordVectorGenerator(101, 10))
+    model = load_model(WordVectorGenerator, "word_vector_generator.pth", 101, 10)
+    data, labels = generate_data(100)
+    visualize_embeddings_interactive(model, data, labels)
