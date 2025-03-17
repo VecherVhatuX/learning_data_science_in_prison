@@ -156,5 +156,23 @@ def start_training():
         evaluate_model(model, test_loader, loss_function)
         save_model(model, os.path.join(settings.results_dir, "triplet_model.pth"))
 
+def add_early_stopping(patience=3):
+    class EarlyStopping:
+        def __init__(self, patience):
+            self.patience = patience
+            self.counter = 0
+            self.best_loss = float('inf')
+
+        def __call__(self, current_loss):
+            if current_loss < self.best_loss:
+                self.best_loss = current_loss
+                self.counter = 0
+            else:
+                self.counter += 1
+                if self.counter >= self.patience:
+                    return True
+            return False
+    return EarlyStopping(patience)
+
 if __name__ == "__main__":
     start_training()
