@@ -1,47 +1,57 @@
-import tensorflow as tf
+import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 import random
-from tensorflow.keras import layers, optimizers, losses
+from torch import nn, optim
+from torch.utils.data import Dataset, DataLoader
 
-class WordVectorGenerator(tf.keras.Sequential):
+class WordVectorGenerator(nn.Module):
     def __init__(self, vocab_size, embedding_size):
-        super().__init__([
-            layers.Embedding(vocab_size, embedding_size),
-            layers.GlobalAveragePooling1D(),
-            layers.Dense(embedding_size),
-            layers.BatchNormalization(),
-            layers.LayerNormalization()
-        ])
+        super(WordVectorGenerator, self).__init__()
+        self.embedding = nn.Embedding(vocab_size, embedding_size)
+        self.pooling = nn.AdaptiveAvgPool1d(1)
+        self.dense = nn.Linear(embedding_size, embedding_size)
+        self.batch_norm = nn.BatchNorm1d(embedding_size)
+        self.layer_norm = nn.LayerNorm(embedding_size)
 
-class TripletDataLoader:
+    def forward(self, x):
+        x = self.embedding(x)
+        x = self.pooling(x.transpose(1, 2)).squeeze(2)
+        x = self.dense(x)
+        x = self.batch_norm(x)
+        x = self.layer_norm(x)
+        return x
+
+class TripletDataset(Dataset):
     def __init__(self, data, labels, negative_samples):
         self.data = data
         self.labels = labels
         self.negative_samples = negative_samples
 
-    def __iter__(self):
-        for i in range(len(self.data)):
-            anchor = tf.convert_to_tensor(self.data[i], dtype=tf.int32)
-            positive = tf.convert_to_tensor(random.choice(self.data[self.labels == self.labels[i]]), dtype=tf.int32)
-            negatives = tf.convert_to_tensor(random.sample(self.data[self.labels != self.labels[i]].tolist(), self.negative_samples), dtype=tf.int32)
-            yield anchor, positive, negatives
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        anchor = torch.tensor(self.data[idx], dtype=torch.long)
+        positive = torch.tensor(random.choice(self.data[self.labels == self.labels[idx]]), dtype=torch.long)
+        negatives = torch.tensor(random.sample(self.data[self.labels != self.labels[idx]].tolist(), self.negative_samples), dtype=torch.long)
+        return anchor, positive, negatives
 
 def calculate_triplet_loss(anchor, positive, negative, margin=1.0):
-    return tf.reduce_mean(tf.maximum(tf.norm(anchor - positive, axis=1) - tf.reduce_min(tf.norm(tf.expand_dims(anchor, 1) - negative, axis=2), axis=1) + margin, 0.0)
+    return torch.mean(torch.clamp(torch.norm(anchor - positive, dim=1) - torch.min(torch.norm(anchor.unsqueeze(1) - negative, dim=2), dim=1) + margin, min=0.0))
 
-def train_vector_generator(model, dataset, num_epochs, learning_rate):
-    optimizer = tf.optimizers.Adam(learning_rate)
+def train_vector_generator(model, dataloader, num_epochs, learning_rate):
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     for _ in range(num_epochs):
-        for anchor, positive, negative in dataset:
-            with tf.GradientTape() as tape:
-                loss = calculate_triplet_loss(model(anchor), model(positive), model(negative))
-            gradients = tape.gradient(loss, model.trainable_variables)
-            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+        for anchor, positive, negative in dataloader:
+            optimizer.zero_grad()
+            loss = calculate_triplet_loss(model(anchor), model(positive), model(negative))
+            loss.backward()
+            optimizer.step()
 
 def evaluate_model(model, data, labels, k=5):
-    embeddings = model(tf.convert_to_tensor(data, dtype=tf.int32)).numpy()
+    embeddings = model(torch.tensor(data, dtype=torch.long)).detach().numpy()
     metrics = compute_performance_metrics(embeddings, labels, k)
     show_metrics(metrics)
     plot_embeddings(embeddings, labels)
@@ -53,15 +63,15 @@ def show_metrics(metrics):
     print(f"F1-score: {metrics[3]:.4f}")
 
 def save_model(model, file_path):
-    model.save_weights(file_path)
+    torch.save(model.state_dict(), file_path)
 
 def load_model(model_class, file_path, vocab_size, embedding_size):
     model = model_class(vocab_size, embedding_size)
-    model.load_weights(file_path)
+    model.load_state_dict(torch.load(file_path))
     return model
 
 def generate_embeddings(model, data):
-    return model(tf.convert_to_tensor(data, dtype=tf.int32)).numpy()
+    return model(torch.tensor(data, dtype=torch.long)).detach().numpy()
 
 def plot_embeddings(embeddings, labels):
     plt.figure(figsize=(8, 8))
@@ -91,22 +101,25 @@ def plot_loss_history(loss_history):
 def run_training(learning_rate, batch_size, num_epochs, negative_samples, vocab_size, embedding_size, data_size):
     data, labels = generate_data(data_size)
     model = WordVectorGenerator(vocab_size, embedding_size)
-    save_model(model, "word_vector_generator.h5")
-    dataset = TripletDataLoader(data, labels, negative_samples)
-    loss_history = train_vector_generator(model, dataset, num_epochs, learning_rate)
+    save_model(model, "word_vector_generator.pth")
+    dataset = TripletDataset(data, labels, negative_samples)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    loss_history = train_vector_generator(model, dataloader, num_epochs, learning_rate)
     plot_loss_history(loss_history)
     evaluate_model(model, data, labels)
 
 def display_model_architecture(model):
-    model.summary()
+    print(model)
 
-def train_with_early_termination(model, dataset, num_epochs, learning_rate, patience=5):
-    optimizer = tf.optimizers.Adam(learning_rate)
+def train_with_early_termination(model, dataloader, num_epochs, learning_rate, patience=5):
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     best_loss = float('inf')
     no_improvement = 0
     for epoch in range(num_epochs):
-        avg_loss = sum(calculate_triplet_loss(model(anchor), model(positive), model(negative)) for anchor, positive, negative in dataset) / len(dataset)
-        optimizer.apply_gradients(zip(tf.GradientTape().gradient(avg_loss, model.trainable_variables), model.trainable_variables))
+        avg_loss = sum(calculate_triplet_loss(model(anchor), model(positive), model(negative)) for anchor, positive, negative in dataloader) / len(dataloader)
+        optimizer.zero_grad()
+        avg_loss.backward()
+        optimizer.step()
         if avg_loss < best_loss:
             best_loss = avg_loss
             no_improvement = 0
@@ -129,12 +142,12 @@ def visualize_embeddings_interactive(model, data, labels):
     plt.show()
 
 def add_custom_regularization(model, lambda_reg=0.01):
-    return lambda_reg * sum(tf.norm(param, ord=2) for param in model.trainable_variables)
+    return lambda_reg * sum(torch.norm(param, p=2) for param in model.parameters())
 
 def add_learning_rate_scheduler(optimizer, step_size=30, gamma=0.1):
-    return optimizers.schedules.ExponentialDecay(initial_learning_rate=optimizer.learning_rate, decay_steps=step_size, decay_rate=gamma)
+    return optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
 
 if __name__ == "__main__":
     run_training(1e-4, 32, 10, 5, 101, 10, 100)
     display_model_architecture(WordVectorGenerator(101, 10))
-    visualize_embeddings_interactive(load_model(WordVectorGenerator, "word_vector_generator.h5", 101, 10), *generate_data(100))
+    visualize_embeddings_interactive(load_model(WordVectorGenerator, "word_vector_generator.pth", 101, 10), *generate_data(100))
