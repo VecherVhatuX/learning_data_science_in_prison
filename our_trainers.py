@@ -8,7 +8,7 @@ from torch.utils.data import Dataset, DataLoader
 
 class WordEmbeddingModel(nn.Module):
     def __init__(self, vocab_size, embed_dim):
-        super(WordEmbeddingModel, self).__init__()
+        super().__init__()
         self.embedding = nn.Embedding(vocab_size, embed_dim)
         self.pooling = nn.AdaptiveAvgPool1d(1)
         self.linear = nn.Linear(embed_dim, embed_dim)
