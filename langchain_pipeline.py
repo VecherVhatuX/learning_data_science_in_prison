@@ -95,5 +95,16 @@ def execute_with_settings(cmd, max_attempts=5, timer_duration=0):
         countdown(timer_duration)
     start_process(cmd, max_attempts)
 
+def backup_logs():
+    try:
+        with open("command_log.txt", "r") as log_file:
+            logs = log_file.read()
+        with open(f"command_log_backup_{time.strftime('%Y%m%d%H%M%S')}.txt", "w") as backup_file:
+            backup_file.write(logs)
+        logger.success("Logs backed up successfully!")
+    except Exception as e:
+        logger.error(f"Backup failed: {e}")
+
 if __name__ == "__main__":
     click.command()(execute_with_settings)()
+    backup_logs()
