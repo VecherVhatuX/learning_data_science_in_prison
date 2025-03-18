@@ -11,25 +11,31 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
 class DataProcessor:
+    """Processes and encodes text data for triplet loss training."""
     def __init__(self, data):
         self.data = data
         self.encoder = LabelEncoder().fit(self._gather_texts(data))
     
     def _gather_texts(self, data):
+        """Collects all unique texts from the dataset for encoding."""
         return [text for item in data for text in (item['anchor'], item['positive'], item['negative'])]
     
     def retrieve_data(self):
+        """Returns the processed data."""
         return self.data
 
 class TripletDataset(Dataset):
+    """Custom Dataset for handling triplet data."""
     def __init__(self, data):
         self.data = DataProcessor(data)
         self.samples = self.data.retrieve_data()
     
     def __len__(self):
+        """Returns the number of samples in the dataset."""
         return len(self.samples)
     
     def __getitem__(self, idx):
+        """Retrieves a single triplet sample by index."""
         item = self.samples[idx]
         return {
             'anchor_seq': torch.tensor(self.data.encoder.transform([item['anchor']])[0]),
@@ -38,6 +44,7 @@ class TripletDataset(Dataset):
         }
 
 class EmbeddingModel(nn.Module):
+    """Neural network model for generating embeddings."""
     def __init__(self, vocab_size, embed_dim):
         super(EmbeddingModel, self).__init__()
         self.embedding = nn.Embedding(vocab_size, embed_dim)
@@ -50,6 +57,7 @@ class EmbeddingModel(nn.Module):
         )
     
     def forward(self, anchor, positive, negative):
+        """Forward pass for the model."""
         return (
             self.network(self.embedding(anchor)),
             self.network(self.embedding(positive)),
@@ -57,9 +65,11 @@ class EmbeddingModel(nn.Module):
         )
 
 def calculate_loss(anchor, positive, negative):
+    """Calculates the triplet loss."""
     return torch.mean(torch.clamp(0.2 + torch.norm(anchor - positive, dim=1) - torch.norm(anchor - negative, dim=1), min=0))
 
 def train_model(model, train_data, valid_data, epochs):
+    """Trains the model using the provided data."""
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.1)
     history = []
@@ -80,6 +90,7 @@ def train_model(model, train_data, valid_data, epochs):
     return history
 
 def evaluate_model(model, data):
+    """Evaluates the model on the provided data."""
     model.eval()
     total_loss = 0
     correct = 0
@@ -91,9 +102,11 @@ def evaluate_model(model, data):
     return total_loss / len(data), correct / len(data)
 
 def count_accurate(anchor, positive, negative):
+    """Counts the number of accurate predictions."""
     return torch.sum((torch.sum(anchor * positive, dim=1) > torch.sum(anchor * negative, dim=1)).float())
 
 def display_results(history):
+    """Displays training and validation results."""
     plt.figure(figsize=(10, 5))
     plt.subplot(1, 2, 1)
     plt.plot([x[0] for x in history], label='Training Loss')
@@ -111,15 +124,18 @@ def display_results(history):
     plt.show()
 
 def store_model(model, path):
+    """Saves the model to the specified path."""
     torch.save(model.state_dict(), path)
     print(f'Model saved at {path}')
 
 def load_model(model, path):
+    """Loads the model from the specified path."""
     model.load_state_dict(torch.load(path))
     print(f'Model loaded from {path}')
     return model
 
 def visualize_embeddings(model, data):
+    """Visualizes the embeddings in 3D space."""
     model.eval()
     embeddings = []
     with torch.no_grad():
@@ -134,16 +150,19 @@ def visualize_embeddings(model, data):
     plt.show()
 
 def fetch_data(file_path, root_dir):
+    """Fetches and processes data from the specified paths."""
     data = json.load(open(file_path))
     mapping = {item['instance_id']: item['problem_statement'] for item in data}
     snippet_files = [(dir, os.path.join(root_dir, 'snippet.json')) for dir in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, dir))]
     return mapping, snippet_files
 
 def process_data(mapping, snippet_files):
+    """Processes the fetched data into a format suitable for training."""
     return [{'anchor': mapping[os.path.basename(dir)], 'positive': bug_sample, 'negative': random.choice(non_bug_samples)}
             for dir, _ in snippet_files for bug_sample, non_bug_samples in [json.load(open(path)) for path in snippet_files]]
 
 def run_pipeline():
+    """Runs the entire training and evaluation pipeline."""
     dataset_path, snippets_dir = 'datasets/SWE-bench_oracle.npy', 'datasets/10_10_after_fix_pytest'
     mapping, snippet_files = fetch_data(dataset_path, snippets_dir)
     data = process_data(mapping, snippet_files)
@@ -157,6 +176,7 @@ def run_pipeline():
     visualize_embeddings(model, valid_loader)
 
 def add_feature():
+    """Adds a new feature to the pipeline."""
     print("New feature added: Enhanced visualization with 3D embeddings.")
     return
 
