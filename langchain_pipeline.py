@@ -32,7 +32,7 @@ def run_command(cmd):
 def setup_tools():
     return [
         Tool(name="EnvViewer", func=show_environment, description="Displays the current system environment."),
-        Tool(name="PackageManager", func=install_pkg, description="Manages package installations.")  # TODO: Fix typo in description "Manages"
+        Tool(name="PackageManager", func=install_pkg, description="Manages package installations.")
     ]
 
 def log_cmd_execution(cmd):
@@ -55,7 +55,7 @@ def retry_cmd(agent, cmd, attempt, max_attempts):
         agent.run("Check environment variables and dependencies.")
         agent.run("Fix environment issues by installing missing packages.")
         time.sleep(5)
-        retry_cmd(agent, cmd, attempt + 1, max_attempts)  # TODO: Fix typo in function name "retry_cmd"
+        retry_cmd(agent, cmd, attempt + 1, max_attempts)
 
 def execute_with_retry(cmd, max_attempts):
     agent = create_agent(tools=setup_tools())
@@ -103,7 +103,7 @@ def backup_logs():
             backup_file.write(logs)
         logger.success("Logs backed up successfully!")
     except Exception as e:
-        logger.error(f"Backup failed: {e}")  # TODO: Fix typo in log message "Backup"
+        logger.error(f"Backup failed: {e}")
 
 if __name__ == "__main__":
     typer.run(execute_with_settings)
