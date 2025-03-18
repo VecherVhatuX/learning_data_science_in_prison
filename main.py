@@ -7,7 +7,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 from transformers import T5Tokenizer
 
-ModelSettings = lambda: {
+ModelConfiguration = lambda: {
     "model_name": "t5-base",
     "alpha": 16,
     "dropout_rate": 0.1,
@@ -37,9 +37,9 @@ ModelSettings = lambda: {
     "negative_samples_per_batch": 5
 }
 
-class TextEncoder(nn.Module):
+class SentenceEmbedder(nn.Module):
     def __init__(self, embedding_dim, vocab_size):
-        super(TextEncoder, self).__init__()
+        super(SentenceEmbedder, self).__init__()
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
         self.lstm = nn.LSTM(embedding_dim, embedding_dim, batch_first=True)
         self.fc1 = nn.Linear(embedding_dim, embedding_dim)
@@ -53,12 +53,12 @@ class TextEncoder(nn.Module):
         x = self.fc2(x)
         return x
 
-compute_triplet_loss = lambda anchor, positive, negative: torch.mean(
+calculate_triplet_loss = lambda anchor, positive, negative: torch.mean(
     torch.maximum(torch.mean(torch.square(anchor - positive), dim=-1) - 
     torch.mean(torch.square(anchor - negative), dim=-1) + 2.0, torch.tensor(0.0)
 )
 
-class TextDataset(Dataset):
+class SentenceDataset(Dataset):
     def __init__(self, data, config, tokenizer):
         self.data = data
         self.config = config
@@ -75,21 +75,21 @@ class TextDataset(Dataset):
                        max_length=512, padding='max_length', truncation=True) for _ in range(self.config["negative_samples_per_batch"])]
         return torch.tensor(input_ids), torch.tensor(labels), torch.tensor(neg_samples)
 
-def load_dataset(file_path):
+def load_data(file_path):
     if os.path.exists(file_path):
         return json.load(open(file_path, 'r'))
     else:
         print(f"File not found: {file_path}")
         return None
 
-initialize_tokenizer = lambda: T5Tokenizer.from_pretrained("t5-base")
+initialize_t5_tokenizer = lambda: T5Tokenizer.from_pretrained("t5-base")
 
-setup_optimizer = lambda model: optim.Adam(model.parameters(), lr=0.001)
+configure_optimizer = lambda model: optim.Adam(model.parameters(), lr=0.001)
 
-def prepare_training(model, optimizer):
-    return model, optimizer, compute_triplet_loss
+def setup_training(model, optimizer):
+    return model, optimizer, calculate_triplet_loss
 
-def train_model(model, config, data_loader, optimizer, loss_function):
+def run_training(model, config, data_loader, optimizer, loss_function):
     model.train()
     for epoch in range(config["epochs"]):
         for batch in data_loader:
@@ -103,7 +103,7 @@ def train_model(model, config, data_loader, optimizer, loss_function):
             print("Early stopping triggered.")
             break
 
-def evaluate_model(model, data_loader, loss_function):
+def run_evaluation(model, data_loader, loss_function):
     model.eval()
     total_loss = 0
     with torch.no_grad():
@@ -113,16 +113,16 @@ def evaluate_model(model, data_loader, loss_function):
             total_loss += loss_function(outputs, labels, neg_samples).item()
     print(f"Mean Evaluation Loss: {total_loss / len(data_loader):.4f}")
 
-def save_model(model, file_path):
+def save_trained_model(model, file_path):
     torch.save(model.state_dict(), file_path)
 
-def save_training_logs(history, file_path):
+def save_training_history(history, file_path):
     json.dump(history, open(file_path, 'w'))
 
-def add_scheduler(optimizer, config):
+def add_learning_rate_scheduler(optimizer, config):
     return optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
 
-def add_early_stopping(patience=3):
+def configure_early_stopping(patience=3):
     best_loss = float('inf')
     counter = 0
     def early_stopping(current_loss):
@@ -135,22 +135,22 @@ def add_early_stopping(patience=3):
         return counter >= patience
     return early_stopping
 
-def start_training():
-    config = ModelSettings()
-    train_data = load_dataset("train.json")
-    test_data = load_dataset("test.json")
-    tokenizer = initialize_tokenizer()
-    train_dataset = TextDataset(train_data, config, tokenizer)
-    test_dataset = TextDataset(test_data, config, tokenizer)
+def execute_training():
+    config = ModelConfiguration()
+    train_data = load_data("train.json")
+    test_data = load_data("test.json")
+    tokenizer = initialize_t5_tokenizer()
+    train_dataset = SentenceDataset(train_data, config, tokenizer)
+    test_dataset = SentenceDataset(test_data, config, tokenizer)
     train_loader = DataLoader(train_dataset, batch_size=config["batch_sizes"]['train'], shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=config["batch_sizes"]['eval'], shuffle=False)
-    model = TextEncoder(128, 30522)
-    optimizer = setup_optimizer(model)
-    model, optimizer, loss_function = prepare_training(model, optimizer)
-    scheduler = add_scheduler(optimizer, config)
-    train_model(model, config, train_loader, optimizer, loss_function)
-    evaluate_model(model, test_loader, loss_function)
-    save_model(model, os.path.join(config["results_dir"], "triplet_model.pth"))
+    model = SentenceEmbedder(128, 30522)
+    optimizer = configure_optimizer(model)
+    model, optimizer, loss_function = setup_training(model, optimizer)
+    scheduler = add_learning_rate_scheduler(optimizer, config)
+    run_training(model, config, train_loader, optimizer, loss_function)
+    run_evaluation(model, test_loader, loss_function)
+    save_trained_model(model, os.path.join(config["results_dir"], "triplet_model.pth"))
 
 if __name__ == "__main__":
-    start_training()
+    execute_training()
