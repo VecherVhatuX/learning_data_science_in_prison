@@ -43,12 +43,19 @@ def calculate_triplet_loss(anchor, positive, negative, margin=1.0):
 
 def train_vector_generator(model, dataloader, num_epochs, learning_rate):
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    scheduler = add_learning_rate_scheduler(optimizer)
+    loss_history = []
     for _ in range(num_epochs):
+        epoch_loss = 0
         for anchor, positive, negative in dataloader:
             optimizer.zero_grad()
-            loss = calculate_triplet_loss(model(anchor), model(positive), model(negative))
+            loss = calculate_triplet_loss(model(anchor), model(positive), model(negative)) + add_custom_regularization(model)
             loss.backward()
             optimizer.step()
+            epoch_loss += loss.item()
+        scheduler.step()
+        loss_history.append(epoch_loss / len(dataloader))
+    return loss_history
 
 def evaluate_model(model, data, labels, k=5):
     embeddings = model(torch.tensor(data, dtype=torch.long)).detach().numpy()
@@ -113,13 +120,17 @@ def display_model_architecture(model):
 
 def train_with_early_termination(model, dataloader, num_epochs, learning_rate, patience=5):
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    scheduler = add_learning_rate_scheduler(optimizer)
     best_loss = float('inf')
     no_improvement = 0
+    loss_history = []
     for epoch in range(num_epochs):
-        avg_loss = sum(calculate_triplet_loss(model(anchor), model(positive), model(negative)) for anchor, positive, negative in dataloader) / len(dataloader)
+        avg_loss = sum(calculate_triplet_loss(model(anchor), model(positive), model(negative)) + add_custom_regularization(model) for anchor, positive, negative in dataloader) / len(dataloader)
         optimizer.zero_grad()
         avg_loss.backward()
         optimizer.step()
+        scheduler.step()
+        loss_history.append(avg_loss.item())
         if avg_loss < best_loss:
             best_loss = avg_loss
             no_improvement = 0
@@ -128,6 +139,7 @@ def train_with_early_termination(model, dataloader, num_epochs, learning_rate, p
         if no_improvement >= patience:
             print(f"Early stopping at epoch {epoch}")
             break
+    return loss_history
 
 def generate_data(data_size):
     return np.random.randint(0, 100, (data_size, 10)), np.random.randint(0, 10, data_size)
