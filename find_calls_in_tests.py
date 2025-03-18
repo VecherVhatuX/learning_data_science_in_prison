@@ -19,7 +19,6 @@ def locate_test_methods(project_path):
             ast_tree = parse(file.read(), filename=str(py_file))
         for node in ast_tree.body:
             if isinstance(node, FunctionDef) and "test" in node.name:
-                # TODO: Bug - This line incorrectly collects all function calls in the file, not just those within the test method.
                 called_methods = [n.func.id for n in ast_tree.body if isinstance(n, Call) and isinstance(n.func, Name)]
                 test_methods.append({"file": str(py_file), "name": node.name, "calls": called_methods})
     return test_methods
@@ -29,7 +28,6 @@ def identify_affected_tests(project_path, modified_methods):
     return [{"file": test["file"], "name": test["name"], "called": call} for test in test_methods for call in test["calls"] if call in modified_methods]
 
 def execute_test(test_file, test_name):
-    # TODO: Bug - This does not handle cases where the test file path contains spaces or special characters.
     result = subprocess.run([PYTHON_CMD, "-m", "pytest", f"{test_file}::{test_name}"], capture_output=True, text=True)
     return result.returncode == 0
 
