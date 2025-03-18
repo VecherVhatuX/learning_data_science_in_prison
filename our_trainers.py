@@ -116,6 +116,15 @@ def add_cosine_similarity(model, data):
     plt.title('Cosine Similarity Matrix')
     plt.show()
 
+def add_embedding_histogram(model, data):
+    embeds = model(torch.tensor(data, dtype=torch.long)).detach().numpy()
+    plt.figure(figsize=(8, 8))
+    plt.hist(embeds.flatten(), bins=50, color='blue', alpha=0.7)
+    plt.title('Embedding Value Distribution')
+    plt.xlabel('Embedding Value')
+    plt.ylabel('Frequency')
+    plt.show()
+
 if __name__ == "__main__":
     data, labels = generate_data(100)
     dataset = TripletDataset(data, labels, 5)
@@ -127,3 +136,4 @@ if __name__ == "__main__":
     evaluate_model(model, data, labels)
     visualize_embeddings(load_model(EmbeddingModel, "embedding_model.pth", 101, 10), *generate_data(100))
     add_cosine_similarity(model, data)
+    add_embedding_histogram(model, data)
