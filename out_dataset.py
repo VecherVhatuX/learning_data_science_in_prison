@@ -10,39 +10,14 @@ from sklearn.preprocessing import LabelEncoder
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
-def gather_texts(data):
-    return [text for item in data for text in (item['anchor'], item['positive'], item['negative'])]
-
-def transform_data(encoder, item):
-    return {
-        'anchor_seq': torch.tensor(encoder.transform([item['anchor']])[0]),
-        'positive_seq': torch.tensor(encoder.transform([item['positive']])[0]),
-        'negative_seq': torch.tensor(encoder.transform([item['negative']])[0])
-    }
-
-def randomize_data(data):
-    random.shuffle(data)
-    return data
-
-def generate_triplets(mapping, bug_samples, non_bug_samples):
-    return [
-        {'anchor': mapping[os.path.basename(dir)], 'positive': bug_sample, 'negative': random.choice(non_bug_samples)}
-        for dir, _ in snippet_files for bug_sample in bug_samples
-    ]
-
-def fetch_data(file_path, root_dir):
-    data = json.load(open(file_path))
-    mapping = {item['instance_id']: item['problem_statement'] for item in data}
-    snippet_files = [(dir, os.path.join(root_dir, 'snippet.json')) for dir in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, dir))]
-    return mapping, snippet_files
-
-def process_data(mapping, snippet_files):
-    return generate_triplets(mapping, *zip(*[json.load(open(path)) for path in snippet_files]))
-
 class DataProcessor:
     def __init__(self, data):
         self.data = data
-        self.encoder = LabelEncoder().fit(gather_texts(data))
+        self.encoder = LabelEncoder().fit(self._gather_texts(data))
+    
+    def _gather_texts(self, data):
+        return [text for item in data for text in (item['anchor'], item['positive'], item['negative'])]
+    
     def retrieve_data(self):
         return self.data
 
@@ -50,10 +25,17 @@ class TripletDataset(Dataset):
     def __init__(self, data):
         self.data = DataProcessor(data)
         self.samples = self.data.retrieve_data()
+    
     def __len__(self):
         return len(self.samples)
+    
     def __getitem__(self, idx):
-        return transform_data(self.data.encoder, self.samples[idx])
+        item = self.samples[idx]
+        return {
+            'anchor_seq': torch.tensor(self.data.encoder.transform([item['anchor']])[0]),
+            'positive_seq': torch.tensor(self.data.encoder.transform([item['positive']])[0]),
+            'negative_seq': torch.tensor(self.data.encoder.transform([item['negative']])[0])
+        }
 
 class EmbeddingModel(nn.Module):
     def __init__(self, vocab_size, embed_dim):
@@ -66,6 +48,7 @@ class EmbeddingModel(nn.Module):
             nn.Dropout(0.2),
             nn.Linear(128, 128)
         )
+    
     def forward(self, anchor, positive, negative):
         return (
             self.network(self.embedding(anchor)),
@@ -80,6 +63,7 @@ def train_model(model, train_data, valid_data, epochs):
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
     history = []
+    
     for _ in range(epochs):
         model.train()
         train_loss = 0
@@ -108,7 +92,7 @@ def evaluate_model(model, data):
     return total_loss / len(data), correct / len(data.dataset)
 
 def count_accurate(anchor, positive, negative):
-    return torch.sum((torch.sum(anchor * positive, dim=1) > torch.sum(anchor * negative, dim=1)).float()
+    return torch.sum((torch.sum(anchor * positive, dim=1) > torch.sum(anchor * negative, dim=1)).float())
 
 def display_results(history):
     plt.figure(figsize=(10, 5))
@@ -149,6 +133,16 @@ def visualize_embeddings(model, data):
     ax.scatter(embeddings[:, 0], embeddings[:, 1], embeddings[:, 2], c='Spectral')
     plt.title('3D Embedding Visualization')
     plt.show()
+
+def fetch_data(file_path, root_dir):
+    data = json.load(open(file_path))
+    mapping = {item['instance_id']: item['problem_statement'] for item in data}
+    snippet_files = [(dir, os.path.join(root_dir, 'snippet.json')) for dir in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, dir))]
+    return mapping, snippet_files
+
+def process_data(mapping, snippet_files):
+    return [{'anchor': mapping[os.path.basename(dir)], 'positive': bug_sample, 'negative': random.choice(non_bug_samples)}
+            for dir, _ in snippet_files for bug_sample, non_bug_samples in [json.load(open(path)) for path in snippet_files]]
 
 def run_pipeline():
     dataset_path, snippets_dir = 'datasets/SWE-bench_oracle.npy', 'datasets/10_10_after_fix_pytest'
