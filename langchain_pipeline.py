@@ -2,7 +2,7 @@ import os
 import time
 import random
 from subprocess import run
-import click
+import typer
 from tool_library import Tool, create_agent
 from loguru import logger
 from functools import wraps
@@ -106,5 +106,5 @@ def backup_logs():
         logger.error(f"Backup failed: {e}")
 
 if __name__ == "__main__":
-    click.command()(execute_with_settings)()
+    typer.run(execute_with_settings)
     backup_logs()
