@@ -2,7 +2,7 @@ import os
 import time
 import random
 from subprocess import run
-import typer
+import click
 from tool_library import Tool, create_agent
 from loguru import logger
 from functools import wraps
@@ -96,4 +96,4 @@ def execute_with_settings(cmd, max_attempts=5, timer_duration=0):
     start_process(cmd, max_attempts)
 
 if __name__ == "__main__":
-    typer.run(execute_with_settings)
+    click.command()(execute_with_settings)()
