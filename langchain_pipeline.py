@@ -7,75 +7,93 @@ from tool_library import Tool, create_agent
 from loguru import logger
 from functools import wraps
 
-randomize_and_split = lambda items: (
-    lambda shuffled: (
-        [item for item in shuffled if item['label'] == 1],
-        [item for item in shuffled if item['label'] == 0]
-    )
-)(random.sample(items, len(items)))
+def shuffle_and_categorize(items):
+    shuffled = random.sample(items, len(items))
+    positive = [item for item in shuffled if item['label'] == 1]
+    negative = [item for item in shuffled if item['label'] == 0]
+    return positive, negative
 
-process_and_update = lambda items, step: (randomize_and_split(items), step + 1)
+def process_items(items, step):
+    return shuffle_and_categorize(items), step + 1
 
-display_environment = lambda info: f"System environment details: {dict(os.environ)}\n{info}"
+def show_environment(info):
+    return f"System environment details: {dict(os.environ)}\n{info}"
 
-install_package = lambda package: run(
-    ["pip", "install", package], text=True, capture_output=True, check=True
-).stdout
+def install_pkg(pkg):
+    result = run(["pip", "install", pkg], text=True, capture_output=True, check=True)
+    return result.stdout
 
-execute_command = lambda cmd: (
-    ("", "No valid command provided.") if not cmd else
-    (lambda result: (result.stdout, result.stderr))(
-        run(cmd, shell=True, text=True, capture_output=True)
-    )
-)
+def run_command(cmd):
+    if not cmd:
+        return "", "No valid command provided."
+    result = run(cmd, shell=True, text=True, capture_output=True)
+    return result.stdout, result.stderr
 
-initialize_tools = lambda: [
-    Tool(name="EnvViewer", func=display_environment, description="Shows the current system environment."),
-    Tool(name="PackageManager", func=install_package, description="Handles package installations.")
-]
+def setup_tools():
+    return [
+        Tool(name="EnvViewer", func=show_environment, description="Displays the current system environment."),
+        Tool(name="PackageManager", func=install_pkg, description="Manages package installations.")
+    ]
 
-log_execution = lambda cmd: (
-    lambda output, error: (
-        logger.error(f"Execution failed: {error}") or False if error else
-        logger.success(f"Execution successful: {output}") or True
-    )
-)(*execute_command(cmd)) if logger.info(f"Executing command: {cmd}") else None
+def log_cmd_execution(cmd):
+    logger.info(f"Executing command: {cmd}")
+    output, error = run_command(cmd)
+    if error:
+        logger.error(f"Execution failed: {error}")
+        return False
+    logger.success(f"Execution successful: {output}")
+    return True
 
-retry_execution = lambda agent, cmd, attempt, max_attempts: (
-    logger.error("Max retry attempts reached. Stopping.") if attempt >= max_attempts else
-    logger.info(f"Retry attempt: {attempt + 1}/{max_attempts}") and
-    (logger.success("Command completed successfully!") if log_execution(cmd) else
-     agent.run("Check environment variables and dependencies.") and
-     agent.run("Fix environment issues by installing missing packages.") and
-     time.sleep(5) and
-    retry_execution(agent, cmd, attempt + 1, max_attempts)
-)
+def retry_cmd(agent, cmd, attempt, max_attempts):
+    if attempt >= max_attempts:
+        logger.error("Max retry attempts reached. Stopping.")
+        return
+    logger.info(f"Retry attempt: {attempt + 1}/{max_attempts}")
+    if log_cmd_execution(cmd):
+        logger.success("Command completed successfully!")
+    else:
+        agent.run("Check environment variables and dependencies.")
+        agent.run("Fix environment issues by installing missing packages.")
+        time.sleep(5)
+        retry_cmd(agent, cmd, attempt + 1, max_attempts)
 
-execute_with_retries = lambda cmd, max_attempts: retry_execution(create_agent(tools=initialize_tools()), cmd, 0, max_attempts
+def execute_with_retry(cmd, max_attempts):
+    agent = create_agent(tools=setup_tools())
+    retry_cmd(agent, cmd, 0, max_attempts)
 
-time_execution = lambda func: lambda *args, **kwargs: (
-    lambda start, result: (
-        logger.info(f"Time taken: {time.time() - start:.2f} seconds") or result
-    )(time.time(), func(*args, **kwargs))
-)
+def time_function(func):
+    def wrapper(*args, **kwargs):
+        start = time.time()
+        result = func(*args, **kwargs)
+        logger.info(f"Time taken: {time.time() - start:.2f} seconds")
+        return result
+    return wrapper
 
-begin_process = time_execution(lambda cmd, max_attempts: (
-    logger.info("Initiating process...") and execute_with_retries(cmd, max_attempts)
-)
+@time_function
+def start_process(cmd, max_attempts):
+    logger.info("Initiating process...")
+    execute_with_retry(cmd, max_attempts)
 
-log_command = lambda cmd: (
-    lambda: open("command_log.txt", "a").write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {cmd}\n")
-)() if not logger.error(f"Logging command failed: {e}") else None
+def log_cmd(cmd):
+    try:
+        with open("command_log.txt", "a") as log_file:
+            log_file.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {cmd}\n")
+    except Exception as e:
+        logger.error(f"Logging command failed: {e}")
 
-start_countdown = lambda seconds: (
-    logger.info(f"Time left: {seconds} seconds") and
-    time.sleep(1) and start_countdown(seconds - 1) if seconds > 0 else logger.success("Countdown complete!")
+def countdown(seconds):
+    if seconds > 0:
+        logger.info(f"Time left: {seconds} seconds")
+        time.sleep(1)
+        countdown(seconds - 1)
+    else:
+        logger.success("Countdown complete!")
 
-execute_with_config = lambda cmd, max_attempts=5, timer_duration=0: (
-    log_command(cmd) and
-    (start_countdown(timer_duration) if timer_duration > 0 else None) and
-    begin_process(cmd, max_attempts)
-)
+def execute_with_settings(cmd, max_attempts=5, timer_duration=0):
+    log_cmd(cmd)
+    if timer_duration > 0:
+        countdown(timer_duration)
+    start_process(cmd, max_attempts)
 
 if __name__ == "__main__":
-    typer.run(execute_with_config)
+    typer.run(execute_with_settings)
