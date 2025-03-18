@@ -46,13 +46,18 @@ def create_test_report(affected_tests, test_results):
         })
     return report
 
+def save_report_to_file(report, file_path):
+    with open(file_path, "w") as file:
+        json.dump(report, file, indent=2)
+
 @click.command()
 @click.option('--repo', required=True, help='Repository path')
 @click.option('--commit', required=True, help='Commit hash')
 @click.option('--project', required=True, help='Project directory')
 @click.option('--run', is_flag=True, help='Run affected tests')
 @click.option('--report', is_flag=True, help='Generate test report')
-def analyze_repository(repo, commit, project, run, report):
+@click.option('--output', default="test_report.json", help='Output file for the test report')
+def analyze_repository(repo, commit, project, run, report, output):
     modified_methods = fetch_modified_methods(repo, commit)
     if not modified_methods:
         click.echo("No method changes found.")
@@ -74,6 +79,7 @@ def analyze_repository(repo, commit, project, run, report):
         if report:
             report_data = create_test_report(affected_tests, outcomes)
             click.echo(json.dumps(report_data, indent=2))
+            save_report_to_file(report_data, output)
 
 if __name__ == "__main__":
     analyze_repository()
