@@ -6,144 +6,114 @@ import random
 from torch import nn, optim
 from torch.utils.data import Dataset, DataLoader
 
-# WordVectorGenerator: A sequential model that generates word embeddings.
-# It consists of an embedding layer, adaptive average pooling, linear layers, batch normalization, and layer normalization.
-WordVectorGenerator = lambda vocab_size, embedding_size: nn.Sequential(
-    nn.Embedding(vocab_size, embedding_size),
-    lambda x: nn.AdaptiveAvgPool1d(1)(x.transpose(1, 2)).squeeze(2),
-    nn.Linear(embedding_size, embedding_size),
-    nn.BatchNorm1d(embedding_size),
-    nn.LayerNorm(embedding_size)
-)
+class WordEmbeddingModel(nn.Module):
+    def __init__(self, vocab_size, embed_dim):
+        super(WordEmbeddingModel, self).__init__()
+        self.embedding = nn.Embedding(vocab_size, embed_dim)
+        self.pooling = nn.AdaptiveAvgPool1d(1)
+        self.linear = nn.Linear(embed_dim, embed_dim)
+        self.batch_norm = nn.BatchNorm1d(embed_dim)
+        self.layer_norm = nn.LayerNorm(embed_dim)
 
-# TripletDataset: A custom dataset class that generates triplets (anchor, positive, negative) for triplet loss training.
-TripletDataset = lambda data, labels, negative_samples: Dataset.from_tensor_slices((
-    data,
-    [random.choice(data[labels == label]) for label in labels],
-    [random.sample(data[labels != label].tolist(), negative_samples) for label in labels]
-))
+    def forward(self, x):
+        x = self.embedding(x)
+        x = self.pooling(x.transpose(1, 2)).squeeze(2)
+        x = self.linear(x)
+        x = self.batch_norm(x)
+        x = self.layer_norm(x)
+        return x
 
-# calculate_triplet_loss: Computes the triplet loss given anchor, positive, and negative embeddings.
-calculate_triplet_loss = lambda anchor, positive, negative, margin=1.0: torch.mean(
-    torch.clamp(torch.norm(anchor - positive, dim=1) - torch.min(torch.norm(anchor.unsqueeze(1) - negative, dim=2), dim=1) + margin, min=0.0)
-)
+class TripletData(Dataset):
+    def __init__(self, data, labels, neg_samples):
+        self.data = data
+        self.labels = labels
+        self.neg_samples = neg_samples
 
-# train_vector_generator: Trains the WordVectorGenerator model using triplet loss.
-train_vector_generator = lambda model, dataloader, num_epochs, learning_rate: (
-    lambda optimizer, scheduler: [
-        (lambda epoch_loss: (
-            [optimizer.zero_grad(), (lambda loss: (loss.backward(), optimizer.step(), epoch_loss.append(loss.item()))(
-                calculate_triplet_loss(model(anchor), model(positive), model(negative)) + add_custom_regularization(model)
-            ) for anchor, positive, negative in dataloader],
-            scheduler.step()
-        )([]) for _ in range(num_epochs)
-    ](optim.Adam(model.parameters(), lr=learning_rate), add_learning_rate_scheduler(optimizer))
-)
+    def __len__(self):
+        return len(self.data)
 
-# evaluate_model: Evaluates the model by computing performance metrics and visualizing embeddings.
-evaluate_model = lambda model, data, labels, k=5: (
-    lambda embeddings, metrics: (
-        show_metrics(metrics),
-        plot_embeddings(embeddings, labels)
-    )(model(torch.tensor(data, dtype=torch.long)).detach().numpy(), compute_performance_metrics(embeddings, labels, k))
-)
+    def __getitem__(self, idx):
+        anchor = self.data[idx]
+        pos = random.choice(self.data[self.labels == self.labels[idx]])
+        neg = random.sample(self.data[self.labels != self.labels[idx]].tolist(), self.neg_samples)
+        return anchor, pos, neg
 
-# show_metrics: Prints the performance metrics (accuracy, precision, recall, F1-score).
-show_metrics = lambda metrics: (
-    print(f"Accuracy: {metrics[0]:.4f}"),
-    print(f"Precision: {metrics[1]:.4f}"),
-    print(f"Recall: {metrics[2]:.4f}"),
-    print(f"F1-score: {metrics[3]:.4f}")
-)
+def triplet_loss(anchor, pos, neg, margin=1.0):
+    pos_dist = torch.norm(anchor - pos, dim=1)
+    neg_dist = torch.min(torch.norm(anchor.unsqueeze(1) - neg, dim=2), dim=1)
+    return torch.mean(torch.clamp(pos_dist - neg_dist + margin, min=0.0))
 
-# save_model: Saves the model's state dictionary to a file.
-save_model = lambda model, file_path: torch.save(model.state_dict(), file_path)
+def train_model(model, loader, epochs, lr):
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
+    loss_history = []
 
-# load_model: Loads a model's state dictionary from a file and returns the model.
-load_model = lambda model_class, file_path, vocab_size, embedding_size: (
-    lambda model: model.load_state_dict(torch.load(file_path)) or model
-)(model_class(vocab_size, embedding_size))
+    for _ in range(epochs):
+        epoch_loss = []
+        for anchor, pos, neg in loader:
+            optimizer.zero_grad()
+            loss = triplet_loss(model(anchor), model(pos), model(neg)) + 0.01 * sum(torch.norm(p, p=2) for p in model.parameters())
+            loss.backward()
+            optimizer.step()
+            epoch_loss.append(loss.item())
+        scheduler.step()
+        loss_history.append(np.mean(epoch_loss))
+    return loss_history
 
-# generate_embeddings: Generates embeddings for the given data using the model.
-generate_embeddings = lambda model, data: model(torch.tensor(data, dtype=torch.long)).detach().numpy()
-
-# plot_embeddings: Visualizes the embeddings using t-SNE.
-plot_embeddings = lambda embeddings, labels: (
-    plt.figure(figsize=(8, 8)),
-    plt.scatter(TSNE(n_components=2).fit_transform(embeddings)[:, 0], TSNE(n_components=2).fit_transform(embeddings)[:, 1], c=labels, cmap='viridis'),
-    plt.colorbar(),
+def evaluate(model, data, labels, k=5):
+    embeddings = model(torch.tensor(data, dtype=torch.long)).detach().numpy()
+    distances = np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2)
+    neighbors = np.argsort(distances, axis=1)[:, 1:k+1]
+    tp = np.sum(labels[neighbors] == labels[:, np.newaxis], axis=1)
+    accuracy = np.mean(np.any(labels[neighbors] == labels[:, np.newaxis], axis=1))
+    precision = np.mean(tp / k)
+    recall = np.mean(tp / np.sum(labels == labels[:, np.newaxis], axis=1))
+    f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+    print(f"Accuracy: {accuracy:.4f}")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall: {recall:.4f}")
+    print(f"F1-score: {f1:.4f}")
+    plt.figure(figsize=(8, 8))
+    plt.scatter(TSNE(n_components=2).fit_transform(embeddings)[:, 0], TSNE(n_components=2).fit_transform(embeddings)[:, 1], c=labels, cmap='viridis')
+    plt.colorbar()
     plt.show()
-)
 
-# compute_performance_metrics: Computes performance metrics (accuracy, precision, recall, F1-score) for the embeddings.
-compute_performance_metrics = lambda embeddings, labels, k=5: (
-    lambda distances, nearest_neighbors, true_positives: (
-        np.mean(np.any(labels[nearest_neighbors] == labels[:, np.newaxis], axis=1)),
-        np.mean(true_positives / k),
-        np.mean(true_positives / np.sum(labels == labels[:, np.newaxis], axis=1)),
-        2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-    )(np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2), np.argsort(distances, axis=1)[:, 1:k + 1], np.sum(labels[nearest_neighbors] == labels[:, np.newaxis], axis=1))
-)
+def save_model_state(model, path):
+    torch.save(model.state_dict(), path)
 
-# plot_loss_history: Plots the training loss over epochs.
-plot_loss_history = lambda loss_history: (
-    plt.figure(figsize=(10, 5)),
-    plt.plot(loss_history, label='Loss', color='blue'),
-    plt.title('Training Loss Over Epochs'),
-    plt.xlabel('Epochs'),
-    plt.ylabel('Loss'),
-    plt.legend(),
+def load_model_state(model_class, path, vocab_size, embed_dim):
+    model = model_class(vocab_size, embed_dim)
+    model.load_state_dict(torch.load(path))
+    return model
+
+def plot_loss(loss_history):
+    plt.figure(figsize=(10, 5))
+    plt.plot(loss_history, label='Loss', color='blue')
+    plt.title('Training Loss Over Epochs')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
     plt.show()
-)
 
-# run_training: Runs the training pipeline, including data generation, model training, and evaluation.
-run_training = lambda learning_rate, batch_size, num_epochs, negative_samples, vocab_size, embedding_size, data_size: (
-    lambda data, labels, model, dataset, dataloader: (
-        save_model(model, "word_vector_generator.pth"),
-        plot_loss_history(train_vector_generator(model, dataloader, num_epochs, learning_rate)),
-        evaluate_model(model, data, labels)
-    )(*(lambda: (np.random.randint(0, 100, (data_size, 10)), np.random.randint(0, 10, data_size)))(), WordVectorGenerator(vocab_size, embedding_size), TripletDataset(data, labels, negative_samples), DataLoader(dataset, batch_size=batch_size, shuffle=True))
-)
+def generate_random_data(data_size):
+    return np.random.randint(0, 100, (data_size, 10)), np.random.randint(0, 10, data_size)
 
-# display_model_architecture: Prints the architecture of the model.
-display_model_architecture = lambda model: print(model)
-
-# train_with_early_termination: Trains the model with early stopping based on validation loss.
-train_with_early_termination = lambda model, dataloader, num_epochs, learning_rate, patience=5: (
-    lambda optimizer, scheduler, best_loss, no_improvement, loss_history: [
-        (lambda avg_loss: (
-            optimizer.zero_grad(),
-            avg_loss.backward(),
-            optimizer.step(),
-            scheduler.step(),
-            loss_history.append(avg_loss.item()),
-            (lambda: (best_loss := avg_loss, no_improvement := 0) if avg_loss < best_loss else (no_improvement := no_improvement + 1))(),
-            (lambda: (print(f"Early stopping at epoch {epoch}"), break)() if no_improvement >= patience else None
-        ))(sum(calculate_triplet_loss(model(anchor), model(positive), model(negative)) + add_custom_regularization(model) for anchor, positive, negative in dataloader) / len(dataloader)) for epoch in range(num_epochs)
-    ](optim.Adam(model.parameters(), lr=learning_rate), add_learning_rate_scheduler(optimizer), float('inf'), 0, [])
-)
-
-# generate_data: Generates random data and labels for training.
-generate_data = lambda data_size: (np.random.randint(0, 100, (data_size, 10)), np.random.randint(0, 10, data_size))
-
-# visualize_embeddings_interactive: Visualizes embeddings interactively using t-SNE.
-visualize_embeddings_interactive = lambda model, data, labels: (
-    lambda embeddings, tsne_result: (
-        plt.figure(figsize=(8, 8)),
-        plt.scatter(tsne_result[:, 0], tsne_result[:, 1], c=labels, cmap='viridis'),
-        plt.colorbar(),
-        plt.gcf().canvas.mpl_connect('button_press_event', lambda event: print(f"Clicked on point with label: {labels[np.argmin(np.linalg.norm(tsne_result - np.array([event.xdata, event.ydata]), axis=1))]}") if event.inaxes is not None else None),
-        plt.show()
-    )(generate_embeddings(model, data), TSNE(n_components=2).fit_transform(embeddings))
-)
-
-# add_custom_regularization: Adds L2 regularization to the model's parameters.
-add_custom_regularization = lambda model, lambda_reg=0.01: lambda_reg * sum(torch.norm(param, p=2) for param in model.parameters())
-
-# add_learning_rate_scheduler: Adds a learning rate scheduler to the optimizer.
-add_learning_rate_scheduler = lambda optimizer, step_size=30, gamma=0.1: optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
+def interactive_embedding_visualization(model, data, labels):
+    embeddings = model(torch.tensor(data, dtype=torch.long)).detach().numpy()
+    tsne_result = TSNE(n_components=2).fit_transform(embeddings)
+    plt.figure(figsize=(8, 8))
+    plt.scatter(tsne_result[:, 0], tsne_result[:, 1], c=labels, cmap='viridis')
+    plt.colorbar()
+    plt.gcf().canvas.mpl_connect('button_press_event', lambda event: print(f"Clicked on point with label: {labels[np.argmin(np.linalg.norm(tsne_result - np.array([event.xdata, event.ydata]), axis=1))]}") if event.inaxes is not None else None)
+    plt.show()
 
 if __name__ == "__main__":
-    run_training(1e-4, 32, 10, 5, 101, 10, 100)
-    display_model_architecture(WordVectorGenerator(101, 10))
-    visualize_embeddings_interactive(load_model(WordVectorGenerator, "word_vector_generator.pth", 101, 10), *generate_data(100))
+    data, labels = generate_random_data(100)
+    dataset = TripletData(data, labels, 5)
+    loader = DataLoader(dataset, batch_size=32, shuffle=True)
+    model = WordEmbeddingModel(101, 10)
+    loss_hist = train_model(model, loader, 10, 1e-4)
+    save_model_state(model, "word_embedding_model.pth")
+    plot_loss(loss_hist)
+    evaluate(model, data, labels)
+    interactive_embedding_visualization(load_model_state(WordEmbeddingModel, "word_embedding_model.pth", 101, 10), *generate_random_data(100))
