@@ -83,3 +83,8 @@ def analyze_repository(repo, commit, project, run, report, output):
 
 if __name__ == "__main__":
     analyze_repository()
+
+# TODO: Bug - The `locate_test_methods` function incorrectly identifies called methods.
+# The current implementation collects all function calls in the entire file, not just within the test function.
+# This can lead to false positives when identifying affected tests.
+# Fix: Modify the AST traversal to only collect calls within the test function's body.
