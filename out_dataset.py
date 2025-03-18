@@ -32,9 +32,9 @@ class TripletDataset(Dataset):
     def __getitem__(self, idx):
         item = self.samples[idx]
         return {
-            'anchor_seq': torch.tensor(self.data.encoder.transform([item['anchor']])[0],
-            'positive_seq': torch.tensor(self.data.encoder.transform([item['positive']])[0],
-            'negative_seq': torch.tensor(self.data.encoder.transform([item['negative']])[0]
+            'anchor_seq': torch.tensor(self.data.encoder.transform([item['anchor']])[0]),
+            'positive_seq': torch.tensor(self.data.encoder.transform([item['positive']])[0]),
+            'negative_seq': torch.tensor(self.data.encoder.transform([item['negative']])[0])
         }
 
 class EmbeddingModel(nn.Module):
@@ -91,7 +91,7 @@ def evaluate_model(model, data):
     return total_loss / len(data), correct / len(data)
 
 def count_accurate(anchor, positive, negative):
-    return torch.sum((torch.sum(anchor * positive, dim=1) > torch.sum(anchor * negative, dim=1)).float()
+    return torch.sum((torch.sum(anchor * positive, dim=1) > torch.sum(anchor * negative, dim=1)).float())
 
 def display_results(history):
     plt.figure(figsize=(10, 5))
