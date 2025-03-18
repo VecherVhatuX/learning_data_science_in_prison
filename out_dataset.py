@@ -34,7 +34,7 @@ class TripletDataset(Dataset):
         return {
             'anchor_seq': torch.tensor(self.data.encoder.transform([item['anchor']])[0],
             'positive_seq': torch.tensor(self.data.encoder.transform([item['positive']])[0],
-            'negative_seq': torch.tensor(self.data.encoder.transform([item['negative']])[0])
+            'negative_seq': torch.tensor(self.data.encoder.transform([item['negative']])[0]
         }
 
 class EmbeddingModel(nn.Module):
