@@ -60,6 +60,7 @@ def execute_with_retry(cmd, max_attempts):
     retry_execution(agent, cmd, 0, max_attempts)
 
 def time_execution(func):
+    @wraps(func)
     def wrapper(*args, **kwargs):
         start = time.time()
         result = func(*args, **kwargs)
