@@ -7,69 +7,59 @@ from tool_library import Tool, create_agent
 from loguru import logger
 from functools import wraps
 
-def randomize_and_separate(items):
-    # Shuffle the items and split them based on their label value
+def shuffle_and_split(items):
     randomized = random.sample(items, len(items))
     return [i for i in randomized if i['label'] == 1], [i for i in randomized if i['label'] == 0]
 
-def handle_data(items, counter):
-    # Process the items and increment the counter
-    return randomize_and_separate(items), counter + 1
+def process_items(items, counter):
+    return shuffle_and_split(items), counter + 1
 
-def display_system_info(details):
-    # Return a string with system environment details and additional info
+def get_system_details(details):
     return f"System environment details: {dict(os.environ)}\n{details}"
 
-def install_dependency(dependency):
-    # Install a Python package using pip and return the output
-    output = run(["pip", "install", dependency], text=True, capture_output=True, check=True)
+def install_package(package):
+    output = run(["pip", "install", package], text=True, capture_output=True, check=True)
     return output.stdout
 
-def execute_command(command):
-    # Execute a shell command and return the output and error messages
+def run_shell_command(command):
     if not command:
         return "", "No valid command provided."
     output = run(command, shell=True, text=True, capture_output=True)
     return output.stdout, output.stderr
 
-def initialize_tools():
-    # Create and return a list of available tools
+def setup_tools():
     return [
-        Tool(name="EnvViewer", func=display_system_info, description="Shows system environment details."),
-        Tool(name="PackageManager", func=install_dependency, description="Handles package installations.")
+        Tool(name="EnvViewer", func=get_system_details, description="Shows system environment details."),
+        Tool(name="PackageManager", func=install_package, description="Handles package installations.")
     ]
 
-def log_command(command):
-    # Log the execution of a command and handle errors
+def log_and_execute(command):
     logger.info(f"Running command: {command}")
-    stdout, stderr = execute_command(command)
+    stdout, stderr = run_shell_command(command)
     if stderr:
         logger.error(f"Command failed: {stderr}")
         return False
     logger.success(f"Command succeeded: {stdout}")
     return True
 
-def retry_command(agent, command, attempt, max_attempts):
-    # Retry a command if it fails, up to a maximum number of attempts
+def retry_execution(agent, command, attempt, max_attempts):
     if attempt >= max_attempts:
         logger.error("Maximum retries reached. Aborting.")
         return
     logger.info(f"Attempt {attempt + 1} of {max_attempts}")
-    if log_command(command):
+    if log_and_execute(command):
         logger.success("Command executed successfully!")
     else:
         agent.run("Verify environment variables and dependencies.")
         agent.run("Resolve issues by installing required packages.")
         time.sleep(5)
-        retry_command(agent, command, attempt + 1, max_attempts)
+        retry_execution(agent, command, attempt + 1, max_attempts)
 
-def execute_with_retries(command, max_attempts):
-    # Execute a command with retries using an agent
-    agent = create_agent(tools=initialize_tools())
-    retry_command(agent, command, 0, max_attempts)
+def execute_with_retry(command, max_attempts):
+    agent = create_agent(tools=setup_tools())
+    retry_execution(agent, command, 0, max_attempts)
 
-def measure_time(func):
-    # Measure the execution time of a function
+def time_execution(func):
     def wrapper(*args, **kwargs):
         start = time.time()
         result = func(*args, **kwargs)
@@ -77,38 +67,33 @@ def measure_time(func):
         return result
     return wrapper
 
-@measure_time
-def begin_process(command, max_attempts):
-    # Start the main process and execute the command with retries
+@time_execution
+def start_process(command, max_attempts):
     logger.info("Initiating process...")
-    execute_with_retries(command, max_attempts)
+    execute_with_retry(command, max_attempts)
 
-def log_command_to_file(command):
-    # Log the command to a file for future reference
+def log_command_history(command):
     try:
         with open("command_log.txt", "a") as log_file:
             log_file.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {command}\n")
     except Exception as e:
         logger.error(f"Failed to log command: {e}")
 
-def countdown(duration):
-    # Display a countdown timer for the specified duration
+def display_countdown(duration):
     if duration > 0:
         logger.info(f"Remaining time: {duration} seconds")
         time.sleep(1)
-        countdown(duration - 1)
+        display_countdown(duration - 1)
     else:
         logger.success("Countdown finished!")
 
-def execute_with_config(command, max_attempts=5, countdown_duration=0):
-    # Execute a command with configuration options
-    log_command_to_file(command)
+def execute_with_settings(command, max_attempts=5, countdown_duration=0):
+    log_command_history(command)
     if countdown_duration > 0:
-        countdown(countdown_duration)
-    begin_process(command, max_attempts)
+        display_countdown(countdown_duration)
+    start_process(command, max_attempts)
 
-def backup_command_logs():
-    # Create a backup of the command log file
+def backup_logs():
     try:
         with open("command_log.txt", "r") as log_file:
             logs = log_file.read()
@@ -119,5 +104,5 @@ def backup_command_logs():
         logger.error(f"Backup error: {e}")
 
 if __name__ == "__main__":
-    typer.run(execute_with_config)
-    backup_command_logs()
+    typer.run(execute_with_settings)
+    backup_logs()
