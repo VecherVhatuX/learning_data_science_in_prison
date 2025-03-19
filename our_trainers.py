@@ -31,7 +31,7 @@ calculate_triplet_loss = lambda anchor, pos, neg, margin=1.0: torch.mean(torch.c
 train_embedding_model = lambda model, loader, epochs, lr: (
     lambda optimizer, scheduler: [
         (lambda epoch_loss: [
-            (lambda loss: (loss.backward(), optimizer.step(), epoch_loss.append(loss.item())))(calculate_triplet_loss(model(anchor), model(pos), model(neg)) + 0.01 * sum(torch.norm(p, p=2) for p in model.parameters()
+            (lambda loss: (loss.backward(), optimizer.step(), epoch_loss.append(loss.item())))(calculate_triplet_loss(model(anchor), model(pos), model(neg)) + 0.01 * sum(torch.norm(p, p=2) for p in model.parameters())
             for anchor, pos, neg in loader
         ], scheduler.step(), epoch_loss
         )([]) for _ in range(epochs)
