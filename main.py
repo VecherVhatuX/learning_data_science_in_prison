@@ -1,10 +1,8 @@
 import os
 import json
 import random
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset
+import tensorflow as tf
+from tensorflow.keras import layers, optimizers
 from transformers import T5Tokenizer
 
 class ModelConfig:
@@ -23,17 +21,17 @@ class ModelConfig:
             "max_checkpoints": 2, "seed": 42, "checkpoint_path": None, "negative_samples_per_batch": 5
         }
 
-class TextEncoder(nn.Module):
+class TextEncoder(tf.keras.Model):
     def __init__(self, vocab_size, embed_dim):
         super(TextEncoder, self).__init__()
-        self.embed = nn.Embedding(vocab_size, embed_dim)
-        self.rnn = nn.LSTM(embed_dim, embed_dim, batch_first=True)
-        self.fc1 = nn.Linear(embed_dim, embed_dim)
-        self.fc2 = nn.Linear(embed_dim, vocab_size)
+        self.embed = layers.Embedding(vocab_size, embed_dim)
+        self.rnn = layers.LSTM(embed_dim, return_sequences=True, return_state=True)
+        self.fc1 = layers.Dense(embed_dim)
+        self.fc2 = layers.Dense(vocab_size)
 
-    def forward(self, x):
+    def call(self, x):
         x = self.embed(x)
-        x, _ = self.rnn(x)
+        x, _, _ = self.rnn(x)
         x = x[:, -1, :]
         x = self.fc1(x)
         return self.fc2(x)
@@ -48,9 +46,9 @@ class DataHandler:
 
     @staticmethod
     def tokenize_data(data, tokenizer, max_len=512):
-        return torch.tensor(tokenizer.encode(data, max_length=max_len, padding='max_length', truncation=True))
+        return tf.convert_to_tensor(tokenizer.encode(data, max_length=max_len, padding='max_length', truncation=True))
 
-class TripletDataset(Dataset):
+class TripletDataset(tf.keras.utils.Sequence):
     def __init__(self, data, tokenizer, neg_samples=5):
         self.data = data
         self.tokenizer = tokenizer
@@ -62,7 +60,7 @@ class TripletDataset(Dataset):
     def __getitem__(self, idx):
         input_ids = DataHandler.tokenize_data(self.data[idx]['input'], self.tokenizer)
         labels = DataHandler.tokenize_data(self.data[idx]['output'], self.tokenizer)
-        neg_samples = torch.stack([DataHandler.tokenize_data(self.data[random.choice([j for j in range(len(self.data)) if j != idx])]['input'], self.tokenizer) for _ in range(self.neg_samples)])
+        neg_samples = tf.stack([DataHandler.tokenize_data(self.data[random.choice([j for j in range(len(self.data)) if j != idx])]['input'], self.tokenizer) for _ in range(self.neg_samples)])
         return input_ids, labels, neg_samples
 
 class TrainingManager:
@@ -77,11 +75,11 @@ class TrainingManager:
         self.model.train()
         for epoch in range(epochs):
             for input_ids, labels, neg_samples in data_loader:
-                self.optimizer.zero_grad()
-                loss = self.loss_fn(self.model(input_ids), labels, neg_samples)
-                loss.backward()
-                self.optimizer.step()
-            if self.early_stop(loss.item(), patience):
+                with tf.GradientTape() as tape:
+                    loss = self.loss_fn(self.model(input_ids), labels, neg_samples)
+                gradients = tape.gradient(loss, self.model.trainable_variables)
+                self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+            if self.early_stop(loss.numpy(), patience):
                 print("Early stopping triggered.")
                 break
 
@@ -89,7 +87,7 @@ class TrainingManager:
         self.model.eval()
         total_loss = 0
         for input_ids, labels, neg_samples in data_loader:
-            total_loss += self.loss_fn(self.model(input_ids), labels, neg_samples).item()
+            total_loss += self.loss_fn(self.model(input_ids), labels, neg_samples).numpy()
         print(f"Mean Evaluation Loss: {total_loss / len(data_loader):.4f}")
 
     def early_stop(self, current_loss, patience):
@@ -103,7 +101,7 @@ class TrainingManager:
 class ModelSaver:
     @staticmethod
     def save_model(model, path):
-        torch.save(model.state_dict(), path)
+        model.save_weights(path)
 
     @staticmethod
     def save_history(history, path):
@@ -113,7 +111,7 @@ def initialize_components():
     config = ModelConfig().settings
     tokenizer = T5Tokenizer.from_pretrained("t5-base")
     model = TextEncoder(30522, 128)
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = optimizers.Adam(learning_rate=0.001)
     return config, tokenizer, model, optimizer
 
 def execute_training():
@@ -122,12 +120,20 @@ def execute_training():
     test_data = DataHandler.load_data("test.json")
     train_dataset = TripletDataset(train_data, tokenizer, config["negative_samples_per_batch"])
     test_dataset = TripletDataset(test_data, tokenizer, config["negative_samples_per_batch"])
-    train_loader = DataLoader(train_dataset, batch_size=config["batch_sizes"]['train'], shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=config["batch_sizes"]['eval'], shuffle=False)
+    train_loader = tf.data.Dataset.from_generator(lambda: train_dataset, output_signature=(
+        tf.TensorSpec(shape=(None,), dtype=tf.int32),
+        tf.TensorSpec(shape=(None,), dtype=tf.int32),
+        tf.TensorSpec(shape=(None, None), dtype=tf.int32)
+    )).batch(config["batch_sizes"]['train']).shuffle(buffer_size=len(train_dataset))
+    test_loader = tf.data.Dataset.from_generator(lambda: test_dataset, output_signature=(
+        tf.TensorSpec(shape=(None,), dtype=tf.int32),
+        tf.TensorSpec(shape=(None,), dtype=tf.int32),
+        tf.TensorSpec(shape=(None, None), dtype=tf.int32)
+    )).batch(config["batch_sizes"]['eval'])
     trainer = TrainingManager(model, optimizer, triplet_loss)
     trainer.train(train_loader, config["epochs"])
     trainer.evaluate(test_loader)
-    ModelSaver.save_model(model, os.path.join(config["results_dir"], "triplet_model.pth"))
+    ModelSaver.save_model(model, os.path.join(config["results_dir"], "triplet_model.h5"))
 
 if __name__ == "__main__":
     execute_training()
