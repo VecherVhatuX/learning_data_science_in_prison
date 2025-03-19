@@ -91,11 +91,26 @@ plot_distribution = lambda model, data: (
     )
 )(model(torch.tensor(data, dtype=torch.long)).detach().numpy())
 
+def plot_learning_rate(optimizer, scheduler, epochs):
+    lr_history = []
+    for _ in range(epochs):
+        lr_history.append(optimizer.param_groups[0]['lr'])
+        scheduler.step()
+    plt.figure(figsize=(10, 5))
+    plt.plot(lr_history, label='Learning Rate', color='red')
+    plt.title('Learning Rate Over Epochs')
+    plt.xlabel('Epochs')
+    plt.ylabel('Learning Rate')
+    plt.legend()
+    plt.show()
+
 if __name__ == "__main__":
     data, labels = generate_data(100)
     dataset = TripletData(data, labels, 5)
     loader = DataLoader(dataset, batch_size=32, shuffle=True)
     model = EmbeddingModel(101, 10)
+    optimizer = optim.Adam(model.parameters(), lr=1e-4)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
     loss_history = train_model(model, loader, 10, 1e-4)
     save(model, "embedding_model.pth")
     plot_loss_history(loss_history)
@@ -103,3 +118,4 @@ if __name__ == "__main__":
     visualize(load(EmbeddingModel, "embedding_model.pth", 101, 10), *generate_data(100))
     display_similarity(model, data)
     plot_distribution(model, data)
+    plot_learning_rate(optimizer, scheduler, 10)
