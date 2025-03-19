@@ -6,8 +6,6 @@ import random
 from torch import nn, optim
 from torch.utils.data import Dataset, DataLoader
 
-# EmbeddingGenerator: A sequential model that generates embeddings for input data.
-# It consists of an embedding layer, adaptive average pooling, linear layers, batch normalization, and layer normalization.
 EmbeddingGenerator = lambda vocab_size, embed_dim: nn.Sequential(
     nn.Embedding(vocab_size, embed_dim),
     lambda x: nn.AdaptiveAvgPool1d(1)(x.transpose(1, 2)).squeeze(2),
@@ -16,8 +14,6 @@ EmbeddingGenerator = lambda vocab_size, embed_dim: nn.Sequential(
     nn.LayerNorm(embed_dim)
 )
 
-# TripletDataset: A custom dataset class for triplet loss training.
-# It generates triplets (anchor, positive, negative) for each data point.
 TripletDataset = lambda data, labels, neg_samples: type('TripletDataset', (Dataset,), {
     '__init__': lambda self, data, labels, neg_samples: (setattr(self, 'data', data), setattr(self, 'labels', labels), setattr(self, 'neg_samples', neg_samples)),
     '__len__': lambda self: len(self.data),
@@ -28,14 +24,10 @@ TripletDataset = lambda data, labels, neg_samples: type('TripletDataset', (Datas
     )
 })(data, labels, neg_samples)
 
-# calculate_triplet_loss: Computes the triplet loss given anchor, positive, and negative embeddings.
-# The loss encourages the anchor to be closer to the positive than to the negative by a margin.
 calculate_triplet_loss = lambda anchor, pos, neg, margin=1.0: torch.mean(torch.clamp(
     torch.norm(anchor - pos, dim=1) - torch.min(torch.norm(anchor.unsqueeze(1) - neg, dim=2)[0] + margin, min=0.0)
-))
+)
 
-# train_embedding_model: Trains the embedding model using triplet loss.
-# It uses an Adam optimizer and a learning rate scheduler.
 train_embedding_model = lambda model, loader, epochs, lr: (
     lambda optimizer, scheduler: [
         (lambda epoch_loss: [
@@ -45,8 +37,6 @@ train_embedding_model = lambda model, loader, epochs, lr: (
         )([]) for _ in range(epochs)
     ])(optim.Adam(model.parameters(), lr=lr), optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1))
 
-# evaluate_model: Evaluates the model by computing accuracy, precision, recall, and F1-score.
-# It also visualizes the embeddings using t-SNE.
 evaluate_model = lambda model, data, labels, k=5: (
     lambda embeddings, distances, neighbors, true_positives: (
         print(f"Accuracy: {np.mean(np.any(labels[neighbors] == labels[:, np.newaxis], axis=1)):.4f}"),
@@ -63,19 +53,14 @@ evaluate_model = lambda model, data, labels, k=5: (
         np.sum(labels[neighbors] == labels[:, np.newaxis], axis=1)
     )
 
-# save_model: Saves the model's state dictionary to a file.
 save_model = lambda model, path: torch.save(model.state_dict(), path)
 
-# load_model: Loads a model's state dictionary from a file and returns the model.
 load_model = lambda model_class, path, vocab_size, embed_dim: (lambda model: (model.load_state_dict(torch.load(path)), model)[1])(model_class(vocab_size, embed_dim))
 
-# plot_loss: Plots the training loss over epochs.
 plot_loss = lambda losses: (plt.figure(figsize=(10, 5)), plt.plot(losses, label='Loss', color='blue'), plt.title('Training Loss Over Epochs'), plt.xlabel('Epochs'), plt.ylabel('Loss'), plt.legend(), plt.show()
 
-# generate_random_data: Generates random data and labels for testing purposes.
 generate_random_data = lambda data_size: (np.random.randint(0, 100, (data_size, 10)), np.random.randint(0, 10, data_size))
 
-# visualize_embeddings: Visualizes the embeddings using t-SNE and allows interactive label inspection.
 visualize_embeddings = lambda model, data, labels: (
     lambda embeddings, tsne: (
         plt.figure(figsize=(8, 8)),
@@ -85,7 +70,6 @@ visualize_embeddings = lambda model, data, labels: (
         plt.show()
     ))(model(torch.tensor(data, dtype=torch.long)).detach().numpy(), TSNE(n_components=2).fit_transform(embeddings))
 
-# display_similarity_matrix: Displays a cosine similarity matrix of the embeddings.
 display_similarity_matrix = lambda model, data: (
     lambda embeddings, cosine_sim: (
         plt.figure(figsize=(8, 8)),
@@ -95,7 +79,6 @@ display_similarity_matrix = lambda model, data: (
         plt.show()
     ))(model(torch.tensor(data, dtype=torch.long)).detach().numpy(), np.dot(embeddings, embeddings.T) / (np.linalg.norm(embeddings, axis=1)[:, np.newaxis] * np.linalg.norm(embeddings, axis=1)))
 
-# plot_embedding_distribution: Plots the distribution of embedding values.
 plot_embedding_distribution = lambda model, data: (
     lambda embeddings: (
         plt.figure(figsize=(8, 8)),
