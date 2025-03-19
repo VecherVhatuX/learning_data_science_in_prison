@@ -19,7 +19,7 @@ def locate_test_methods(project_path):
             ast_tree = parse(file.read(), filename=str(py_file))
         for node in ast_tree.body:
             if isinstance(node, FunctionDef) and "test" in node.name:
-                called_methods = [n.func.id for n in ast_tree.body if isinstance(n, Call) and isinstance(n.func, Name) and n in node.body]
+                called_methods = [n.func.id for n in node.body if isinstance(n, Call) and isinstance(n.func, Name)]
                 test_methods.append({"file": str(py_file), "name": node.name, "calls": called_methods})
     return test_methods
 
@@ -83,8 +83,3 @@ def analyze_repository(repo, commit, project, run, report, output):
 
 if __name__ == "__main__":
     analyze_repository()
-
-# TODO: Bug - The `locate_test_methods` function incorrectly identifies called methods. 
-# It currently iterates over `ast_tree.body` instead of `node.body`, which means it captures 
-# all function calls in the file, not just those within the test function. This leads to 
-# false positives when identifying affected tests.
