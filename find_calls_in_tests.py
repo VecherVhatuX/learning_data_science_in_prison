@@ -42,17 +42,17 @@ def write_report(report_data, output_file):
         json.dump(report_data, file, indent=2)
 
 @click.command()
-@click.option('--repo', required=True, help='Repository path')
-@click.option('--commit', required=True, help='Commit hash')
-@click.option('--project', required=True, help='Project directory')
-@click.option('--run', is_flag=True, help='Run affected tests')
-@click.option('--report', is_flag=True, help='Generate test report')
-@click.option('--output', default="test_report.json", help='Output file for the test report')
+@click.option('--repo', required=True, help='Path to the repository')
+@click.option('--commit', required=True, help='Commit identifier')
+@click.option('--project', required=True, help='Path to the project directory')
+@click.option('--run', is_flag=True, help='Execute affected tests')
+@click.option('--report', is_flag=True, help='Create a test report')
+@click.option('--output', default="test_report.json", help='Destination file for the test report')
 def main(repo, commit, project, run, report, output):
     diff_output = get_git_diff(repo, commit)
     modified_methods = extract_methods_from_diff(diff_output)
     if not modified_methods:
-        click.echo("No method changes found.")
+        click.echo("No changes detected in methods.")
         return
     tests = gather_tests(project)
     affected_tests = filter_affected_tests(tests, modified_methods)
@@ -61,8 +61,8 @@ def main(repo, commit, project, run, report, output):
     if run:
         outcomes = [run_pytest(test['file'], test['name']) for test in affected_tests]
         for test, success in zip(affected_tests, outcomes):
-            click.echo(f"Running test: {test['name']} in {test['file']}")
-            click.echo(f"Test {test['name']} {'succeeded' if success else 'failed'}.")
+            click.echo(f"Executing test: {test['name']} in {test['file']}")
+            click.echo(f"Test {test['name']} {'passed' if success else 'failed'}.")
         
         if report:
             report_data = generate_report_data(affected_tests, outcomes)
