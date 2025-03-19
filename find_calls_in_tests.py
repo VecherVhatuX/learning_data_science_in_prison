@@ -28,6 +28,7 @@ def get_impacted_tests(project_path, changed_functions):
     return [{"file": test["file"], "name": test["name"], "called": call} for test in test_functions for call in test["calls"] if call in changed_functions]
 
 def run_test(test_file, test_name):
+    # TODO: Handle cases where the test file or test name is invalid
     result = subprocess.run([PYTHON_CMD, "-m", "pytest", f"{test_file}::{test_name}"], capture_output=True, text=True)
     return result.returncode == 0
 
@@ -47,6 +48,7 @@ def generate_test_summary(impacted_tests, test_results):
     return summary
 
 def save_summary_to_file(summary, file_path):
+    # TODO: Add error handling for file write operations
     with open(file_path, "w") as file:
         json.dump(summary, file, indent=2)
 
