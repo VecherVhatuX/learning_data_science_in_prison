@@ -1,5 +1,5 @@
 plaintext
-torch==2.1.45
+torch==2.1.46
 torchvision==0.16.43
 torchaudio==0.15.43
 transformers==4.40.39
