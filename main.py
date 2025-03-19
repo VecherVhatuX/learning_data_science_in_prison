@@ -70,8 +70,10 @@ class TrainingManager:
         self.model = model
         self.optimizer = optimizer
         self.loss_fn = loss_fn
+        self.best_loss = float('inf')
+        self.counter = 0
 
-    def train(self, data_loader, epochs):
+    def train(self, data_loader, epochs, patience=3):
         self.model.train()
         for epoch in range(epochs):
             for input_ids, labels, neg_samples in data_loader:
@@ -79,7 +81,7 @@ class TrainingManager:
                 loss = self.loss_fn(self.model(input_ids), labels, neg_samples)
                 loss.backward()
                 self.optimizer.step()
-            if self.early_stop(loss.item()):
+            if self.early_stop(loss.item(), patience):
                 print("Early stopping triggered.")
                 break
 
@@ -90,18 +92,13 @@ class TrainingManager:
             total_loss += self.loss_fn(self.model(input_ids), labels, neg_samples).item()
         print(f"Mean Evaluation Loss: {total_loss / len(data_loader):.4f}")
 
-    def early_stop(self, patience=3):
-        best_loss = float('inf')
-        counter = 0
-        def check(current_loss):
-            nonlocal best_loss, counter
-            if current_loss < best_loss:
-                best_loss = current_loss
-                counter = 0
-            else:
-                counter += 1
-            return counter >= patience
-        return check
+    def early_stop(self, current_loss, patience):
+        if current_loss < self.best_loss:
+            self.best_loss = current_loss
+            self.counter = 0
+        else:
+            self.counter += 1
+        return self.counter >= patience
 
 class ModelSaver:
     @staticmethod
