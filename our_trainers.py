@@ -6,7 +6,7 @@ import random
 from torch import nn, optim
 from torch.utils.data import Dataset, DataLoader
 
-class NeuralMapper(nn.Module):
+class EmbeddingGenerator(nn.Module):
     def __init__(self, vocab_size, embed_dim):
         super().__init__()
         self.embed = nn.Embedding(vocab_size, embed_dim)
@@ -23,7 +23,7 @@ class NeuralMapper(nn.Module):
         x = self.ln(x)
         return x
 
-class TripletSampler(Dataset):
+class TripletDataset(Dataset):
     def __init__(self, data, labels, neg_samples):
         self.data = data
         self.labels = labels
@@ -38,12 +38,12 @@ class TripletSampler(Dataset):
         neg = random.sample(self.data[self.labels != self.labels[idx]].tolist(), self.neg_samples)
         return anchor, pos, neg
 
-def compute_loss(anchor, pos, neg, margin=1.0):
+def calculate_triplet_loss(anchor, pos, neg, margin=1.0):
     pos_dist = torch.norm(anchor - pos, dim=1)
     neg_dist = torch.min(torch.norm(anchor.unsqueeze(1) - neg, dim=2), dim=1)[0]
     return torch.mean(torch.clamp(pos_dist - neg_dist + margin, min=0.0))
 
-def train_network(model, loader, epochs, lr):
+def train_embedding_model(model, loader, epochs, lr):
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
     loss_history = []
@@ -52,7 +52,7 @@ def train_network(model, loader, epochs, lr):
         epoch_loss = []
         for anchor, pos, neg in loader:
             optimizer.zero_grad()
-            loss = compute_loss(model(anchor), model(pos), model(neg)) + 0.01 * sum(torch.norm(p, p=2) for p in model.parameters())
+            loss = calculate_triplet_loss(model(anchor), model(pos), model(neg)) + 0.01 * sum(torch.norm(p, p=2) for p in model.parameters())
             loss.backward()
             optimizer.step()
             epoch_loss.append(loss.item())
@@ -60,7 +60,7 @@ def train_network(model, loader, epochs, lr):
         loss_history.append(np.mean(epoch_loss))
     return loss_history
 
-def assess_model(model, data, labels, k=5):
+def evaluate_model(model, data, labels, k=5):
     embeddings = model(torch.tensor(data, dtype=torch.long)).detach().numpy()
     distances = np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2)
     neighbors = np.argsort(distances, axis=1)[:, 1:k+1]
@@ -78,15 +78,15 @@ def assess_model(model, data, labels, k=5):
     plt.colorbar()
     plt.show()
 
-def store_model(model, path):
+def save_model(model, path):
     torch.save(model.state_dict(), path)
 
-def retrieve_model(model_class, path, vocab_size, embed_dim):
+def load_model(model_class, path, vocab_size, embed_dim):
     model = model_class(vocab_size, embed_dim)
     model.load_state_dict(torch.load(path))
     return model
 
-def display_loss(losses):
+def plot_loss(losses):
     plt.figure(figsize=(10, 5))
     plt.plot(losses, label='Loss', color='blue')
     plt.title('Training Loss Over Epochs')
@@ -95,10 +95,10 @@ def display_loss(losses):
     plt.legend()
     plt.show()
 
-def create_random_data(data_size):
+def generate_random_data(data_size):
     return np.random.randint(0, 100, (data_size, 10)), np.random.randint(0, 10, data_size)
 
-def show_embeddings(model, data, labels):
+def visualize_embeddings(model, data, labels):
     embeddings = model(torch.tensor(data, dtype=torch.long)).detach().numpy()
     tsne = TSNE(n_components=2).fit_transform(embeddings)
     plt.figure(figsize=(8, 8))
@@ -107,7 +107,7 @@ def show_embeddings(model, data, labels):
     plt.gcf().canvas.mpl_connect('button_press_event', lambda event: print(f"Clicked on point with label: {labels[np.argmin(np.linalg.norm(tsne - np.array([event.xdata, event.ydata]), axis=1))]}") if event.inaxes is not None else None)
     plt.show()
 
-def display_similarity(model, data):
+def display_similarity_matrix(model, data):
     embeddings = model(torch.tensor(data, dtype=torch.long)).detach().numpy()
     cosine_sim = np.dot(embeddings, embeddings.T) / (np.linalg.norm(embeddings, axis=1)[:, np.newaxis] * np.linalg.norm(embeddings, axis=1))
     plt.figure(figsize=(8, 8))
@@ -116,7 +116,7 @@ def display_similarity(model, data):
     plt.title('Cosine Similarity Matrix')
     plt.show()
 
-def plot_distribution(model, data):
+def plot_embedding_distribution(model, data):
     embeddings = model(torch.tensor(data, dtype=torch.long)).detach().numpy()
     plt.figure(figsize=(8, 8))
     plt.hist(embeddings.flatten(), bins=50, color='blue', alpha=0.7)
@@ -126,14 +126,14 @@ def plot_distribution(model, data):
     plt.show()
 
 if __name__ == "__main__":
-    data, labels = create_random_data(100)
-    dataset = TripletSampler(data, labels, 5)
+    data, labels = generate_random_data(100)
+    dataset = TripletDataset(data, labels, 5)
     loader = DataLoader(dataset, batch_size=32, shuffle=True)
-    model = NeuralMapper(101, 10)
-    loss_history = train_network(model, loader, 10, 1e-4)
-    store_model(model, "embedding_model.pth")
-    display_loss(loss_history)
-    assess_model(model, data, labels)
-    show_embeddings(retrieve_model(NeuralMapper, "embedding_model.pth", 101, 10), *create_random_data(100))
-    display_similarity(model, data)
-    plot_distribution(model, data)
+    model = EmbeddingGenerator(101, 10)
+    loss_history = train_embedding_model(model, loader, 10, 1e-4)
+    save_model(model, "embedding_model.pth")
+    plot_loss(loss_history)
+    evaluate_model(model, data, labels)
+    visualize_embeddings(load_model(EmbeddingGenerator, "embedding_model.pth", 101, 10), *generate_random_data(100))
+    display_similarity_matrix(model, data)
+    plot_embedding_distribution(model, data)
