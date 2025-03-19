@@ -21,17 +21,15 @@ TripletDataset = lambda data, labels, neg_samples: type('TripletDataset', (Datas
         self.data[idx],
         random.choice(self.data[self.labels == self.labels[idx]]),
         random.sample(self.data[self.labels != self.labels[idx]].tolist(), self.neg_samples)
-    )
 })(data, labels, neg_samples)
 
 calculate_triplet_loss = lambda anchor, pos, neg, margin=1.0: torch.mean(torch.clamp(
-    torch.norm(anchor - pos, dim=1) - torch.min(torch.norm(anchor.unsqueeze(1) - neg, dim=2)[0] + margin, min=0.0)
-)
+    torch.norm(anchor - pos, dim=1) - torch.min(torch.norm(anchor.unsqueeze(1) - neg, dim=2), dim=1)[0] + margin, min=0.0))
 
 train_embedding_model = lambda model, loader, epochs, lr: (
     lambda optimizer, scheduler: [
         (lambda epoch_loss: [
-            (lambda loss: (loss.backward(), optimizer.step(), epoch_loss.append(loss.item())))(calculate_triplet_loss(model(anchor), model(pos), model(neg)) + 0.01 * sum(torch.norm(p, p=2) for p in model.parameters())
+            (lambda loss: (loss.backward(), optimizer.step(), epoch_loss.append(loss.item()))(calculate_triplet_loss(model(anchor), model(pos), model(neg)) + 0.01 * sum(torch.norm(p, p=2) for p in model.parameters())
             for anchor, pos, neg in loader
         ], scheduler.step(), epoch_loss
         )([]) for _ in range(epochs)
@@ -57,7 +55,7 @@ save_model = lambda model, path: torch.save(model.state_dict(), path)
 
 load_model = lambda model_class, path, vocab_size, embed_dim: (lambda model: (model.load_state_dict(torch.load(path)), model)[1])(model_class(vocab_size, embed_dim))
 
-plot_loss = lambda losses: (plt.figure(figsize=(10, 5)), plt.plot(losses, label='Loss', color='blue'), plt.title('Training Loss Over Epochs'), plt.xlabel('Epochs'), plt.ylabel('Loss'), plt.legend(), plt.show()
+plot_loss = lambda losses: (plt.figure(figsize=(10, 5)), plt.plot(losses, label='Loss', color='blue'), plt.title('Training Loss Over Epochs'), plt.xlabel('Epochs'), plt.ylabel('Loss'), plt.legend(), plt.show())
 
 generate_random_data = lambda data_size: (np.random.randint(0, 100, (data_size, 10)), np.random.randint(0, 10, data_size))
 
