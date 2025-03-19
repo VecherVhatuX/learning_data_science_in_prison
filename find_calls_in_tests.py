@@ -61,7 +61,7 @@ def main(repo, commit, project, run, report, output):
     if run:
         outcomes = [run_pytest(test['file'], test['name']) for test in affected_tests]
         for test, success in zip(affected_tests, outcomes):
-            click.echo(f"Executing test: {test['name']} in {test['file']}")  # TODO: Typo in "Executing", should be "Executing"
+            click.echo(f"Executing test: {test['name']} in {test['file']}")
             click.echo(f"Test {test['name']} {'passed' if success else 'failed'}.")
         
         if report:
