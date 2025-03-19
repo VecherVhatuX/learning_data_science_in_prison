@@ -6,123 +6,90 @@ import random
 from torch import nn, optim
 from torch.utils.data import Dataset, DataLoader
 
-class EmbeddingModel(nn.Module):
-    def __init__(self, vocab_size, embed_dim):
-        super(EmbeddingModel, self).__init__()
-        self.embedding = nn.Embedding(vocab_size, embed_dim)
-        self.pool = nn.AdaptiveAvgPool1d(1)
-        self.linear = nn.Linear(embed_dim, embed_dim)
-        self.batch_norm = nn.BatchNorm1d(embed_dim)
-        self.layer_norm = nn.LayerNorm(embed_dim)
+EmbeddingModel = lambda vocab_size, embed_dim: nn.Sequential(
+    nn.Embedding(vocab_size, embed_dim),
+    lambda x: nn.AdaptiveAvgPool1d(1)(x.transpose(1, 2)).squeeze(2),
+    nn.Linear(embed_dim, embed_dim),
+    nn.BatchNorm1d(embed_dim),
+    nn.LayerNorm(embed_dim)
+)
 
-    def forward(self, x):
-        x = self.embedding(x)
-        x = self.pool(x.transpose(1, 2)).squeeze(2)
-        x = self.linear(x)
-        x = self.batch_norm(x)
-        x = self.layer_norm(x)
-        return x
+TripletData = lambda data, labels, neg_samples: type('TripletData', (Dataset,), {
+    '__init__': lambda self, data, labels, neg_samples: (setattr(self, 'data', data), setattr(self, 'labels', labels), setattr(self, 'neg_samples', neg_samples)),
+    '__len__': lambda self: len(self.data),
+    '__getitem__': lambda self, idx: (
+        self.data[idx],
+        random.choice(self.data[self.labels == self.labels[idx]]),
+        random.sample(self.data[self.labels != self.labels[idx]].tolist(), self.neg_samples)
+    )
+})(data, labels, neg_samples)
 
-class TripletData(Dataset):
-    def __init__(self, data, labels, neg_samples):
-        self.data = data
-        self.labels = labels
-        self.neg_samples = neg_samples
+triplet_loss = lambda anchor, pos, neg, margin=1.0: torch.mean(torch.clamp(
+    torch.norm(anchor - pos, dim=1) - torch.min(torch.norm(anchor.unsqueeze(1) - neg, dim=2), dim=1)[0] + margin, min=0.0
+))
 
-    def __len__(self):
-        return len(self.data)
+train_model = lambda model, loader, epochs, lr: (
+    lambda optimizer, scheduler: [
+        (lambda epoch_loss: [
+            (lambda loss: (loss.backward(), optimizer.step(), epoch_loss.append(loss.item())))(
+                triplet_loss(model(anchor), model(pos), model(neg)) + 0.01 * sum(torch.norm(p, p=2) for p in model.parameters())
+            for anchor, pos, neg in loader
+        ], scheduler.step(), losses.append(np.mean(epoch_loss))
+        for _ in range(epochs)
+    ](optim.Adam(model.parameters(), lr=lr), optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1), []
+)[2]
 
-    def __getitem__(self, idx):
-        anchor = self.data[idx]
-        pos = random.choice(self.data[self.labels == self.labels[idx]])
-        neg = random.sample(self.data[self.labels != self.labels[idx]].tolist(), self.neg_samples)
-        return anchor, pos, neg
+evaluate = lambda model, data, labels, k=5: (
+    lambda embeddings, distances, neighbors, true_positives: (
+        print(f"Accuracy: {np.mean(np.any(labels[neighbors] == labels[:, np.newaxis], axis=1)):.4f}"),
+        print(f"Precision: {np.mean(true_positives / k):.4f}"),
+        print(f"Recall: {np.mean(true_positives / np.sum(labels == labels[:, np.newaxis], axis=1)):.4f}"),
+        print(f"F1-score: {2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0:.4f}"),
+        plt.figure(figsize=(8, 8)),
+        plt.scatter(TSNE(n_components=2).fit_transform(embeddings)[:, 0], TSNE(n_components=2).fit_transform(embeddings)[:, 1], c=labels, cmap='viridis'),
+        plt.colorbar(),
+        plt.show()
+    )
+)(model(torch.tensor(data, dtype=torch.long)).detach().numpy(), np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2), np.argsort(distances, axis=1)[:, 1:k+1], np.sum(labels[neighbors] == labels[:, np.newaxis], axis=1))
 
-def triplet_loss(anchor, pos, neg, margin=1.0):
-    pos_dist = torch.norm(anchor - pos, dim=1)
-    neg_dist = torch.min(torch.norm(anchor.unsqueeze(1) - neg, dim=2), dim=1)[0]
-    return torch.mean(torch.clamp(pos_dist - neg_dist + margin, min=0.0))
+save = lambda model, path: torch.save(model.state_dict(), path)
 
-def train_model(model, loader, epochs, lr):
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
-    losses = []
-    for _ in range(epochs):
-        epoch_loss = []
-        for anchor, pos, neg in loader:
-            optimizer.zero_grad()
-            loss = triplet_loss(model(anchor), model(pos), model(neg)) + 0.01 * sum(torch.norm(p, p=2) for p in model.parameters())
-            loss.backward()
-            optimizer.step()
-            epoch_loss.append(loss.item())
-        scheduler.step()
-        losses.append(np.mean(epoch_loss))
-    return losses
+load = lambda model_class, path, vocab_size, embed_dim: (lambda model: (model.load_state_dict(torch.load(path)), model)[1])(model_class(vocab_size, embed_dim))
 
-def evaluate(model, data, labels, k=5):
-    embeddings = model(torch.tensor(data, dtype=torch.long)).detach().numpy()
-    distances = np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2)
-    neighbors = np.argsort(distances, axis=1)[:, 1:k+1]
-    true_positives = np.sum(labels[neighbors] == labels[:, np.newaxis], axis=1)
-    precision = np.mean(true_positives / k)
-    recall = np.mean(true_positives / np.sum(labels == labels[:, np.newaxis], axis=1))
-    f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-    print(f"Accuracy: {np.mean(np.any(labels[neighbors] == labels[:, np.newaxis], axis=1)):.4f}")
-    print(f"Precision: {precision:.4f}")
-    print(f"Recall: {recall:.4f}")
-    print(f"F1-score: {f1:.4f}")
-    tsne = TSNE(n_components=2).fit_transform(embeddings)
-    plt.figure(figsize=(8, 8))
-    plt.scatter(tsne[:, 0], tsne[:, 1], c=labels, cmap='viridis')
-    plt.colorbar()
-    plt.show()
+plot_loss_history = lambda losses: (plt.figure(figsize=(10, 5)), plt.plot(losses, label='Loss', color='blue'), plt.title('Training Loss Over Epochs'), plt.xlabel('Epochs'), plt.ylabel('Loss'), plt.legend(), plt.show())
 
-def save(model, path):
-    torch.save(model.state_dict(), path)
+generate_data = lambda data_size: (np.random.randint(0, 100, (data_size, 10)), np.random.randint(0, 10, data_size))
 
-def load(model_class, path, vocab_size, embed_dim):
-    model = model_class(vocab_size, embed_dim)
-    model.load_state_dict(torch.load(path))
-    return model
+visualize = lambda model, data, labels: (
+    lambda embeddings, tsne: (
+        plt.figure(figsize=(8, 8)),
+        plt.scatter(tsne[:, 0], tsne[:, 1], c=labels, cmap='viridis'),
+        plt.colorbar(),
+        plt.gcf().canvas.mpl_connect('button_press_event', lambda event: print(f"Clicked on point with label: {labels[np.argmin(np.linalg.norm(tsne - np.array([event.xdata, event.ydata]), axis=1))]}") if event.inaxes is not None else None),
+        plt.show()
+    )
+)(model(torch.tensor(data, dtype=torch.long)).detach().numpy(), TSNE(n_components=2).fit_transform(embeddings))
 
-def plot_loss_history(losses):
-    plt.figure(figsize=(10, 5))
-    plt.plot(losses, label='Loss', color='blue')
-    plt.title('Training Loss Over Epochs')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.show()
+display_similarity = lambda model, data: (
+    lambda embeddings, cosine_sim: (
+        plt.figure(figsize=(8, 8)),
+        plt.imshow(cosine_sim, cmap='viridis', vmin=0, vmax=1),
+        plt.colorbar(),
+        plt.title('Cosine Similarity Matrix'),
+        plt.show()
+    )
+)(model(torch.tensor(data, dtype=torch.long)).detach().numpy(), np.dot(embeddings, embeddings.T) / (np.linalg.norm(embeddings, axis=1)[:, np.newaxis] * np.linalg.norm(embeddings, axis=1)))
 
-def generate_data(data_size):
-    return np.random.randint(0, 100, (data_size, 10)), np.random.randint(0, 10, data_size)
-
-def visualize(model, data, labels):
-    embeddings = model(torch.tensor(data, dtype=torch.long)).detach().numpy()
-    tsne = TSNE(n_components=2).fit_transform(embeddings)
-    plt.figure(figsize=(8, 8))
-    plt.scatter(tsne[:, 0], tsne[:, 1], c=labels, cmap='viridis')
-    plt.colorbar()
-    plt.gcf().canvas.mpl_connect('button_press_event', lambda event: print(f"Clicked on point with label: {labels[np.argmin(np.linalg.norm(tsne - np.array([event.xdata, event.ydata]), axis=1))]}") if event.inaxes is not None else None)
-    plt.show()
-
-def display_similarity(model, data):
-    embeddings = model(torch.tensor(data, dtype=torch.long)).detach().numpy()
-    cosine_sim = np.dot(embeddings, embeddings.T) / (np.linalg.norm(embeddings, axis=1)[:, np.newaxis] * np.linalg.norm(embeddings, axis=1))
-    plt.figure(figsize=(8, 8))
-    plt.imshow(cosine_sim, cmap='viridis', vmin=0, vmax=1)
-    plt.colorbar()
-    plt.title('Cosine Similarity Matrix')
-    plt.show()
-
-def plot_distribution(model, data):
-    embeddings = model(torch.tensor(data, dtype=torch.long)).detach().numpy()
-    plt.figure(figsize=(8, 8))
-    plt.hist(embeddings.flatten(), bins=50, color='blue', alpha=0.7)
-    plt.title('Embedding Value Distribution')
-    plt.xlabel('Embedding Value')
-    plt.ylabel('Frequency')
-    plt.show()
+plot_distribution = lambda model, data: (
+    lambda embeddings: (
+        plt.figure(figsize=(8, 8)),
+        plt.hist(embeddings.flatten(), bins=50, color='blue', alpha=0.7),
+        plt.title('Embedding Value Distribution'),
+        plt.xlabel('Embedding Value'),
+        plt.ylabel('Frequency'),
+        plt.show()
+    )
+)(model(torch.tensor(data, dtype=torch.long)).detach().numpy())
 
 if __name__ == "__main__":
     data, labels = generate_data(100)
