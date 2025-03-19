@@ -63,6 +63,7 @@ class EmbeddingModel(tf.keras.Model):
         )
 
 def calculate_triplet_loss(anchor, positive, negative):
+    # TODO: Fix the missing closing parenthesis in the return statement
     return tf.reduce_mean(tf.maximum(0.2 + tf.norm(anchor - positive, axis=1) - tf.norm(anchor - negative, axis=1), 0)
 
 def train_model(model, train_loader, valid_loader, epochs):
