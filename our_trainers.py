@@ -137,7 +137,7 @@ def plot_learning_rate(optimizer, scheduler, epochs):
     plt.show()
 
 if __name__ == "__main__":
-    # TODO: Fix the data generation to ensure unique labels for each data point
+    # TODO: Adjust data generation to ensure unique labels for each data point
     data, labels = generate_data(100)
     dataset = TripletData(data, labels, 5)
     loader = tf.data.Dataset.from_generator(lambda: dataset, output_signature=(
