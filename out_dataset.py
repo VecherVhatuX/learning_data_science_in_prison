@@ -51,6 +51,7 @@ class EmbeddingModel(nn.Module):
             nn.BatchNorm1d(128),
             nn.Dropout(0.2),
             nn.Linear(128, 128)
+        )
     
     def forward(self, anchor, positive, negative):
         return (self.network(self.embedding(anchor)),
