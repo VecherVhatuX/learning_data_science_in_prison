@@ -73,7 +73,7 @@ class TrainingEngine:
                 loss.backward()
                 self.optimizer.step()
             if self.check_early_stop(loss.item(), patience):
-                print("Early stopping triggered.")
+                print("Training halted early.")
                 break
 
     def run_evaluation(self, data_loader):
@@ -83,7 +83,7 @@ class TrainingEngine:
             for input_ids, labels, neg_samples in data_loader:
                 loss = self.loss_fn(self.model(input_ids), labels, neg_samples)
                 total_loss += loss.item()
-        print(f"Mean Evaluation Loss: {total_loss / len(data_loader):.4f}")
+        print(f"Average Loss on Evaluation: {total_loss / len(data_loader):.4f}")
 
     def check_early_stop(self, current_loss, patience):
         if current_loss < self.best_loss:
