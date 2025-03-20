@@ -20,11 +20,12 @@ config = {
 }
 
 def create_neural_architecture(vocab_size, embed_dim):
-    embedding_layer = layers.Embedding(vocab_size, embed_dim)
-    recurrent_layer = layers.LSTM(embed_dim, return_sequences=True, return_state=True)
-    dense_layer1 = layers.Dense(embed_dim)
-    dense_layer2 = layers.Dense(vocab_size)
-    return tf.keras.Sequential([embedding_layer, recurrent_layer, dense_layer1, dense_layer2])
+    return tf.keras.Sequential([
+        layers.Embedding(vocab_size, embed_dim),
+        layers.LSTM(embed_dim, return_sequences=True, return_state=True),
+        layers.Dense(embed_dim),
+        layers.Dense(vocab_size)
+    ])
 
 def fetch_data(file_path):
     return json.load(open(file_path, 'r')) if os.path.exists(file_path) else None
@@ -33,42 +34,44 @@ def encode_data(data, tokenizer, max_len=512):
     return tf.convert_to_tensor(tokenizer.encode(data, max_length=max_len, padding='max_length', truncation=True))
 
 def create_data_generator(data, tokenizer, neg_samples=5):
-    def __len__():
-        return len(data)
-    def __getitem__(idx):
-        input_ids = encode_data(data[idx]['input'], tokenizer)
-        labels = encode_data(data[idx]['output'], tokenizer)
-        neg_samples = tf.stack([encode_data(data[random.choice([j for j in range(len(data)) if j != idx])]['input'], tokenizer) for _ in range(neg_samples)])
-        return input_ids, labels, neg_samples
-    return type('DataGenerator', (object,), {'__len__': __len__, '__getitem__': __getitem__})()
+    class DataGenerator:
+        def __len__(self):
+            return len(data)
+        def __getitem__(self, idx):
+            input_ids = encode_data(data[idx]['input'], tokenizer)
+            labels = encode_data(data[idx]['output'], tokenizer)
+            neg_samples = tf.stack([encode_data(data[random.choice([j for j in range(len(data)) if j != idx])]['input'], tokenizer) for _ in range(neg_samples)])
+            return input_ids, labels, neg_samples
+    return DataGenerator()
 
 def create_training_engine(model, optimizer, loss_fn):
-    best_loss = float('inf')
-    counter = 0
-    def run_training(data_loader, epochs, patience=3):
-        model.train()
-        for epoch in range(epochs):
-            for input_ids, labels, neg_samples in data_loader:
-                with tf.GradientTape() as tape:
-                    loss = loss_fn(model(input_ids), labels, neg_samples)
-                gradients = tape.gradient(loss, model.trainable_variables)
-                optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-            if check_early_stop(loss.numpy(), patience):
-                print("Early stopping triggered.")
-                break
-    def run_evaluation(data_loader):
-        model.eval()
-        total_loss = sum(loss_fn(model(input_ids), labels, neg_samples).numpy() for input_ids, labels, neg_samples in data_loader)
-        print(f"Mean Evaluation Loss: {total_loss / len(data_loader):.4f}")
-    def check_early_stop(current_loss, patience):
-        nonlocal best_loss, counter
-        if current_loss < best_loss:
-            best_loss = current_loss
-            counter = 0
-        else:
-            counter += 1
-        return counter >= patience
-    return type('TrainingEngine', (object,), {'run_training': run_training, 'run_evaluation': run_evaluation})()
+    class TrainingEngine:
+        def __init__(self):
+            self.best_loss = float('inf')
+            self.counter = 0
+        def run_training(self, data_loader, epochs, patience=3):
+            model.train()
+            for epoch in range(epochs):
+                for input_ids, labels, neg_samples in data_loader:
+                    with tf.GradientTape() as tape:
+                        loss = loss_fn(model(input_ids), labels, neg_samples)
+                    gradients = tape.gradient(loss, model.trainable_variables)
+                    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+                if self.check_early_stop(loss.numpy(), patience):
+                    print("Early stopping triggered.")
+                    break
+        def run_evaluation(self, data_loader):
+            model.eval()
+            total_loss = sum(loss_fn(model(input_ids), labels, neg_samples).numpy() for input_ids, labels, neg_samples in data_loader)
+            print(f"Mean Evaluation Loss: {total_loss / len(data_loader):.4f}")
+        def check_early_stop(self, current_loss, patience):
+            if current_loss < self.best_loss:
+                self.best_loss = current_loss
+                self.counter = 0
+            else:
+                self.counter += 1
+            return self.counter >= patience
+    return TrainingEngine()
 
 def store_model(model, path):
     model.save_weights(path)
