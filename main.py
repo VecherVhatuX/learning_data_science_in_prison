@@ -23,13 +23,13 @@ class ConfigManager:
 
 class NeuralArchitecture(tf.keras.Model):
     def __init__(self, vocab_size, embed_dim):
-        super(NeuralArchitecture, self).__init__()
+        super().__init__()
         self.embedding_layer = layers.Embedding(vocab_size, embed_dim)
         self.recurrent_layer = layers.LSTM(embed_dim, return_sequences=True, return_state=True)
         self.dense_layer1 = layers.Dense(embed_dim)
         self.dense_layer2 = layers.Dense(vocab_size)
 
-    def forward_pass(self, x):
+    def call(self, x):
         x = self.embedding_layer(x)
         x, _, _ = self.recurrent_layer(x)
         x = x[:, -1, :]
@@ -76,7 +76,7 @@ class TrainingEngine:
         for epoch in range(epochs):
             for input_ids, labels, neg_samples in data_loader:
                 with tf.GradientTape() as tape:
-                    loss = self.loss_fn(self.model.forward_pass(input_ids), labels, neg_samples)
+                    loss = self.loss_fn(self.model(input_ids), labels, neg_samples)
                 gradients = tape.gradient(loss, self.model.trainable_variables)
                 self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
             if self.check_early_stop(loss.numpy(), patience):
@@ -87,7 +87,7 @@ class TrainingEngine:
         self.model.eval()
         total_loss = 0
         for input_ids, labels, neg_samples in data_loader:
-            total_loss += self.loss_fn(self.model.forward_pass(input_ids), labels, neg_samples).numpy()
+            total_loss += self.loss_fn(self.model(input_ids), labels, neg_samples).numpy()
         print(f"Mean Evaluation Loss: {total_loss / len(data_loader):.4f}")
 
     def check_early_stop(self, current_loss, patience):
