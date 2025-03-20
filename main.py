@@ -103,5 +103,10 @@ def run_pipeline():
     trainer.run_evaluation(test_loader)
     store_model(model, os.path.join(config["results_dir"], "triplet_model.h5"))
 
+def add_learning_rate_scheduler(optimizer, initial_lr, decay_steps, decay_rate):
+    def lr_scheduler(step):
+        return initial_lr * (decay_rate ** (step // decay_steps))
+    return tf.keras.optimizers.schedules.LearningRateSchedule(lr_scheduler)
+
 if __name__ == "__main__":
     run_pipeline()
