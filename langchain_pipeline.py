@@ -66,7 +66,7 @@ def measure_execution_time(func):
         return result
     return wrapper
 
-@measure_execution_time
+@measure_execution_time  # TODO: Typo in decorator name, should be `measure_execution_time`
 def initiate_process(cmd, max_attempts):
     logger.info("Process initiated...")
     return execute_with_retries(cmd, max_attempts)
