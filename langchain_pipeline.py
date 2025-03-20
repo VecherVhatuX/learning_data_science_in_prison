@@ -7,102 +7,79 @@ from tool_library import Tool, create_agent
 from loguru import logger
 from functools import wraps
 
-def randomize_and_separate(items):
-    randomized = random.sample(items, len(items))
-    return [i for i in randomized if i['label'] == 1], [i for i in randomized if i['label'] == 0]
+randomize_and_separate = lambda items: (
+    [i for i in random.sample(items, len(items)) if i['label'] == 1],
+    [i for i in random.sample(items, len(items)) if i['label'] == 0]
+)
 
-def handle_items(items, counter):
-    return randomize_and_separate(items), counter + 1
+handle_items = lambda items, counter: (randomize_and_separate(items), counter + 1)
 
-def fetch_system_info(info):
-    return f"System environment: {dict(os.environ)}\n{info}"
+fetch_system_info = lambda info: f"System environment: {dict(os.environ)}\n{info}"
 
-def add_package(pkg):
-    output = run(["pip", "install", pkg], text=True, capture_output=True, check=True)
-    return output.stdout
+add_package = lambda pkg: run(["pip", "install", pkg], text=True, capture_output=True, check=True).stdout
 
-def execute_command(cmd):
-    if not cmd:
-        return "", "No command provided."
-    output = run(cmd, shell=True, text=True, capture_output=True)
-    return output.stdout, output.stderr
+execute_command = lambda cmd: (run(cmd, shell=True, text=True, capture_output=True).stdout, run(cmd, shell=True, text=True, capture_output=True).stderr) if cmd else ("", "No command provided.")
 
-def initialize_tools():
-    return [
-        Tool(name="EnvInspector", func=fetch_system_info, description="Shows system environment details."),
-        Tool(name="PkgInstaller", func=add_package, description="Handles package installations.")
-    ]
+initialize_tools = lambda: [
+    Tool(name="EnvInspector", func=fetch_system_info, description="Shows system environment details."),
+    Tool(name="PkgInstaller", func=add_package, description="Handles package installations.")
+]
 
-def log_command_execution(cmd):
-    logger.info(f"Running command: {cmd}")
-    stdout, stderr = execute_command(cmd)
-    if stderr:
-        logger.error(f"Command error: {stderr}")
-        return False
-    logger.success(f"Command output: {stdout}")
-    return True
+log_command_execution = lambda cmd: (
+    logger.info(f"Running command: {cmd}"),
+    (stdout, stderr) := execute_command(cmd),
+    logger.error(f"Command error: {stderr}") if stderr else logger.success(f"Command output: {stdout}"),
+    not stderr
+)[-1]
 
-def retry_command(agent, cmd, attempt, max_attempts):
-    if attempt >= max_attempts:
-        logger.error("Max retries exceeded. Stopping.")
-        return
-    logger.info(f"Retry {attempt + 1} of {max_attempts}")
-    if log_command_execution(cmd):
-        logger.success("Command successful!")
-    else:
-        agent.run("Check environment variables and dependencies.")
-        agent.run("Install missing packages if needed.")
-        time.sleep(5)
-        retry_command(agent, cmd, attempt + 1, max_attempts)
+retry_command = lambda agent, cmd, attempt, max_attempts: (
+    logger.error("Max retries exceeded. Stopping.") if attempt >= max_attempts else (
+        logger.info(f"Retry {attempt + 1} of {max_attempts}"),
+        log_command_execution(cmd) and logger.success("Command successful!") or (
+            agent.run("Check environment variables and dependencies."),
+            agent.run("Install missing packages if needed."),
+            time.sleep(5),
+            retry_command(agent, cmd, attempt + 1, max_attempts)
+        )
+    )
+)
 
-def execute_with_retries(cmd, max_attempts):
-    agent = create_agent(tools=initialize_tools())
-    retry_command(agent, cmd, 0, max_attempts)
+execute_with_retries = lambda cmd, max_attempts: retry_command(create_agent(tools=initialize_tools()), cmd, 0, max_attempts)
 
-def measure_execution_time(func):
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        start = time.time()
-        result = func(*args, **kwargs)
-        logger.info(f"Time taken: {time.time() - start:.2f} seconds")
-        return result
-    return wrapper
+measure_execution_time = lambda func: wraps(func)(lambda *args, **kwargs: (
+    start := time.time(),
+    result := func(*args, **kwargs),
+    logger.info(f"Time taken: {time.time() - start:.2f} seconds"),
+    result
+)[-1]
 
-@measure_execution_time
-def initiate_process(cmd, max_attempts):
-    logger.info("Process initiated...")
+initiate_process = measure_execution_time(lambda cmd, max_attempts: (
+    logger.info("Process initiated..."),
     execute_with_retries(cmd, max_attempts)
+))
 
-def record_command(cmd):
-    try:
-        with open("command_log.txt", "a") as log_file:
-            log_file.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {cmd}\n")
-    except Exception as e:
-        logger.error(f"Logging failed: {e}")
+record_command = lambda cmd: (
+    (open("command_log.txt", "a").write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {cmd}\n"),
+    logger.success("Command logged!")
+) if not (e := Exception()) else logger.error(f"Logging failed: {e}")
 
-def show_countdown(duration):
-    if duration > 0:
-        logger.info(f"Remaining time: {duration} seconds")
-        time.sleep(1)
-        show_countdown(duration - 1)
-    else:
-        logger.success("Countdown finished!")
+show_countdown = lambda duration: (
+    logger.info(f"Remaining time: {duration} seconds"),
+    time.sleep(1),
+    show_countdown(duration - 1)
+) if duration > 0 else logger.success("Countdown finished!")
 
-def execute_with_config(cmd, max_attempts=5, countdown_duration=0):
-    record_command(cmd)
-    if countdown_duration > 0:
-        show_countdown(countdown_duration)
+execute_with_config = lambda cmd, max_attempts=5, countdown_duration=0: (
+    record_command(cmd),
+    show_countdown(countdown_duration) if countdown_duration > 0 else None,
     initiate_process(cmd, max_attempts)
+)
 
-def create_log_backup():
-    try:
-        with open("command_log.txt", "r") as log_file:
-            logs = log_file.read()
-        with open(f"command_log_backup_{time.strftime('%Y%m%d%H%M%S')}.txt", "w") as backup_file:
-            backup_file.write(logs)
-        logger.success("Backup completed!")
-    except Exception as e:
-        logger.error(f"Backup error: {e}")
+create_log_backup = lambda: (
+    (logs := open("command_log.txt", "r").read()),
+    open(f"command_log_backup_{time.strftime('%Y%m%d%H%M%S')}.txt", "w").write(logs),
+    logger.success("Backup completed!")
+) if not (e := Exception()) else logger.error(f"Backup error: {e}")
 
 if __name__ == "__main__":
     typer.run(execute_with_config)
