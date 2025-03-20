@@ -111,5 +111,10 @@ def add_learning_rate_scheduler(optimizer, initial_lr, decay_steps, decay_rate):
         return initial_lr * (decay_rate ** (step // decay_steps))
     return tf.keras.optimizers.schedules.LearningRateSchedule(lr_scheduler)
 
+def add_model_checkpointing(model, checkpoint_dir, max_to_keep=2):
+    checkpoint = tf.train.Checkpoint(model=model)
+    manager = tf.train.CheckpointManager(checkpoint, checkpoint_dir, max_to_keep=max_to_keep)
+    return manager
+
 if __name__ == "__main__":
     run_pipeline()
