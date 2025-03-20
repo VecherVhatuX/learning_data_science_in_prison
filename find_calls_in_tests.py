@@ -41,14 +41,19 @@ def store_summary(summary, filename):
     with open(filename, "w") as file:
         json.dump(summary, file, indent=2)
 
+def generate_test_coverage_report(test_dir):
+    subprocess.run([PYTHON_EXEC, "-m", "coverage", "run", "--source", test_dir, "-m", "pytest", test_dir])
+    subprocess.run([PYTHON_EXEC, "-m", "coverage", "html", "-d", "coverage_report"])
+
 @click.command()
 @click.option('--repo', required=True, help='Repository directory')
 @click.option('--commit', required=True, help='Commit hash')
 @click.option('--project', required=True, help='Project directory')
 @click.option('--run', is_flag=True, help='Run impacted tests')
 @click.option('--report', is_flag=True, help='Generate test summary')
+@click.option('--coverage', is_flag=True, help='Generate test coverage report')
 @click.option('--output', default="test_summary.json", help='Output file for test summary')
-def cli(repo, commit, project, run, report, output):
+def cli(repo, commit, project, run, report, coverage, output):
     changes = fetch_git_changes(repo, commit)
     altered_funcs = identify_changed_functions(changes)
     if not altered_funcs:
@@ -68,6 +73,9 @@ def cli(repo, commit, project, run, report, output):
             summary = create_test_summary(affected_tests, results)
             click.echo(json.dumps(summary, indent=2))
             store_summary(summary, output)
+    
+    if coverage:
+        generate_test_coverage_report(project)
 
 if __name__ == "__main__":
     cli()
