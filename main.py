@@ -5,6 +5,7 @@ import tensorflow as tf
 from tensorflow.keras import layers, optimizers
 from transformers import T5Tokenizer
 
+# Configuration dictionary containing model and training parameters
 config = {
     "model_name": "t5-base", "alpha": 16, "dropout_rate": 0.1, "decomposition_rank": 64,
     "layers_to_modify": ["q_proj", "k_proj", "v_proj", "o_proj", "down_proj", "up_proj", "gate_proj"],
@@ -20,6 +21,16 @@ config = {
 }
 
 def create_neural_architecture(vocab_size, embed_dim):
+    """
+    Creates a neural network architecture with an embedding layer, LSTM layer, and dense layers.
+    
+    Args:
+        vocab_size (int): Size of the vocabulary.
+        embed_dim (int): Dimension of the embedding layer.
+    
+    Returns:
+        tf.keras.Sequential: A sequential model with the specified architecture.
+    """
     return tf.keras.Sequential([
         layers.Embedding(vocab_size, embed_dim),
         layers.LSTM(embed_dim, return_sequences=True, return_state=True),
@@ -28,12 +39,43 @@ def create_neural_architecture(vocab_size, embed_dim):
     ])
 
 def fetch_data(file_path):
+    """
+    Fetches data from a JSON file if it exists.
+    
+    Args:
+        file_path (str): Path to the JSON file.
+    
+    Returns:
+        dict: Data loaded from the JSON file, or None if the file does not exist.
+    """
     return json.load(open(file_path, 'r')) if os.path.exists(file_path) else None
 
 def encode_data(data, tokenizer, max_len=512):
+    """
+    Encodes input data using a tokenizer and converts it to a TensorFlow tensor.
+    
+    Args:
+        data (str): Input data to be encoded.
+        tokenizer (transformers.PreTrainedTokenizer): Tokenizer to encode the data.
+        max_len (int): Maximum length of the encoded sequence.
+    
+    Returns:
+        tf.Tensor: Encoded data as a TensorFlow tensor.
+    """
     return tf.convert_to_tensor(tokenizer.encode(data, max_length=max_len, padding='max_length', truncation=True))
 
 def create_data_generator(data, tokenizer, neg_samples=5):
+    """
+    Creates a data generator that yields input IDs, labels, and negative samples.
+    
+    Args:
+        data (list): List of data samples.
+        tokenizer (transformers.PreTrainedTokenizer): Tokenizer to encode the data.
+        neg_samples (int): Number of negative samples to generate per batch.
+    
+    Returns:
+        DataGenerator: A generator object that yields input IDs, labels, and negative samples.
+    """
     class DataGenerator:
         def __len__(self):
             return len(data)
@@ -45,11 +87,30 @@ def create_data_generator(data, tokenizer, neg_samples=5):
     return DataGenerator()
 
 def create_training_engine(model, optimizer, loss_fn):
+    """
+    Creates a training engine that handles model training and evaluation.
+    
+    Args:
+        model (tf.keras.Model): The model to be trained.
+        optimizer (tf.keras.optimizers.Optimizer): Optimizer for training.
+        loss_fn (function): Loss function to be used during training.
+    
+    Returns:
+        TrainingEngine: An object that manages training and evaluation.
+    """
     class TrainingEngine:
         def __init__(self):
             self.best_loss = float('inf')
             self.counter = 0
         def run_training(self, data_loader, epochs, patience=3):
+            """
+            Runs the training loop for the specified number of epochs.
+            
+            Args:
+                data_loader (tf.data.Dataset): Data loader for training data.
+                epochs (int): Number of epochs to train.
+                patience (int): Number of epochs to wait before early stopping.
+            """
             model.train()
             for epoch in range(epochs):
                 for input_ids, labels, neg_samples in data_loader:
@@ -61,10 +122,26 @@ def create_training_engine(model, optimizer, loss_fn):
                     print("Early stopping triggered.")
                     break
         def run_evaluation(self, data_loader):
+            """
+            Evaluates the model on the provided data loader.
+            
+            Args:
+                data_loader (tf.data.Dataset): Data loader for evaluation data.
+            """
             model.eval()
             total_loss = sum(loss_fn(model(input_ids), labels, neg_samples).numpy() for input_ids, labels, neg_samples in data_loader)
             print(f"Mean Evaluation Loss: {total_loss / len(data_loader):.4f}")
         def check_early_stop(self, current_loss, patience):
+            """
+            Checks if early stopping should be triggered based on the current loss.
+            
+            Args:
+                current_loss (float): Current loss value.
+                patience (int): Number of epochs to wait before early stopping.
+            
+            Returns:
+                bool: True if early stopping should be triggered, False otherwise.
+            """
             if current_loss < self.best_loss:
                 self.best_loss = current_loss
                 self.counter = 0
@@ -74,18 +151,41 @@ def create_training_engine(model, optimizer, loss_fn):
     return TrainingEngine()
 
 def store_model(model, path):
+    """
+    Saves the model's weights to the specified path.
+    
+    Args:
+        model (tf.keras.Model): The model to save.
+        path (str): Path to save the model weights.
+    """
     model.save_weights(path)
 
 def store_history(history, path):
+    """
+    Saves the training history to a JSON file.
+    
+    Args:
+        history (dict): Training history to save.
+        path (str): Path to save the history file.
+    """
     json.dump(history, open(path, 'w'))
 
 def setup_environment():
+    """
+    Sets up the environment by initializing the tokenizer, model, and optimizer.
+    
+    Returns:
+        tuple: Configuration, tokenizer, model, and optimizer.
+    """
     tokenizer = T5Tokenizer.from_pretrained("t5-base")
     model = create_neural_architecture(30522, 128)
     optimizer = optimizers.Adam(learning_rate=0.001)
     return config, tokenizer, model, optimizer
 
 def run_pipeline():
+    """
+    Runs the entire training pipeline, including data loading, model training, and evaluation.
+    """
     config, tokenizer, model, optimizer = setup_environment()
     train_data = fetch_data("train.json")
     test_data = fetch_data("test.json")
@@ -107,6 +207,18 @@ def run_pipeline():
     store_model(model, os.path.join(config["results_dir"], "triplet_model.h5"))
 
 def add_learning_rate_scheduler(optimizer, initial_lr, decay_steps, decay_rate):
+    """
+    Adds a learning rate scheduler to the optimizer.
+    
+    Args:
+        optimizer (tf.keras.optimizers.Optimizer): Optimizer to add the scheduler to.
+        initial_lr (float): Initial learning rate.
+        decay_steps (int): Number of steps before decaying the learning rate.
+        decay_rate (float): Rate at which the learning rate decays.
+    
+    Returns:
+        tf.keras.optimizers.schedules.LearningRateSchedule: Learning rate scheduler.
+    """
     def lr_scheduler(step):
         return initial_lr * (decay_rate ** (step // decay_steps))
     return tf.keras.optimizers.schedules.LearningRateSchedule(lr_scheduler)
