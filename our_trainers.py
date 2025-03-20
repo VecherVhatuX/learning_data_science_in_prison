@@ -136,6 +136,18 @@ def visualize_learning_rate_schedule(optimizer, scheduler, num_epochs):
     plt.legend()
     plt.show()
 
+def visualize_embedding_clusters(model, input_data, target_labels, n_clusters=5):
+    from sklearn.cluster import KMeans
+    embeddings = model(tf.convert_to_tensor(input_data, dtype=tf.int32)).numpy()
+    kmeans = KMeans(n_clusters=n_clusters)
+    cluster_labels = kmeans.fit_predict(embeddings)
+
+    plt.figure(figsize=(8, 8))
+    plt.scatter(embeddings[:, 0], embeddings[:, 1], c=cluster_labels, cmap='viridis')
+    plt.colorbar()
+    plt.title('Embedding Clusters')
+    plt.show()
+
 if __name__ == "__main__":
     synthetic_data, synthetic_labels = generate_synthetic_data(100)
     data_generator = TripletDataGenerator(synthetic_data, synthetic_labels, 5)
@@ -155,3 +167,4 @@ if __name__ == "__main__":
     visualize_similarity_matrix(embedding_model, synthetic_data)
     visualize_embedding_distribution(embedding_model, synthetic_data)
     visualize_learning_rate_schedule(model_optimizer, learning_rate_scheduler, 10)
+    visualize_embedding_clusters(embedding_model, synthetic_data, synthetic_labels)
