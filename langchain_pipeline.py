@@ -81,6 +81,12 @@ create_log_backup = lambda: (
     logger.success("Backup completed!")
 ) if not (e := Exception()) else logger.error(f"Backup error: {e}")
 
+send_notification = lambda message: (
+    logger.info(f"Sending notification: {message}"),
+    run(["notify-send", "Script Notification", message], text=True, capture_output=True).stdout
+)
+
 if __name__ == "__main__":
     typer.run(execute_with_config)
     create_log_backup()
+    send_notification("Script execution completed!")
