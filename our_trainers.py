@@ -5,7 +5,7 @@ from sklearn.manifold import TSNE
 import random
 from tensorflow.keras import layers, models, optimizers, losses
 
-class EmbeddingNetwork(models.Sequential):
+class EmbeddingModel(models.Sequential):
     def __init__(self, vocab_size, embed_dim):
         super().__init__([
             layers.Embedding(vocab_size, embed_dim),
@@ -15,7 +15,7 @@ class EmbeddingNetwork(models.Sequential):
             layers.LayerNormalization()
         ])
 
-class DataGenerator(tf.keras.utils.Sequence):
+class DataLoader(tf.keras.utils.Sequence):
     def __init__(self, data, labels, neg_samples):
         self.data = data
         self.labels = labels
@@ -30,12 +30,12 @@ class DataGenerator(tf.keras.utils.Sequence):
         neg = random.sample(self.data[self.labels != self.labels[idx]].tolist(), self.neg_samples)
         return anchor, pos, neg
 
-def compute_triplet_loss(anchor, pos, neg, margin=1.0):
+def triplet_loss(anchor, pos, neg, margin=1.0):
     pos_dist = tf.norm(anchor - pos, axis=1)
     neg_dist = tf.reduce_min(tf.norm(tf.expand_dims(anchor, 1) - neg, axis=2), axis=1)
     return tf.reduce_mean(tf.maximum(pos_dist - neg_dist + margin, 0.0))
 
-def train_network(model, data_loader, epochs, lr):
+def train_model(model, data_loader, epochs, lr):
     opt = optimizers.Adam(lr)
     scheduler = optimizers.schedules.ExponentialDecay(lr, decay_steps=30, decay_rate=0.1)
     loss_history = []
@@ -44,7 +44,7 @@ def train_network(model, data_loader, epochs, lr):
         batch_loss = []
         for anchor, pos, neg in data_loader:
             with tf.GradientTape() as tape:
-                loss = compute_triplet_loss(model(anchor), model(pos), model(neg)) + 0.01 * sum(tf.norm(p, ord=2) for p in model.trainable_variables)
+                loss = triplet_loss(model(anchor), model(pos), model(neg)) + 0.01 * sum(tf.norm(p, ord=2) for p in model.trainable_variables)
             grads = tape.gradient(loss, model.trainable_variables)
             opt.apply_gradients(zip(grads, model.trainable_variables))
             batch_loss.append(loss.numpy())
@@ -52,7 +52,7 @@ def train_network(model, data_loader, epochs, lr):
         loss_history.append(np.mean(batch_loss))
     return loss_history
 
-def evaluate_network(model, data, labels, k=5):
+def evaluate_model(model, data, labels, k=5):
     embeddings = model(tf.convert_to_tensor(data, dtype=tf.int32)).numpy()
     distances = np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2)
     neighbors = np.argsort(distances, axis=1)[:, 1:k+1]
@@ -74,15 +74,15 @@ def evaluate_network(model, data, labels, k=5):
     plt.colorbar()
     plt.show()
 
-def save_network(model, path):
+def save_model(model, path):
     model.save_weights(path)
 
-def load_network(model_class, path, vocab_size, embed_dim):
+def load_model(model_class, path, vocab_size, embed_dim):
     model = model_class(vocab_size, embed_dim)
     model.load_weights(path)
     return model
 
-def plot_loss_history(losses):
+def plot_loss(losses):
     plt.figure(figsize=(10, 5))
     plt.plot(losses, label='Loss', color='blue')
     plt.title('Training Loss Over Epochs')
@@ -91,10 +91,10 @@ def plot_loss_history(losses):
     plt.legend()
     plt.show()
 
-def create_data(data_size):
+def generate_data(data_size):
     return np.random.randint(0, 100, (data_size, 10)), np.random.randint(0, 10, data_size)
 
-def visualize_network_embeddings(model, data, labels):
+def visualize_embeddings(model, data, labels):
     embeddings = model(tf.convert_to_tensor(data, dtype=tf.int32)).numpy()
     tsne = TSNE(n_components=2).fit_transform(embeddings)
 
@@ -104,7 +104,7 @@ def visualize_network_embeddings(model, data, labels):
     plt.gcf().canvas.mpl_connect('button_press_event', lambda event: print(f"Clicked on point with label: {labels[np.argmin(np.linalg.norm(tsne - np.array([event.xdata, event.ydata]), axis=1))]}") if event.inaxes is not None else None)
     plt.show()
 
-def visualize_network_similarity(model, data):
+def visualize_similarity(model, data):
     embeddings = model(tf.convert_to_tensor(data, dtype=tf.int32)).numpy()
     cosine_sim = np.dot(embeddings, embeddings.T) / (np.linalg.norm(embeddings, axis=1)[:, np.newaxis] * np.linalg.norm(embeddings, axis=1))
 
@@ -114,7 +114,7 @@ def visualize_network_similarity(model, data):
     plt.title('Cosine Similarity Matrix')
     plt.show()
 
-def visualize_network_distribution(model, data):
+def visualize_distribution(model, data):
     embeddings = model(tf.convert_to_tensor(data, dtype=tf.int32)).numpy()
     plt.figure(figsize=(8, 8))
     plt.hist(embeddings.flatten(), bins=50, color='blue', alpha=0.7)
@@ -123,7 +123,7 @@ def visualize_network_distribution(model, data):
     plt.ylabel('Frequency')
     plt.show()
 
-def visualize_network_learning_rate(optimizer, scheduler, epochs):
+def visualize_learning_rate(optimizer, scheduler, epochs):
     lr_history = []
     for _ in range(epochs):
         lr_history.append(optimizer.learning_rate.numpy())
@@ -137,21 +137,21 @@ def visualize_network_learning_rate(optimizer, scheduler, epochs):
     plt.show()
 
 if __name__ == "__main__":
-    data, labels = create_data(100)
-    dataset = DataGenerator(data, labels, 5)
+    data, labels = generate_data(100)
+    dataset = DataLoader(data, labels, 5)
     loader = tf.data.Dataset.from_generator(lambda: dataset, output_signature=(
         tf.TensorSpec(shape=(None,), dtype=tf.int32),
         tf.TensorSpec(shape=(None,), dtype=tf.int32),
         tf.TensorSpec(shape=(None,), dtype=tf.int32)
     ).batch(32).shuffle(1000)
-    model = EmbeddingNetwork(101, 10)
+    model = EmbeddingModel(101, 10)
     optimizer = optimizers.Adam(1e-4)
     scheduler = optimizers.schedules.ExponentialDecay(1e-4, decay_steps=30, decay_rate=0.1)
-    loss_history = train_network(model, loader, 10, 1e-4)
-    save_network(model, "embedding_network.h5")
-    plot_loss_history(loss_history)
-    evaluate_network(model, data, labels)
-    visualize_network_embeddings(load_network(EmbeddingNetwork, "embedding_network.h5", 101, 10), *create_data(100))
-    visualize_network_similarity(model, data)
-    visualize_network_distribution(model, data)
-    visualize_network_learning_rate(optimizer, scheduler, 10)
+    loss_history = train_model(model, loader, 10, 1e-4)
+    save_model(model, "embedding_model.h5")
+    plot_loss(loss_history)
+    evaluate_model(model, data, labels)
+    visualize_embeddings(load_model(EmbeddingModel, "embedding_model.h5", 101, 10), *generate_data(100))
+    visualize_similarity(model, data)
+    visualize_distribution(model, data)
+    visualize_learning_rate(optimizer, scheduler, 10)
