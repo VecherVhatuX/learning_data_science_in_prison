@@ -66,7 +66,7 @@ def measure_execution_time(func):
         return result
     return wrapper
 
-@measure_execution_time  # TODO: Typo in decorator name, should be `measure_execution_time`
+@measure_execution_time
 def initiate_process(cmd, max_attempts):
     logger.info("Process initiated...")
     return execute_with_retries(cmd, max_attempts)
@@ -118,9 +118,14 @@ def check_network_connection():
     else:
         logger.error("Network connection is down.")
 
+def check_cpu_usage():
+    usage = run(["top", "-bn1"], text=True, capture_output=True).stdout
+    logger.info(f"CPU usage:\n{usage}")
+
 if __name__ == "__main__":
     typer.run(execute_with_config)
     create_log_backup()
     send_notification("Script execution completed!")
     check_disk_usage()
     check_network_connection()
+    check_cpu_usage()
