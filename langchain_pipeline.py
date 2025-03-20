@@ -111,8 +111,16 @@ def check_disk_usage():
     usage = run(["df", "-h"], text=True, capture_output=True).stdout
     logger.info(f"Disk usage:\n{usage}")
 
+def check_network_connection():
+    result = run(["ping", "-c", "1", "google.com"], text=True, capture_output=True)
+    if result.returncode == 0:
+        logger.success("Network connection is active.")
+    else:
+        logger.error("Network connection is down.")
+
 if __name__ == "__main__":
     typer.run(execute_with_config)
     create_log_backup()
     send_notification("Script execution completed!")
     check_disk_usage()
+    check_network_connection()
