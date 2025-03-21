@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 import random
-from tensorflow.keras import layers, models, optimizers, losses
+from tensorflow.keras import layers, models, optimizers
 from sklearn.cluster import KMeans
 
 class EmbeddingModel(models.Sequential):
