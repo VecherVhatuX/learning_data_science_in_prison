@@ -7,16 +7,25 @@ from tensorflow.keras import layers, models, optimizers
 from sklearn.cluster import KMeans
 
 class NeuralEmbedder(models.Sequential):
+    """
+    A neural network model for generating embeddings from input data.
+    The model consists of an embedding layer, a global average pooling layer,
+    a dense layer, and normalization layers.
+    """
     def __init__(self, vocab_size, embed_dim):
         super().__init__([
-            layers.Embedding(vocab_size, embed_dim),
-            layers.GlobalAveragePooling1D(),
-            layers.Dense(embed_dim),
-            layers.BatchNormalization(),
-            layers.LayerNormalization()
+            layers.Embedding(vocab_size, embed_dim),  # Embedding layer to convert input to dense vectors
+            layers.GlobalAveragePooling1D(),         # Global average pooling to reduce sequence length
+            layers.Dense(embed_dim),                 # Dense layer to further process embeddings
+            layers.BatchNormalization(),             # Batch normalization for stabilizing training
+            layers.LayerNormalization()              # Layer normalization for stabilizing training
         ])
 
 class DataSampler:
+    """
+    A class to sample data for training. It generates anchor, positive, and negative samples
+    for contrastive learning.
+    """
     def __init__(self, data, labels, neg_samples):
         self.data = data
         self.labels = labels
@@ -26,17 +35,25 @@ class DataSampler:
         return len(self.data)
 
     def __getitem__(self, idx):
-        anchor = self.data[idx]
-        pos = random.choice(self.data[self.labels == self.labels[idx]])
-        neg = random.sample(self.data[self.labels != self.labels[idx]].tolist(), self.neg_samples)
+        anchor = self.data[idx]  # Anchor sample
+        pos = random.choice(self.data[self.labels == self.labels[idx]])  # Positive sample (same class)
+        neg = random.sample(self.data[self.labels != self.labels[idx]].tolist(), self.neg_samples)  # Negative samples (different class)
         return anchor, pos, neg
 
 def compute_loss(anchor, pos, neg, margin=1.0):
-    pos_dist = tf.norm(anchor - pos, axis=1)
-    neg_dist = tf.reduce_min(tf.norm(tf.expand_dims(anchor, 1) - neg, axis=2), axis=1)
-    return tf.reduce_mean(tf.maximum(pos_dist - neg_dist + margin, 0.0))
+    """
+    Computes the contrastive loss for the given anchor, positive, and negative samples.
+    The loss encourages the anchor to be closer to the positive sample than to the negative samples.
+    """
+    pos_dist = tf.norm(anchor - pos, axis=1)  # Distance between anchor and positive sample
+    neg_dist = tf.reduce_min(tf.norm(tf.expand_dims(anchor, 1) - neg, axis=2), axis=1)  # Minimum distance to negative samples
+    return tf.reduce_mean(tf.maximum(pos_dist - neg_dist + margin, 0.0))  # Contrastive loss
 
 def train_network(model, data_sampler, epochs, lr):
+    """
+    Trains the neural network model using the provided data sampler.
+    The training process uses the Adam optimizer and an exponential learning rate scheduler.
+    """
     optimizer = optimizers.Adam(lr)
     lr_scheduler = optimizers.schedules.ExponentialDecay(lr, decay_steps=30, decay_rate=0.1)
     loss_tracker = []
@@ -45,7 +62,7 @@ def train_network(model, data_sampler, epochs, lr):
         batch_loss = []
         for a, p, n in data_sampler:
             with tf.GradientTape() as tape:
-                loss = compute_loss(model(a), model(p), model(n)) + 0.01 * sum(tf.norm(param, ord=2) for param in model.trainable_variables)
+                loss = compute_loss(model(a), model(p), model(n)) + 0.01 * sum(tf.norm(param, ord=2) for param in model.trainable_variables)  # Loss with L2 regularization
             grads = tape.gradient(loss, model.trainable_variables)
             optimizer.apply_gradients(zip(grads, model.trainable_variables))
             batch_loss.append(loss.numpy())
@@ -54,6 +71,10 @@ def train_network(model, data_sampler, epochs, lr):
     return loss_tracker
 
 def assess_model(model, data, labels, k=5):
+    """
+    Assesses the model's performance by computing accuracy, precision, recall, and F1-score.
+    Also visualizes the embeddings using t-SNE.
+    """
     embeddings = model(tf.convert_to_tensor(data, dtype=tf.int32)).numpy()
     distance_matrix = np.linalg.norm(embeddings[:, np.newaxis] - embeddings, axis=2)
     nearest_neighbors = np.argsort(distance_matrix, axis=1)[:, 1:k+1]
@@ -76,14 +97,23 @@ def assess_model(model, data, labels, k=5):
     plt.show()
 
 def persist_model(model, path):
+    """
+    Saves the model's weights to the specified path.
+    """
     model.save_weights(path)
 
 def restore_model(model_class, path, vocab_size, embed_dim):
+    """
+    Restores the model's weights from the specified path.
+    """
     model = model_class(vocab_size, embed_dim)
     model.load_weights(path)
     return model
 
 def display_loss(loss_history):
+    """
+    Displays the training loss over epochs.
+    """
     plt.figure(figsize=(10, 5))
     plt.plot(loss_history, label='Loss', color='blue')
     plt.title('Training Loss Over Epochs')
@@ -93,9 +123,15 @@ def display_loss(loss_history):
     plt.show()
 
 def create_data(size):
+    """
+    Generates random data and labels for testing purposes.
+    """
     return np.random.randint(0, 100, (size, 10)), np.random.randint(0, 10, size)
 
 def show_embeddings(model, data, labels):
+    """
+    Visualizes the embeddings using t-SNE and allows interactive label display.
+    """
     embeddings = model(tf.convert_to_tensor(data, dtype=tf.int32)).numpy()
     tsne = TSNE(n_components=2).fit_transform(embeddings)
 
@@ -106,6 +142,9 @@ def show_embeddings(model, data, labels):
     plt.show()
 
 def show_similarity(model, data):
+    """
+    Visualizes the cosine similarity matrix of the embeddings.
+    """
     embeddings = model(tf.convert_to_tensor(data, dtype=tf.int32)).numpy()
     cosine_similarity = np.dot(embeddings, embeddings.T) / (np.linalg.norm(embeddings, axis=1)[:, np.newaxis] * np.linalg.norm(embeddings, axis=1))
 
@@ -116,6 +155,9 @@ def show_similarity(model, data):
     plt.show()
 
 def show_distribution(model, data):
+    """
+    Displays the distribution of embedding values.
+    """
     embeddings = model(tf.convert_to_tensor(data, dtype=tf.int32)).numpy()
     plt.figure(figsize=(8, 8))
     plt.hist(embeddings.flatten(), bins=50, color='blue', alpha=0.7)
@@ -125,6 +167,9 @@ def show_distribution(model, data):
     plt.show()
 
 def show_lr_schedule(optimizer, scheduler, epochs):
+    """
+    Displays the learning rate schedule over epochs.
+    """
     lr_history = []
     for _ in range(epochs):
         lr_history.append(optimizer.learning_rate.numpy())
@@ -138,6 +183,9 @@ def show_lr_schedule(optimizer, scheduler, epochs):
     plt.show()
 
 def show_clusters(model, data, labels, n_clusters=5):
+    """
+    Visualizes the embeddings clustered using KMeans.
+    """
     embeddings = model(tf.convert_to_tensor(data, dtype=tf.int32)).numpy()
     kmeans = KMeans(n_clusters=n_clusters)
     cluster_labels = kmeans.fit_predict(embeddings)
@@ -149,6 +197,9 @@ def show_clusters(model, data, labels, n_clusters=5):
     plt.show()
 
 def show_histogram(model, data):
+    """
+    Displays a histogram of the embedding values.
+    """
     embeddings = model(tf.convert_to_tensor(data, dtype=tf.int32)).numpy()
     plt.figure(figsize=(8, 8))
     plt.hist(embeddings.flatten(), bins=50, color='blue', alpha=0.7)
