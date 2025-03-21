@@ -11,30 +11,37 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
 class TextEncoder:
+    """Encodes text data into numerical format using LabelEncoder."""
     def __init__(self, data):
         texts = [text for item in data for text in (item['anchor'], item['positive'], item['negative'])]
         self.encoder = LabelEncoder().fit(texts)
     
     def encode(self, text):
+        """Encodes a single text string into a tensor."""
         return torch.tensor(self.encoder.transform([text])[0], dtype=torch.long)
 
 class DataHandler:
+    """Handles data processing and provides access to the encoded data."""
     def __init__(self, data):
         self.data = data
         self.text_encoder = TextEncoder(data)
     
     def get_data(self):
+        """Returns the processed data."""
         return self.data
 
 class TripletData(Dataset):
+    """Custom Dataset class for handling triplet data."""
     def __init__(self, data):
         self.data_handler = DataHandler(data)
         self.samples = self.data_handler.get_data()
     
     def __len__(self):
+        """Returns the number of samples in the dataset."""
         return len(self.samples)
     
     def __getitem__(self, idx):
+        """Returns a dictionary of encoded anchor, positive, and negative samples."""
         return {
             'anchor': self.data_handler.text_encoder.encode(self.samples[idx]['anchor']),
             'positive': self.data_handler.text_encoder.encode(self.samples[idx]['positive']),
@@ -42,6 +49,7 @@ class TripletData(Dataset):
         }
 
 class EmbeddingNetwork(nn.Module):
+    """Neural network model for generating embeddings from text data."""
     def __init__(self, vocab_size, embed_dim):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, embed_dim)
@@ -54,14 +62,17 @@ class EmbeddingNetwork(nn.Module):
         )
     
     def forward(self, anchor, positive, negative):
+        """Forward pass to generate embeddings for anchor, positive, and negative samples."""
         return (self.network(self.embedding(anchor)),
                 self.network(self.embedding(positive)),
                 self.network(self.embedding(negative)))
 
 def compute_loss(anchor, positive, negative):
+    """Computes the triplet loss for the given embeddings."""
     return torch.mean(torch.clamp(0.2 + torch.norm(anchor - positive, dim=1) - torch.norm(anchor - negative, dim=1), min=0))
 
 def train_network(model, train_loader, valid_loader, epochs):
+    """Trains the embedding network using the provided data loaders."""
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     scheduler = optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: 0.1 ** epoch)
     history = []
@@ -82,6 +93,7 @@ def train_network(model, train_loader, valid_loader, epochs):
     return history
 
 def evaluate_network(model, data_loader):
+    """Evaluates the model's performance on the validation set."""
     model.eval()
     total_loss = 0
     correct = 0
@@ -95,6 +107,7 @@ def evaluate_network(model, data_loader):
     return (total_loss / len(data_loader), correct / len(data_loader))
 
 def plot_history(history):
+    """Plots the training and validation loss and accuracy over epochs."""
     plt.figure(figsize=(10, 5))
     plt.subplot(1, 2, 1)
     plt.plot([x[0] for x in history], label='Training Loss')
@@ -113,15 +126,18 @@ def plot_history(history):
     plt.show()
 
 def save_model(model, path):
+    """Saves the model's state dictionary to the specified path."""
     torch.save(model.state_dict(), path)
     print(f'Model saved at {path}')
 
 def load_model(model, path):
+    """Loads the model's state dictionary from the specified path."""
     model.load_state_dict(torch.load(path))
     print(f'Model loaded from {path}')
     return model
 
 def visualize_embeddings(model, data_loader):
+    """Visualizes the embeddings in a 3D scatter plot."""
     model.eval()
     embeddings = []
     
@@ -138,12 +154,14 @@ def visualize_embeddings(model, data_loader):
     plt.show()
 
 def load_data(file_path, root_dir):
+    """Loads data from a JSON file and maps instance IDs to problem statements."""
     data = json.load(open(file_path))
     mapping = {item['instance_id']: item['problem_statement'] for item in data}
     snippet_files = [(dir, os.path.join(root_dir, 'snippet.json')) for dir in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, dir))]
     return mapping, snippet_files
 
 def create_triplets(mapping, snippet_files):
+    """Creates triplets of anchor, positive, and negative samples from the data."""
     triplets = []
     for dir, path in snippet_files:
         bug_sample, non_bug_samples = json.load(open(path))
@@ -151,6 +169,7 @@ def create_triplets(mapping, snippet_files):
     return triplets
 
 def execute_pipeline():
+    """Executes the entire pipeline from data loading to model training and evaluation."""
     dataset_path = 'datasets/SWE-bench_oracle.npy'
     snippets_dir = 'datasets/10_10_after_fix_pytest'
     
@@ -169,6 +188,7 @@ def execute_pipeline():
     visualize_embeddings(model, valid_loader)
 
 def add_feature():
+    """Adds a new feature to the pipeline."""
     print("New feature added: Enhanced visualization with 3D embeddings.")
 
 if __name__ == "__main__":
