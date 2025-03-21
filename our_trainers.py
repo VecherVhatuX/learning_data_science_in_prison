@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 import random
 from tensorflow.keras import layers, models, optimizers, losses
+from sklearn.cluster import KMeans
 
 class WordEmbeddingNetwork(models.Sequential):
     def __init__(self, vocabulary_size, embedding_dimension):
@@ -137,7 +138,6 @@ def visualize_learning_rate_schedule(optimizer, scheduler, num_epochs):
     plt.show()
 
 def visualize_embedding_clusters(model, input_data, target_labels, n_clusters=5):
-    from sklearn.cluster import KMeans
     embeddings = model(tf.convert_to_tensor(input_data, dtype=tf.int32)).numpy()
     kmeans = KMeans(n_clusters=n_clusters)
     cluster_labels = kmeans.fit_predict(embeddings)
@@ -146,6 +146,15 @@ def visualize_embedding_clusters(model, input_data, target_labels, n_clusters=5)
     plt.scatter(embeddings[:, 0], embeddings[:, 1], c=cluster_labels, cmap='viridis')
     plt.colorbar()
     plt.title('Embedding Clusters')
+    plt.show()
+
+def visualize_embedding_histogram(model, input_data):
+    embeddings = model(tf.convert_to_tensor(input_data, dtype=tf.int32)).numpy()
+    plt.figure(figsize=(8, 8))
+    plt.hist(embeddings.flatten(), bins=50, color='blue', alpha=0.7)
+    plt.title('Embedding Value Histogram')
+    plt.xlabel('Embedding Value')
+    plt.ylabel('Frequency')
     plt.show()
 
 if __name__ == "__main__":
@@ -168,3 +177,4 @@ if __name__ == "__main__":
     visualize_embedding_distribution(embedding_model, synthetic_data)
     visualize_learning_rate_schedule(model_optimizer, learning_rate_scheduler, 10)
     visualize_embedding_clusters(embedding_model, synthetic_data, synthetic_labels)
+    visualize_embedding_histogram(embedding_model, synthetic_data)
