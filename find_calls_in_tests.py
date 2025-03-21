@@ -54,29 +54,29 @@ def create_coverage_report(test_dir):
     subprocess.run([PYTHON_EXEC, "-m", "coverage", "html", "-d", "coverage_report"])
 
 @click.command()
-@click.option('--repo', required=True, help='Path to the repository')
-@click.option('--commit', required=True, help='Commit identifier')
-@click.option('--project', required=True, help='Path to the project')
-@click.option('--run', is_flag=True, help='Execute relevant tests')
-@click.option('--report', is_flag=True, help='Create a test summary')
-@click.option('--coverage', is_flag=True, help='Produce a coverage report')
-@click.option('--output', default="test_summary.json", help='Destination file for the summary')
+@click.option('--repo', required=True, help='Directory containing the repository')
+@click.option('--commit', required=True, help='Unique identifier for the commit')
+@click.option('--project', required=True, help='Directory containing the project')
+@click.option('--run', is_flag=True, help='Run the identified tests')
+@click.option('--report', is_flag=True, help='Generate a summary of test results')
+@click.option('--coverage', is_flag=True, help='Generate a coverage analysis')
+@click.option('--output', default="test_summary.json", help='File to store the summary')
 def main(repo, commit, project, run, report, coverage, output):
     diff = get_git_diff(repo, commit)
     modified_funcs = extract_modified_functions(diff)
     if not modified_funcs:
-        click.echo("No alterations in functions found.")
+        click.echo("No function changes detected.")
         return
     
-    test_cases = gather_all_test_cases(project)  # TODO: Typo in function name, should be `gather_all_test_cases`
+    test_cases = gather_all_test_cases(project)  # TODO: Function name needs correction, should be `gather_all_test_cases`
     affected_tests = find_affected_tests(test_cases, modified_funcs)
     click.echo(json.dumps(affected_tests, indent=2))
     
     if run:
         results = [run_test_case(test['file'], test['name']) for test in affected_tests]
         for test, outcome in zip(affected_tests, results):
-            click.echo(f"Executing test: {test['name']} in {test['file']}")
-            click.echo(f"Test {test['name']} {'succeeded' if outcome else 'failed'}.")
+            click.echo(f"Running test: {test['name']} in {test['file']}")
+            click.echo(f"Test {test['name']} {'passed' if outcome else 'failed'}.")
         
         if report:
             summary = generate_test_summary(affected_tests, results)
