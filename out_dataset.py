@@ -83,7 +83,7 @@ def evaluate_network(model, data_loader):
         for batch in data_loader:
             anchor, positive, negative = model(batch['anchor']), model(batch['positive']), model(batch['negative'])
             total_loss += compute_triplet_loss(anchor, positive, negative).item()
-            correct += torch.sum((torch.sum(anchor * positive, dim=1) > torch.sum(anchor * negative, dim=1)).item()
+            correct += torch.sum((torch.sum(anchor * positive, dim=1) > torch.sum(anchor * negative, dim=1))).item()
     return total_loss / len(data_loader), correct / len(data_loader)
 
 def plot_training_progress(history):
@@ -143,7 +143,7 @@ def execute_pipeline():
     train_loader = DataLoader(train_data.tolist(), batch_size=32, shuffle=True)
     valid_loader = DataLoader(valid_data.tolist(), batch_size=32)
     model = EmbeddingNetwork(vocab_size=len(train_loader.dataset[0]['anchor']) + 1, embedding_dim=128)
-    history = train_network(model, train_loader, valid_loader, epochs=5)
+    history = train_network(model, train_loader, valid_loader, num_epochs=5)
     plot_training_progress(history)
     save_model_weights(model, 'model.pth')
     visualize_embeddings(model, valid_loader)
