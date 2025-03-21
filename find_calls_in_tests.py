@@ -8,48 +8,50 @@ from functools import reduce
 
 PYTHON_EXEC = "python3"
 
-fetch_diff = lambda repo_path, commit_id: (
-    os.chdir(repo_path),
-    subprocess.check_output(["git", "diff", commit_id, "--", "*.py"], text=True)
-)[1]
+def fetch_diff(repo_path, commit_id):
+    os.chdir(repo_path)
+    return subprocess.check_output(["git", "diff", commit_id, "--", "*.py"], text=True)
 
-identify_changed_functions = lambda diff_output: {
-    func.split('(')[0].strip('+') for line in diff_output.split('\n') 
-    if line.startswith('@@') and len(line.split()) > 3 and '(' in (func := line.split()[3])
-}
+def identify_changed_functions(diff_output):
+    return {
+        func.split('(')[0].strip('+') for line in diff_output.split('\n') 
+        if line.startswith('@@') and len(line.split()) > 3 and '(' in (func := line.split()[3])
+    }
 
-parse_script_for_tests = lambda script_path: [
-    {"file": str(script_path), "name": node.name, "calls": [n.func.id for n in node.body if isinstance(n, Call) and isinstance(n.func, Name)]}
-    for node in parse(script_path.read_text(), filename=str(script_path)).body if isinstance(node, FunctionDef) and "test" in node.name
-]
+def parse_script_for_tests(script_path):
+    return [
+        {"file": str(script_path), "name": node.name, "calls": [n.func.id for n in node.body if isinstance(n, Call) and isinstance(n.func, Name)]}
+        for node in parse(script_path.read_text(), filename=str(script_path)).body if isinstance(node, FunctionDef) and "test" in node.name
+    ]
 
-collect_all_tests = lambda test_dir: reduce(lambda acc, file: acc + parse_script_for_tests(file), Path(test_dir).rglob("*.py"), [])
+def collect_all_tests(test_dir):
+    return reduce(lambda acc, file: acc + parse_script_for_tests(file), Path(test_dir).rglob("*.py"), [])
 
-determine_impacted_tests = lambda tests, changed_funcs: [
-    {"file": test["file"], "name": test["name"], "called": call} 
-    for test in tests for call in test["calls"] if call in changed_funcs
-]
+def determine_impacted_tests(tests, changed_funcs):
+    return [
+        {"file": test["file"], "name": test["name"], "called": call} 
+        for test in tests for call in test["calls"] if call in changed_funcs
+    ]
 
-execute_test = lambda test_file, test_func: (
-    lambda result: result.returncode == 0
-)(subprocess.run([PYTHON_EXEC, "-m", "pytest", f"{test_file}::{test_func}"], capture_output=True, text=True))
+def execute_test(test_file, test_func):
+    result = subprocess.run([PYTHON_EXEC, "-m", "pytest", f"{test_file}::{test_func}"], capture_output=True, text=True)
+    return result.returncode == 0
 
-compile_test_results = lambda test_data, results: {
-    "total": len(test_data),
-    "passed": sum(results),
-    "failed": len(test_data) - sum(results),
-    "info": [{"name": test["name"], "file": test["file"], "result": "passed" if result else "failed"} for test, result in zip(test_data, results)]
-}
+def compile_test_results(test_data, results):
+    return {
+        "total": len(test_data),
+        "passed": sum(results),
+        "failed": len(test_data) - sum(results),
+        "info": [{"name": test["name"], "file": test["file"], "result": "passed" if result else "failed"} for test, result in zip(test_data, results)]
+    }
 
-write_results_to_file = lambda summary, output_file: (
-    open(output_file, "w") as file,
-    json.dump(summary, file, indent=2)
-)[1]
+def write_results_to_file(summary, output_file):
+    with open(output_file, "w") as file:
+        json.dump(summary, file, indent=2)
 
-produce_coverage_report = lambda test_dir: (
-    subprocess.run([PYTHON_EXEC, "-m", "coverage", "run", "--source", test_dir, "-m", "pytest", test_dir]),
+def produce_coverage_report(test_dir):
+    subprocess.run([PYTHON_EXEC, "-m", "coverage", "run", "--source", test_dir, "-m", "pytest", test_dir])
     subprocess.run([PYTHON_EXEC, "-m", "coverage", "html", "-d", "coverage_report"])
-)
 
 @click.command()
 @click.option('--repo', required=True, help='Repository directory')
