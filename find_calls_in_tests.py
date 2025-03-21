@@ -8,36 +8,36 @@ from functools import reduce
 
 PYTHON_EXEC = "python3"
 
-def get_git_diff(repo_path, commit_id):
+def fetch_diff(repo_path, commit_id):
     os.chdir(repo_path)
     return subprocess.check_output(["git", "diff", commit_id, "--", "*.py"], text=True)
 
-def extract_modified_functions(diff_output):
+def identify_changed_functions(diff_output):
     return {
         func.split('(')[0].strip('+') for line in diff_output.split('\n') 
         if line.startswith('@@') and len(line.split()) > 3 and '(' in (func := line.split()[3])
     }
 
-def analyze_script(script_path):
+def parse_script_for_tests(script_path):
     return [
         {"file": str(script_path), "name": node.name, "calls": [n.func.id for n in node.body if isinstance(n, Call) and isinstance(n.func, Name)]}
         for node in parse(script_path.read_text(), filename=str(script_path)).body if isinstance(node, FunctionDef) and "test" in node.name
     ]
 
-def gather_tests(test_dir):
-    return reduce(lambda acc, file: acc + analyze_script(file), Path(test_dir).rglob("*.py"), [])
+def collect_all_tests(test_dir):
+    return reduce(lambda acc, file: acc + parse_script_for_tests(file), Path(test_dir).rglob("*.py"), [])
 
-def find_affected_tests(tests, modified_funcs):
+def determine_impacted_tests(tests, changed_funcs):
     return [
         {"file": test["file"], "name": test["name"], "called": call} 
-        for test in tests for call in test["calls"] if call in modified_funcs
+        for test in tests for call in test["calls"] if call in changed_funcs
     ]
 
-def run_test(test_file, test_func):
+def execute_test(test_file, test_func):
     result = subprocess.run([PYTHON_EXEC, "-m", "pytest", f"{test_file}::{test_func}"], capture_output=True, text=True)
     return result.returncode == 0
 
-def create_summary(test_data, results):
+def compile_test_results(test_data, results):
     return {
         "total": len(test_data),
         "passed": sum(results),
@@ -45,11 +45,11 @@ def create_summary(test_data, results):
         "info": [{"name": test["name"], "file": test["file"], "result": "passed" if result else "failed"} for test, result in zip(test_data, results)]
     }
 
-def save_summary(summary, output_file):
+def write_results_to_file(summary, output_file):
     with open(output_file, "w") as file:
         json.dump(summary, file, indent=2)
 
-def generate_coverage(test_dir):
+def produce_coverage_report(test_dir):
     subprocess.run([PYTHON_EXEC, "-m", "coverage", "run", "--source", test_dir, "-m", "pytest", test_dir])
     subprocess.run([PYTHON_EXEC, "-m", "coverage", "html", "-d", "coverage_report"])
 
@@ -61,30 +61,30 @@ def generate_coverage(test_dir):
 @click.option('--report', is_flag=True, help='Generate test summary')
 @click.option('--coverage', is_flag=True, help='Generate test coverage report')
 @click.option('--output', default="test_summary.json", help='Output file for test summary')
-def execute(repo, commit, project, run, report, coverage, output):
-    diff = get_git_diff(repo, commit)
-    modified = extract_modified_functions(diff)
-    if not modified:
+def main(repo, commit, project, run, report, coverage, output):
+    diff = fetch_diff(repo, commit)
+    changed_funcs = identify_changed_functions(diff)
+    if not changed_funcs:
         click.echo("No function changes detected.")
         return
     
-    tests = gather_tests(project)
-    affected = find_affected_tests(tests, modified)
-    click.echo(json.dumps(affected, indent=2))
+    tests = collect_all_tests(project)
+    impacted_tests = determine_impacted_tests(tests, changed_funcs)
+    click.echo(json.dumps(impacted_tests, indent=2))
     
     if run:
-        results = [run_test(test['file'], test['name']) for test in affected]
-        for test, outcome in zip(affected, results):
+        results = [execute_test(test['file'], test['name']) for test in impacted_tests]
+        for test, outcome in zip(impacted_tests, results):
             click.echo(f"Running test: {test['name']} in {test['file']}")
             click.echo(f"Test {test['name']} {'passed' if outcome else 'failed'}.")
         
         if report:
-            summary = create_summary(affected, results)
+            summary = compile_test_results(impacted_tests, results)
             click.echo(json.dumps(summary, indent=2))
-            save_summary(summary, output)
+            write_results_to_file(summary, output)
     
     if coverage:
-        generate_coverage(project)
+        produce_coverage_report(project)
 
 if __name__ == "__main__":
-    execute()
+    main()
