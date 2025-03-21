@@ -34,9 +34,11 @@ class LanguageModel(tf.keras.Model):
         return self.linear2(x)
 
 def load_data(file_path):
+    # TODO: Handle file not found exception properly
     return json.load(open(file_path, 'r')) if os.path.exists(file_path) else None
 
 def tokenize_data(data, tokenizer, max_len=512):
+    # TODO: Add error handling for tokenizer.encode failure
     return tf.convert_to_tensor(tokenizer.encode(data, max_length=max_len, padding='max_length', truncation=True))
 
 class TextDataset(tf.keras.utils.Sequence):
@@ -49,6 +51,7 @@ class TextDataset(tf.keras.utils.Sequence):
         return len(self.data)
 
     def __getitem__(self, idx):
+        # TODO: Ensure that the random choice does not pick the same index as idx
         input_ids = tokenize_data(self.data[idx]['input'], self.tokenizer)
         labels = tokenize_data(self.data[idx]['output'], self.tokenizer)
         neg_samples = tf.stack([tokenize_data(self.data[random.choice([j for j in range(len(self.data)) if j != idx])]['input'], self.tokenizer) for _ in range(self.neg_samples)])
@@ -67,6 +70,7 @@ class ModelTrainer:
         for epoch in range(epochs):
             for input_ids, labels, neg_samples in data_loader:
                 with tf.GradientTape() as tape:
+                    # TODO: Check if the loss function is correctly applied
                     loss = self.loss_fn(self.model(input_ids), labels, neg_samples)
                 gradients = tape.gradient(loss, self.model.trainable_variables)
                 self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
@@ -91,9 +95,11 @@ class ModelTrainer:
         return self.counter >= patience
 
 def save_model(model, path):
+    # TODO: Add error handling for model save failure
     model.save_weights(path)
 
 def save_history(history, path):
+    # TODO: Add error handling for file write failure
     json.dump(history, open(path, 'w'))
 
 def initialize_environment():
@@ -108,6 +114,7 @@ def execute_pipeline():
     test_data = load_data("test.json")
     train_dataset = TextDataset(train_data, tokenizer, settings["negative_samples_per_batch"])
     test_dataset = TextDataset(test_data, tokenizer, settings["negative_samples_per_batch"])
+    # TODO: Fix the output_signature to match the actual data structure
     train_loader = tf.data.Dataset.from_generator(lambda: train_dataset, output_signature=(
         tf.TensorSpec(shape=(None,), tf.TensorSpec(shape=(None,)), tf.TensorSpec(shape=(None,))))
     test_loader = tf.data.Dataset.from_generator(lambda: test_dataset, output_signature=(
@@ -126,6 +133,7 @@ def add_checkpoint(model, optimizer, checkpoint_dir, max_to_keep=2):
         'model_state_dict': model.get_weights(),
         'optimizer_state_dict': optimizer.get_weights()
     }
+    # TODO: Handle directory creation if it doesn't exist
     tf.saved_model.save(checkpoint, os.path.join(checkpoint_dir, f"checkpoint_{len(os.listdir(checkpoint_dir))}.ckpt"))
 
 if __name__ == "__main__":
