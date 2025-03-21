@@ -6,7 +6,7 @@ from torch import nn, optim
 from torch.utils.data import Dataset, DataLoader
 from transformers import T5Tokenizer
 
-settings = {
+SETTINGS = {
     "model_name": "t5-base", "alpha": 16, "dropout_rate": 0.1, "decomposition_rank": 64,
     "layers_to_modify": ["q_proj", "k_proj", "v_proj", "o_proj", "down_proj", "up_proj", "gate_proj"],
     "quantization_config": {"nested_quantization": False, "four_bit_dtype": "float16", "storage_dtype": "uint8",
@@ -22,7 +22,7 @@ settings = {
 
 class LanguageModel(nn.Module):
     def __init__(self, vocab_size, embed_dim):
-        super(LanguageModel, self).__init__()
+        super().__init__()
         self.embedding = nn.Embedding(vocab_size, embed_dim)
         self.lstm = nn.LSTM(embed_dim, embed_dim, batch_first=True)
         self.linear1 = nn.Linear(embed_dim, embed_dim)
@@ -32,8 +32,7 @@ class LanguageModel(nn.Module):
         x = self.embedding(x)
         x, _ = self.lstm(x)
         x = self.linear1(x)
-        x = self.linear2(x)
-        return x
+        return self.linear2(x)
 
 def load_data(file_path):
     return json.load(open(file_path, 'r')) if os.path.exists(file_path) else None
@@ -103,7 +102,7 @@ def initialize_environment():
     tokenizer = T5Tokenizer.from_pretrained("t5-base")
     model = LanguageModel(30522, 128)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-    return settings, tokenizer, model, optimizer
+    return SETTINGS, tokenizer, model, optimizer
 
 def execute_pipeline():
     settings, tokenizer, model, optimizer = initialize_environment()
