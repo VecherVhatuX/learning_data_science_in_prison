@@ -35,7 +35,7 @@ def build_embedding_network(vocab_size, embedding_dim):
     return tf.keras.Model(inputs, outputs)
 
 def compute_triplet_loss(anchor, positive, negative):
-    return tf.reduce_mean(tf.maximum(0.2 + tf.norm(anchor - positive, axis=1) - tf.norm(anchor - negative, axis=1), 0)
+    return tf.reduce_mean(tf.maximum(0.2 + tf.norm(anchor - positive, axis=1) - tf.norm(anchor - negative, axis=1), 0))
 
 def train_network(model, train_data, valid_data, num_epochs):
     optimizer = optimizers.Adam(learning_rate=0.001)
