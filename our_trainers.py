@@ -164,7 +164,7 @@ if __name__ == "__main__":
         tf.TensorSpec(shape=(None,), dtype=tf.int32),
         tf.TensorSpec(shape=(None,), dtype=tf.int32),
         tf.TensorSpec(shape=(None,), dtype=tf.int32)
-    ).batch(32).shuffle(1000)
+    )).batch(32).shuffle(1000)
     model = NeuralEmbedder(101, 10)
     optimizer = optimizers.Adam(1e-4)
     lr_scheduler = optimizers.schedules.ExponentialDecay(1e-4, decay_steps=30, decay_rate=0.1)
