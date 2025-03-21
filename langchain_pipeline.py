@@ -7,7 +7,7 @@ from tool_library import Tool, create_agent
 from loguru import logger
 from functools import wraps
 
-randomize_and_separate = lambda items: (list(filter(lambda i: i['label'] == 1, items)), list(filter(lambda i: i['label'] == 0, items))
+randomize_and_separate = lambda items: (list(filter(lambda i: i['label'] == 1, items)), list(filter(lambda i: i['label'] == 0, items)))
 handle_items = lambda items, counter: ((randomize_and_separate(items), counter + 1))
 fetch_system_info = lambda info: f"System environment: {dict(os.environ)}\n{info}"
 add_package = lambda pkg: run(["pip", "install", pkg], text=True, capture_output=True, check=True).stdout
@@ -22,7 +22,7 @@ execute_with_retries = lambda cmd, max_attempts: retry_command(create_agent(tool
 
 measure_execution_time = lambda func: wraps(func)(lambda *args, **kwargs: (start := time.time(), result := func(*args, **kwargs), logger.info(f"Time taken: {time.time() - start:.2f} seconds"), result)[-1])
 
-initiate_process = measure_execution_time(lambda cmd, max_attempts: (logger.info("Process initiated..."), execute_with_retries(cmd, max_attempts))
+initiate_process = measure_execution_time(lambda cmd, max_attempts: (logger.info("Process initiated..."), execute_with_retries(cmd, max_attempts)))
 
 record_command = lambda cmd: (logger.success("Command logged!") if (open("command_log.txt", "a").write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {cmd}\n")) else logger.error(f"Logging failed: {e}")) if not (e := None) else None
 
