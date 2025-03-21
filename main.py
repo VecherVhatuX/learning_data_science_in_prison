@@ -1,9 +1,8 @@
 import os
 import json
 import random
-import torch
-from torch import nn, optim
-from torch.utils.data import Dataset, DataLoader
+import tensorflow as tf
+from tensorflow.keras import layers, optimizers, losses
 from transformers import T5Tokenizer
 
 SETTINGS = {
@@ -20,29 +19,27 @@ SETTINGS = {
     "max_checkpoints": 2, "seed": 42, "checkpoint_path": None, "negative_samples_per_batch": 5
 }
 
-class LanguageModel(nn.Module):
+class LanguageModel(tf.keras.Model):
     def __init__(self, vocab_size, embed_dim):
         super().__init__()
-        self.embedding = nn.Embedding(vocab_size, embed_dim)
-        self.lstm = nn.LSTM(embed_dim, embed_dim, batch_first=True)
-        self.linear1 = nn.Linear(embed_dim, embed_dim)
-        self.linear2 = nn.Linear(embed_dim, vocab_size)
+        self.embedding = layers.Embedding(vocab_size, embed_dim)
+        self.lstm = layers.LSTM(embed_dim, return_sequences=True)
+        self.linear1 = layers.Dense(embed_dim)
+        self.linear2 = layers.Dense(vocab_size)
 
-    def forward(self, x):
+    def call(self, x):
         x = self.embedding(x)
-        x, _ = self.lstm(x)
+        x = self.lstm(x)
         x = self.linear1(x)
         return self.linear2(x)
 
 def load_data(file_path):
-    # TODO: Add error handling for file reading to avoid crashes if file is corrupted or not in expected format.
     return json.load(open(file_path, 'r')) if os.path.exists(file_path) else None
 
 def tokenize_data(data, tokenizer, max_len=512):
-    # TODO: Handle cases where tokenizer.encode returns None or an empty list to avoid tensor creation errors.
-    return torch.tensor(tokenizer.encode(data, max_length=max_len, padding='max_length', truncation=True))
+    return tf.convert_to_tensor(tokenizer.encode(data, max_length=max_len, padding='max_length', truncation=True))
 
-class TextDataset(Dataset):
+class TextDataset(tf.keras.utils.Sequence):
     def __init__(self, data, tokenizer, neg_samples=5):
         self.data = data
         self.tokenizer = tokenizer
@@ -54,8 +51,7 @@ class TextDataset(Dataset):
     def __getitem__(self, idx):
         input_ids = tokenize_data(self.data[idx]['input'], self.tokenizer)
         labels = tokenize_data(self.data[idx]['output'], self.tokenizer)
-        # TODO: Ensure that random.choice does not select the same index as idx, which could lead to incorrect negative sampling.
-        neg_samples = torch.stack([tokenize_data(self.data[random.choice([j for j in range(len(self.data)) if j != idx])]['input'], self.tokenizer) for _ in range(self.neg_samples)])
+        neg_samples = tf.stack([tokenize_data(self.data[random.choice([j for j in range(len(self.data)) if j != idx])]['input'], self.tokenizer) for _ in range(self.neg_samples)])
         return input_ids, labels, neg_samples
 
 class ModelTrainer:
@@ -70,21 +66,20 @@ class ModelTrainer:
         self.model.train()
         for epoch in range(epochs):
             for input_ids, labels, neg_samples in data_loader:
-                self.optimizer.zero_grad()
-                loss = self.loss_fn(self.model(input_ids), labels, neg_samples)
-                loss.backward()
-                self.optimizer.step()
-            if self.early_stopping(loss.item(), patience):
+                with tf.GradientTape() as tape:
+                    loss = self.loss_fn(self.model(input_ids), labels, neg_samples)
+                gradients = tape.gradient(loss, self.model.trainable_variables)
+                self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+            if self.early_stopping(loss.numpy(), patience):
                 print("Training halted early.")
                 break
 
     def evaluate(self, data_loader):
         self.model.eval()
         total_loss = 0
-        with torch.no_grad():
-            for input_ids, labels, neg_samples in data_loader:
-                loss = self.loss_fn(self.model(input_ids), labels, neg_samples)
-                total_loss += loss.item()
+        for input_ids, labels, neg_samples in data_loader:
+            loss = self.loss_fn(self.model(input_ids), labels, neg_samples)
+            total_loss += loss.numpy()
         print(f"Average Loss on Evaluation: {total_loss / len(data_loader):.4f}")
 
     def early_stopping(self, current_loss, patience):
@@ -96,17 +91,15 @@ class ModelTrainer:
         return self.counter >= patience
 
 def save_model(model, path):
-    # TODO: Add error handling for model saving to avoid crashes if the directory does not exist.
-    torch.save(model.state_dict(), path)
+    model.save_weights(path)
 
 def save_history(history, path):
-    # TODO: Add error handling for file writing to avoid crashes if the directory does not exist.
     json.dump(history, open(path, 'w'))
 
 def initialize_environment():
     tokenizer = T5Tokenizer.from_pretrained("t5-base")
     model = LanguageModel(30522, 128)
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = optimizers.Adam(learning_rate=0.001)
     return SETTINGS, tokenizer, model, optimizer
 
 def execute_pipeline():
@@ -115,24 +108,25 @@ def execute_pipeline():
     test_data = load_data("test.json")
     train_dataset = TextDataset(train_data, tokenizer, settings["negative_samples_per_batch"])
     test_dataset = TextDataset(test_data, tokenizer, settings["negative_samples_per_batch"])
-    train_loader = DataLoader(train_dataset, batch_size=settings["batch_sizes"]['train'], shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=settings["batch_sizes"]['eval'])
-    trainer = ModelTrainer(model, optimizer, nn.TripletMarginLoss())
+    train_loader = tf.data.Dataset.from_generator(lambda: train_dataset, output_signature=(
+        tf.TensorSpec(shape=(None,), tf.TensorSpec(shape=(None,)), tf.TensorSpec(shape=(None,))))
+    test_loader = tf.data.Dataset.from_generator(lambda: test_dataset, output_signature=(
+        tf.TensorSpec(shape=(None,), tf.TensorSpec(shape=(None,)), tf.TensorSpec(shape=(None,))))
+    trainer = ModelTrainer(model, optimizer, losses.TripletSemiHardLoss())
     trainer.train(train_loader, settings["epochs"])
     trainer.evaluate(test_loader)
-    save_model(model, os.path.join(settings["results_dir"], "triplet_model.pth"))
+    save_model(model, os.path.join(settings["results_dir"], "triplet_model.h5"))
 
 def add_scheduler(optimizer, initial_lr, decay_steps, decay_rate):
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=decay_steps, gamma=decay_rate)
+    scheduler = optimizers.schedules.ExponentialDecay(initial_lr, decay_steps, decay_rate)
     return scheduler
 
 def add_checkpoint(model, optimizer, checkpoint_dir, max_to_keep=2):
-    # TODO: Ensure that the checkpoint directory exists before saving to avoid crashes.
     checkpoint = {
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict()
+        'model_state_dict': model.get_weights(),
+        'optimizer_state_dict': optimizer.get_weights()
     }
-    torch.save(checkpoint, os.path.join(checkpoint_dir, f"checkpoint_{len(os.listdir(checkpoint_dir))}.pt"))
+    tf.saved_model.save(checkpoint, os.path.join(checkpoint_dir, f"checkpoint_{len(os.listdir(checkpoint_dir))}.ckpt"))
 
 if __name__ == "__main__":
     execute_pipeline()
