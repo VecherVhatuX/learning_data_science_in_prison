@@ -68,7 +68,7 @@ def main(repo, commit, project, run, report, coverage, output):
         click.echo("No function changes detected.")
         return
     
-    test_cases = gather_all_test_cases(project)  # TODO: Function name needs correction, should be `gather_all_test_cases`
+    test_cases = gather_all_test_cases(project)
     affected_tests = find_affected_tests(test_cases, modified_funcs)
     click.echo(json.dumps(affected_tests, indent=2))
     
