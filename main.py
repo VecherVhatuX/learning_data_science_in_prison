@@ -113,7 +113,7 @@ def execute_pipeline():
     test_dataset = TextDataset(test_data, tokenizer, settings["negative_samples_per_batch"])
     train_loader = DataLoader(train_dataset, batch_size=settings["batch_sizes"]['train'], shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=settings["batch_sizes"]['eval'])
-    trainer = ModelTrainer(model, optimizer, triplet_loss)
+    trainer = ModelTrainer(model, optimizer, nn.TripletMarginLoss())
     trainer.train(train_loader, settings["epochs"])
     trainer.evaluate(test_loader)
     save_model(model, os.path.join(settings["results_dir"], "triplet_model.pth"))
@@ -122,7 +122,7 @@ def add_scheduler(optimizer, initial_lr, decay_steps, decay_rate):
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=decay_steps, gamma=decay_rate)
     return scheduler
 
-def add_checkpoint(model, checkpoint_dir, max_to_keep=2):
+def add_checkpoint(model, optimizer, checkpoint_dir, max_to_keep=2):
     checkpoint = {
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict()
