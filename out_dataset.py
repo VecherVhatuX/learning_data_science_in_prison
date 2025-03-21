@@ -8,23 +8,35 @@ import torch.optim as optim
 from sklearn.preprocessing import LabelEncoder
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+from torch.utils.data import DataLoader
 
-def build_text_encoder(dataset):
-    texts = [text for item in dataset for text in (item['anchor'], item['positive'], item['negative'])]
-    encoder = LabelEncoder().fit(texts)
-    return lambda text: torch.tensor(encoder.transform([text])[0], dtype=torch.long)
+class TextEncoder:
+    def __init__(self, dataset):
+        texts = [text for item in dataset for text in (item['anchor'], item['positive'], item['negative'])]
+        self.encoder = LabelEncoder().fit(texts)
 
-def build_data_handler(dataset):
-    text_encoder = build_text_encoder(dataset)
-    return lambda: dataset, text_encoder
+    def encode(self, text):
+        return torch.tensor(self.encoder.transform([text])[0], dtype=torch.long)
 
-def build_triplet_data_generator(dataset):
-    data_handler = build_data_handler(dataset)
-    return lambda idx: {
-        'anchor': data_handler()[1](dataset[idx]['anchor']),
-        'positive': data_handler()[1](dataset[idx]['positive']),
-        'negative': data_handler()[1](dataset[idx]['negative'])
-    }
+class DataHandler:
+    def __init__(self, dataset):
+        self.dataset = dataset
+        self.text_encoder = TextEncoder(dataset)
+
+    def get_data(self):
+        return self.dataset, self.text_encoder
+
+class TripletDataGenerator:
+    def __init__(self, dataset):
+        self.data_handler = DataHandler(dataset)
+
+    def __call__(self, idx):
+        dataset, text_encoder = self.data_handler.get_data()
+        return {
+            'anchor': text_encoder.encode(dataset[idx]['anchor']),
+            'positive': text_encoder.encode(dataset[idx]['positive']),
+            'negative': text_encoder.encode(dataset[idx]['negative'])
+        }
 
 class EmbeddingNetwork(nn.Module):
     def __init__(self, vocab_size, embedding_dim):
@@ -51,6 +63,7 @@ def train_network(model, train_data, valid_data, num_epochs):
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     history = []
     for epoch in range(num_epochs):
+        model.train()
         total_loss = 0
         for batch in train_data:
             optimizer.zero_grad()
@@ -63,12 +76,14 @@ def train_network(model, train_data, valid_data, num_epochs):
     return history
 
 def evaluate_network(model, data_loader):
+    model.eval()
     total_loss = 0
     correct = 0
-    for batch in data_loader:
-        anchor, positive, negative = model(batch['anchor']), model(batch['positive']), model(batch['negative'])
-        total_loss += compute_triplet_loss(anchor, positive, negative).item()
-        correct += torch.sum((torch.sum(anchor * positive, dim=1) > torch.sum(anchor * negative, dim=1)).item()
+    with torch.no_grad():
+        for batch in data_loader:
+            anchor, positive, negative = model(batch['anchor']), model(batch['positive']), model(batch['negative'])
+            total_loss += compute_triplet_loss(anchor, positive, negative).item()
+            correct += torch.sum((torch.sum(anchor * positive, dim=1) > torch.sum(anchor * negative, dim=1)).item()
     return total_loss / len(data_loader), correct / len(data_loader)
 
 def plot_training_progress(history):
@@ -99,9 +114,11 @@ def load_model_weights(model, path):
 
 def visualize_embeddings(model, data_loader):
     embeddings = []
-    for batch in data_loader:
-        anchor, _, _ = model(batch['anchor']), model(batch['positive']), model(batch['negative'])
-        embeddings.append(anchor.detach().numpy())
+    model.eval()
+    with torch.no_grad():
+        for batch in data_loader:
+            anchor, _, _ = model(batch['anchor']), model(batch['positive']), model(batch['negative'])
+            embeddings.append(anchor.detach().numpy())
     fig = plt.figure(figsize=(10, 10))
     ax = fig.add_subplot(111, projection='3d')
     ax.scatter(np.concatenate(embeddings)[:, 0], np.concatenate(embeddings)[:, 1], np.concatenate(embeddings)[:, 2], c='Spectral')
@@ -123,8 +140,8 @@ def execute_pipeline():
     mapping, snippet_files = load_data(dataset_path, snippets_dir)
     data = generate_triplet_data(mapping, snippet_files)
     train_data, valid_data = np.array_split(np.array(data), 2)
-    train_loader = torch.utils.data.DataLoader(train_data.tolist(), batch_size=32, shuffle=True)
-    valid_loader = torch.utils.data.DataLoader(valid_data.tolist(), batch_size=32)
+    train_loader = DataLoader(train_data.tolist(), batch_size=32, shuffle=True)
+    valid_loader = DataLoader(valid_data.tolist(), batch_size=32)
     model = EmbeddingNetwork(vocab_size=len(train_loader.dataset[0]['anchor']) + 1, embedding_dim=128)
     history = train_network(model, train_loader, valid_loader, epochs=5)
     plot_training_progress(history)
