@@ -8,16 +8,21 @@ from sklearn.preprocessing import LabelEncoder
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
-TextProcessor = lambda data: type('TextProcessor', (), {
-    'encoder': LabelEncoder().fit([text for item in data for text in (item['anchor'], item['positive'], item['negative'])]),
-    'encode_text': lambda self, text: tf.convert_to_tensor(self.encoder.transform([text])[0], dtype=tf.int32)
-})
+class TextProcessor:
+    def __init__(self, data):
+        texts = [text for item in data for text in (item['anchor'], item['positive'], item['negative'])]
+        self.encoder = LabelEncoder().fit(texts)
+    
+    def encode_text(self, text):
+        return tf.convert_to_tensor(self.encoder.transform([text])[0], dtype=tf.int32)
 
-DatasetManager = lambda data: type('DatasetManager', (), {
-    'data': data,
-    'text_processor': TextProcessor(data),
-    'fetch_data': lambda self: self.data
-})
+class DatasetManager:
+    def __init__(self, data):
+        self.data = data
+        self.text_processor = TextProcessor(data)
+    
+    def fetch_data(self):
+        return self.data
 
 class TripletDataset(tf.keras.utils.Sequence):
     def __init__(self, data):
