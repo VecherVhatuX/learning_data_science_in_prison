@@ -35,9 +35,11 @@ class LanguageModel(nn.Module):
         return self.linear2(x)
 
 def load_data(file_path):
+    # TODO: Add error handling for file reading to avoid crashes if file is corrupted or not in expected format.
     return json.load(open(file_path, 'r')) if os.path.exists(file_path) else None
 
 def tokenize_data(data, tokenizer, max_len=512):
+    # TODO: Handle cases where tokenizer.encode returns None or an empty list to avoid tensor creation errors.
     return torch.tensor(tokenizer.encode(data, max_length=max_len, padding='max_length', truncation=True))
 
 class TextDataset(Dataset):
@@ -52,6 +54,7 @@ class TextDataset(Dataset):
     def __getitem__(self, idx):
         input_ids = tokenize_data(self.data[idx]['input'], self.tokenizer)
         labels = tokenize_data(self.data[idx]['output'], self.tokenizer)
+        # TODO: Ensure that random.choice does not select the same index as idx, which could lead to incorrect negative sampling.
         neg_samples = torch.stack([tokenize_data(self.data[random.choice([j for j in range(len(self.data)) if j != idx])]['input'], self.tokenizer) for _ in range(self.neg_samples)])
         return input_ids, labels, neg_samples
 
@@ -93,9 +96,11 @@ class ModelTrainer:
         return self.counter >= patience
 
 def save_model(model, path):
+    # TODO: Add error handling for model saving to avoid crashes if the directory does not exist.
     torch.save(model.state_dict(), path)
 
 def save_history(history, path):
+    # TODO: Add error handling for file writing to avoid crashes if the directory does not exist.
     json.dump(history, open(path, 'w'))
 
 def initialize_environment():
@@ -122,6 +127,7 @@ def add_scheduler(optimizer, initial_lr, decay_steps, decay_rate):
     return scheduler
 
 def add_checkpoint(model, optimizer, checkpoint_dir, max_to_keep=2):
+    # TODO: Ensure that the checkpoint directory exists before saving to avoid crashes.
     checkpoint = {
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict()
