@@ -88,3 +88,6 @@ def main(repo, commit, project, run, report, coverage, output):
 
 if __name__ == "__main__":
     main()
+
+# TODO: Bug in `filter_impacted_tests` function: Typo in variable name `test_cases` (written as `test_cases` in the loop).
+# TODO: Bug in `write_report_to_file` function: Typo in variable name `report` (written as `reaport` in the json.dump call).
