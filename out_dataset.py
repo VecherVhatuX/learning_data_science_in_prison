@@ -2,8 +2,9 @@ import json
 import os
 import random
 import numpy as np
-import tensorflow as tf
-from tensorflow.keras import layers, models, optimizers
+import torch
+import torch.nn as nn
+import torch.optim as optim
 from sklearn.preprocessing import LabelEncoder
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
@@ -11,7 +12,7 @@ from mpl_toolkits.mplot3d import Axes3D
 def build_text_encoder(dataset):
     texts = [text for item in dataset for text in (item['anchor'], item['positive'], item['negative'])]
     encoder = LabelEncoder().fit(texts)
-    return lambda text: tf.convert_to_tensor(encoder.transform([text])[0], dtype=tf.int32)
+    return lambda text: torch.tensor(encoder.transform([text])[0], dtype=torch.long)
 
 def build_data_handler(dataset):
     text_encoder = build_text_encoder(dataset)
@@ -25,30 +26,39 @@ def build_triplet_data_generator(dataset):
         'negative': data_handler()[1](dataset[idx]['negative'])
     }
 
-def build_embedding_network(vocab_size, embedding_dim):
-    inputs = tf.keras.Input(shape=(1,), dtype=tf.int32)
-    embedding = layers.Embedding(vocab_size, embedding_dim)(inputs)
-    x = layers.Dense(128, activation='relu')(embedding)
-    x = layers.BatchNormalization()(x)
-    x = layers.Dropout(0.2)(x)
-    outputs = layers.Dense(128)(x)
-    return tf.keras.Model(inputs, outputs)
+class EmbeddingNetwork(nn.Module):
+    def __init__(self, vocab_size, embedding_dim):
+        super(EmbeddingNetwork, self).__init__()
+        self.embedding = nn.Embedding(vocab_size, embedding_dim)
+        self.fc1 = nn.Linear(embedding_dim, 128)
+        self.bn1 = nn.BatchNorm1d(128)
+        self.dropout = nn.Dropout(0.2)
+        self.fc2 = nn.Linear(128, 128)
+
+    def forward(self, x):
+        x = self.embedding(x)
+        x = self.fc1(x)
+        x = self.bn1(x)
+        x = torch.relu(x)
+        x = self.dropout(x)
+        x = self.fc2(x)
+        return x
 
 def compute_triplet_loss(anchor, positive, negative):
-    return tf.reduce_mean(tf.maximum(0.2 + tf.norm(anchor - positive, axis=1) - tf.norm(anchor - negative, axis=1), 0))
+    return torch.mean(torch.clamp(0.2 + torch.norm(anchor - positive, dim=1) - torch.norm(anchor - negative, dim=1), min=0))
 
 def train_network(model, train_data, valid_data, num_epochs):
-    optimizer = optimizers.Adam(learning_rate=0.001)
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
     history = []
     for epoch in range(num_epochs):
         total_loss = 0
         for batch in train_data:
-            with tf.GradientTape() as tape:
-                anchor, positive, negative = model(batch['anchor']), model(batch['positive']), model(batch['negative'])
-                loss = compute_triplet_loss(anchor, positive, negative)
-            gradients = tape.gradient(loss, model.trainable_variables)
-            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-            total_loss += loss.numpy()
+            optimizer.zero_grad()
+            anchor, positive, negative = model(batch['anchor']), model(batch['positive']), model(batch['negative'])
+            loss = compute_triplet_loss(anchor, positive, negative)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
         history.append((total_loss / len(train_data), *evaluate_network(model, valid_data)))
     return history
 
@@ -57,8 +67,8 @@ def evaluate_network(model, data_loader):
     correct = 0
     for batch in data_loader:
         anchor, positive, negative = model(batch['anchor']), model(batch['positive']), model(batch['negative'])
-        total_loss += compute_triplet_loss(anchor, positive, negative).numpy()
-        correct += tf.reduce_sum(tf.cast(tf.reduce_sum(anchor * positive, axis=1) > tf.reduce_sum(anchor * negative, axis=1), tf.float32)).numpy()
+        total_loss += compute_triplet_loss(anchor, positive, negative).item()
+        correct += torch.sum((torch.sum(anchor * positive, dim=1) > torch.sum(anchor * negative, dim=1)).item()
     return total_loss / len(data_loader), correct / len(data_loader)
 
 def plot_training_progress(history):
@@ -79,11 +89,11 @@ def plot_training_progress(history):
     plt.show()
 
 def save_model_weights(model, path):
-    model.save_weights(path)
+    torch.save(model.state_dict(), path)
     print(f'Model saved at {path}')
 
 def load_model_weights(model, path):
-    model.load_weights(path)
+    model.load_state_dict(torch.load(path))
     print(f'Model loaded from {path}')
     return model
 
@@ -91,7 +101,7 @@ def visualize_embeddings(model, data_loader):
     embeddings = []
     for batch in data_loader:
         anchor, _, _ = model(batch['anchor']), model(batch['positive']), model(batch['negative'])
-        embeddings.append(anchor.numpy())
+        embeddings.append(anchor.detach().numpy())
     fig = plt.figure(figsize=(10, 10))
     ax = fig.add_subplot(111, projection='3d')
     ax.scatter(np.concatenate(embeddings)[:, 0], np.concatenate(embeddings)[:, 1], np.concatenate(embeddings)[:, 2], c='Spectral')
@@ -113,12 +123,12 @@ def execute_pipeline():
     mapping, snippet_files = load_data(dataset_path, snippets_dir)
     data = generate_triplet_data(mapping, snippet_files)
     train_data, valid_data = np.array_split(np.array(data), 2)
-    train_loader = tf.data.Dataset.from_tensor_slices(train_data.tolist()).batch(32).shuffle(len(train_data))
-    valid_loader = tf.data.Dataset.from_tensor_slices(valid_data.tolist()).batch(32)
-    model = build_embedding_network(vocab_size=len(train_loader.element_spec['anchor'].shape[0]) + 1, embedding_dim=128)
+    train_loader = torch.utils.data.DataLoader(train_data.tolist(), batch_size=32, shuffle=True)
+    valid_loader = torch.utils.data.DataLoader(valid_data.tolist(), batch_size=32)
+    model = EmbeddingNetwork(vocab_size=len(train_loader.dataset[0]['anchor']) + 1, embedding_dim=128)
     history = train_network(model, train_loader, valid_loader, epochs=5)
     plot_training_progress(history)
-    save_model_weights(model, 'model.h5')
+    save_model_weights(model, 'model.pth')
     visualize_embeddings(model, valid_loader)
 
 def add_enhanced_feature():
