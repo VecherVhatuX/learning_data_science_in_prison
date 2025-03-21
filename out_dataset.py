@@ -2,17 +2,15 @@ import json
 import os
 import random
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
+import tensorflow as tf
+from tensorflow.keras import layers, models, optimizers
 from sklearn.preprocessing import LabelEncoder
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
 TextEncoder = lambda data: type('TextEncoder', (), {
     'encoder': LabelEncoder().fit([text for item in data for text in (item['anchor'], item['positive'], item['negative'])]),
-    'encode': lambda self, text: torch.tensor(self.encoder.transform([text])[0], dtype=torch.long)
+    'encode': lambda self, text: tf.convert_to_tensor(self.encoder.transform([text])[0], dtype=tf.int32)
 })
 
 DataHandler = lambda data: type('DataHandler', (), {
@@ -21,116 +19,126 @@ DataHandler = lambda data: type('DataHandler', (), {
     'get_data': lambda self: self.data
 })
 
-TripletData = lambda data: type('TripletData', (Dataset,), {
-    'data_handler': DataHandler(data),
-    'samples': lambda self: self.data_handler.get_data(),
-    '__len__': lambda self: len(self.samples()),
-    '__getitem__': lambda self, idx: {
-        'anchor': self.data_handler.text_encoder.encode(self.samples()[idx]['anchor']),
-        'positive': self.data_handler.text_encoder.encode(self.samples()[idx]['positive']),
-        'negative': self.data_handler.text_encoder.encode(self.samples()[idx]['negative'])
-    }
-})
+class TripletData(tf.keras.utils.Sequence):
+    def __init__(self, data):
+        self.data_handler = DataHandler(data)
+    
+    def __len__(self):
+        return len(self.data_handler.get_data())
+    
+    def __getitem__(self, idx):
+        sample = self.data_handler.get_data()[idx]
+        return {
+            'anchor': self.data_handler.text_encoder.encode(sample['anchor']),
+            'positive': self.data_handler.text_encoder.encode(sample['positive']),
+            'negative': self.data_handler.text_encoder.encode(sample['negative'])
+        }
 
-EmbeddingNetwork = lambda vocab_size, embed_dim: type('EmbeddingNetwork', (nn.Module,), {
-    'embedding': nn.Embedding(vocab_size, embed_dim),
-    'network': nn.Sequential(
-        nn.Linear(embed_dim, 128),
-        nn.ReLU(),
-        nn.BatchNorm1d(128),
-        nn.Dropout(0.2),
-        nn.Linear(128, 128)
-    ),
-    'forward': lambda self, anchor, positive, negative: (
-        self.network(self.embedding(anchor)),
-        self.network(self.embedding(positive)),
-        self.network(self.embedding(negative))
-    )
-})
+def EmbeddingNetwork(vocab_size, embed_dim):
+    inputs = tf.keras.Input(shape=(1,), dtype=tf.int32)
+    embedding = layers.Embedding(vocab_size, embed_dim)(inputs)
+    x = layers.Dense(128, activation='relu')(embedding)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(0.2)(x)
+    outputs = layers.Dense(128)(x)
+    return tf.keras.Model(inputs, outputs)
 
-compute_loss = lambda anchor, positive, negative: torch.mean(torch.clamp(0.2 + torch.norm(anchor - positive, dim=1) - torch.norm(anchor - negative, dim=1), min=0))
+def compute_loss(anchor, positive, negative):
+    return tf.reduce_mean(tf.maximum(0.2 + tf.norm(anchor - positive, axis=1) - tf.norm(anchor - negative, axis=1), 0)
 
-train_network = lambda model, train_loader, valid_loader, epochs: (lambda optimizer=optim.Adam(model.parameters(), lr=0.001), scheduler=optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: 0.1 ** epoch), history=[]: [
-    (model.train(), [(
-        optimizer.zero_grad(),
-        (lambda anchor, positive, negative: (
-            loss := compute_loss(anchor, positive, negative),
-            loss.backward(),
-            optimizer.step(),
-            total_loss := total_loss + loss.item() if 'total_loss' in locals() else loss.item()
-        ))(*model(batch['anchor'], batch['positive'], batch['negative']))
-        for batch in train_loader
-    ], history.append((total_loss / len(train_loader), *evaluate_network(model, valid_loader)))
-    for _ in range(epochs)
-] and history)()
+def train_network(model, train_loader, valid_loader, epochs):
+    optimizer = optimizers.Adam(learning_rate=0.001)
+    history = []
+    for epoch in range(epochs):
+        total_loss = 0
+        model.train()
+        for batch in train_loader:
+            with tf.GradientTape() as tape:
+                anchor, positive, negative = model(batch['anchor']), model(batch['positive']), model(batch['negative'])
+                loss = compute_loss(anchor, positive, negative)
+            gradients = tape.gradient(loss, model.trainable_variables)
+            optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+            total_loss += loss.numpy()
+        history.append((total_loss / len(train_loader), *evaluate_network(model, valid_loader)))
+    return history
 
-evaluate_network = lambda model, data_loader: (lambda total_loss=0, correct=0: [
-    (model.eval(), [(
-        (lambda anchor, positive, negative: (
-            total_loss := total_loss + compute_loss(anchor, positive, negative).item(),
-            correct := correct + torch.sum(torch.sum(anchor * positive, dim=1) > torch.sum(anchor * negative, dim=1)).float().sum()
-        ))(*model(batch['anchor'], batch['positive'], batch['negative']))
-        for batch in data_loader
-    ], (total_loss / len(data_loader), correct / len(data_loader))
-])()
+def evaluate_network(model, data_loader):
+    total_loss = 0
+    correct = 0
+    model.eval()
+    for batch in data_loader:
+        anchor, positive, negative = model(batch['anchor']), model(batch['positive']), model(batch['negative'])
+        total_loss += compute_loss(anchor, positive, negative).numpy()
+        correct += tf.reduce_sum(tf.cast(tf.reduce_sum(anchor * positive, axis=1) > tf.reduce_sum(anchor * negative, axis=1), tf.float32)).numpy()
+    return total_loss / len(data_loader), correct / len(data_loader)
 
-plot_history = lambda history: (lambda fig=plt.figure(figsize=(10, 5)): (
-    fig.add_subplot(1, 2, 1).plot([x[0] for x in history], label='Training Loss'),
-    fig.add_subplot(1, 2, 1).plot([x[1] for x in history], label='Validation Loss'),
-    fig.add_subplot(1, 2, 1).set(title='Loss Over Epochs', xlabel='Epochs', ylabel='Loss'),
-    fig.add_subplot(1, 2, 1).legend(),
-    fig.add_subplot(1, 2, 2).plot([x[2] for x in history], label='Training Accuracy'),
-    fig.add_subplot(1, 2, 2).set(title='Accuracy Over Epochs', xlabel='Epochs', ylabel='Accuracy'),
-    fig.add_subplot(1, 2, 2).legend(),
+def plot_history(history):
+    fig = plt.figure(figsize=(10, 5))
+    plt.subplot(1, 2, 1)
+    plt.plot([x[0] for x in history], label='Training Loss')
+    plt.plot([x[1] for x in history], label='Validation Loss')
+    plt.title('Loss Over Epochs')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.subplot(1, 2, 2)
+    plt.plot([x[2] for x in history], label='Training Accuracy')
+    plt.title('Accuracy Over Epochs')
+    plt.xlabel('Epochs')
+    plt.ylabel('Accuracy')
+    plt.legend()
     plt.show()
-))()
 
-save_model = lambda model, path: (torch.save(model.state_dict(), path), print(f'Model saved at {path}')
+def save_model(model, path):
+    model.save_weights(path)
+    print(f'Model saved at {path}')
 
-load_model = lambda model, path: (model.load_state_dict(torch.load(path)), print(f'Model loaded from {path}'), model
+def load_model(model, path):
+    model.load_weights(path)
+    print(f'Model loaded from {path}')
+    return model
 
-visualize_embeddings = lambda model, data_loader: (lambda embeddings=[]: (
-    model.eval(),
-    [embeddings.append(anchor.numpy()) for batch in data_loader for anchor, _, _ in [model(batch['anchor'], batch['positive'], batch['negative'])]],
-    (lambda fig=plt.figure(figsize=(10, 10)): (
-        fig.add_subplot(111, projection='3d').scatter(np.concatenate(embeddings)[:, 0], np.concatenate(embeddings)[:, 1], np.concatenate(embeddings)[:, 2], c='Spectral'),
-        fig.add_subplot(111, projection='3d').set(title='3D Embedding Visualization'),
-        plt.show()
-    ))()
-))()
+def visualize_embeddings(model, data_loader):
+    embeddings = []
+    model.eval()
+    for batch in data_loader:
+        anchor, _, _ = model(batch['anchor']), model(batch['positive']), model(batch['negative'])
+        embeddings.append(anchor.numpy())
+    fig = plt.figure(figsize=(10, 10))
+    ax = fig.add_subplot(111, projection='3d')
+    ax.scatter(np.concatenate(embeddings)[:, 0], np.concatenate(embeddings)[:, 1], np.concatenate(embeddings)[:, 2], c='Spectral')
+    ax.set_title('3D Embedding Visualization')
+    plt.show()
 
-load_data = lambda file_path, root_dir: (
-    (lambda data=json.load(open(file_path)): (
-        {item['instance_id']: item['problem_statement'] for item in data},
-        [(dir, os.path.join(root_dir, 'snippet.json')) for dir in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, dir))]
-    )
-)()
+def load_data(file_path, root_dir):
+    data = json.load(open(file_path))
+    mapping = {item['instance_id']: item['problem_statement'] for item in data}
+    snippet_files = [(dir, os.path.join(root_dir, 'snippet.json')) for dir in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, dir))]
+    return mapping, snippet_files
 
-create_triplets = lambda mapping, snippet_files: [
-    {'anchor': mapping[os.path.basename(dir)], 'positive': bug_sample, 'negative': random.choice(non_bug_samples)}
-    for dir, path in snippet_files for bug_sample, non_bug_samples in [json.load(open(path))]
-]
+def create_triplets(mapping, snippet_files):
+    triplets = []
+    for dir, path in snippet_files:
+        bug_sample, non_bug_samples = json.load(open(path))
+        triplets.append({'anchor': mapping[os.path.basename(dir)], 'positive': bug_sample, 'negative': random.choice(non_bug_samples)})
+    return triplets
 
-execute_pipeline = lambda: (
-    (lambda dataset_path='datasets/SWE-bench_oracle.npy', snippets_dir='datasets/10_10_after_fix_pytest'): (
-        (lambda mapping, snippet_files=load_data(dataset_path, snippets_dir)): (
-            (lambda data=create_triplets(mapping, snippet_files)): (
-                (lambda train_data, valid_data=np.array_split(np.array(data), 2)): (
-                    (lambda train_loader=DataLoader(TripletData(train_data.tolist()), batch_size=32, shuffle=True), valid_loader=DataLoader(TripletData(valid_data.tolist()), batch_size=32)): (
-                        (lambda model=EmbeddingNetwork(vocab_size=len(train_loader.dataset.data_handler.text_encoder.encoder.classes_) + 1, embed_dim=128)): (
-                            (lambda history=train_network(model, train_loader, valid_loader, epochs=5)): (
-                                plot_history(history),
-                                save_model(model, 'model.pth'),
-                                visualize_embeddings(model, valid_loader)
-                        )
-                    )
-                )
-            )
-        )
-    )
-)()
+def execute_pipeline():
+    dataset_path = 'datasets/SWE-bench_oracle.npy'
+    snippets_dir = 'datasets/10_10_after_fix_pytest'
+    mapping, snippet_files = load_data(dataset_path, snippets_dir)
+    data = create_triplets(mapping, snippet_files)
+    train_data, valid_data = np.array_split(np.array(data), 2)
+    train_loader = tf.data.Dataset.from_tensor_slices(train_data.tolist()).batch(32).shuffle(len(train_data))
+    valid_loader = tf.data.Dataset.from_tensor_slices(valid_data.tolist()).batch(32)
+    model = EmbeddingNetwork(vocab_size=len(train_loader.element_spec['anchor'].shape[0]) + 1, embed_dim=128)
+    history = train_network(model, train_loader, valid_loader, epochs=5)
+    plot_history(history)
+    save_model(model, 'model.h5')
+    visualize_embeddings(model, valid_loader)
 
-add_feature = lambda: print("New feature added: Enhanced visualization with 3D embeddings.")
+def add_feature():
+    print("New feature added: Enhanced visualization with 3D embeddings.")
 
 if __name__ == "__main__":
     execute_pipeline()
