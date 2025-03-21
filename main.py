@@ -19,111 +19,68 @@ SETTINGS = {
     "max_checkpoints": 2, "seed": 42, "checkpoint_path": None, "negative_samples_per_batch": 5
 }
 
-class LanguageModel(tf.keras.Model):
-    def __init__(self, vocab_size, embed_dim):
-        super().__init__()
-        self.embedding = layers.Embedding(vocab_size, embed_dim)
-        self.lstm = layers.LSTM(embed_dim, return_sequences=True)
-        self.linear1 = layers.Dense(embed_dim)
-        self.linear2 = layers.Dense(vocab_size)
+LanguageModel = lambda vocab_size, embed_dim: tf.keras.Sequential([
+    layers.Embedding(vocab_size, embed_dim),
+    layers.LSTM(embed_dim, return_sequences=True),
+    layers.Dense(embed_dim),
+    layers.Dense(vocab_size)
+])
 
-    def call(self, x):
-        x = self.embedding(x)
-        x = self.lstm(x)
-        x = self.linear1(x)
-        return self.linear2(x)
+load_data = lambda file_path: json.load(open(file_path, 'r')) if os.path.exists(file_path) else None
 
-def load_data(file_path):
-    return json.load(open(file_path, 'r')) if os.path.exists(file_path) else None
+tokenize_data = lambda data, tokenizer, max_len=512: tf.convert_to_tensor(tokenizer.encode(data, max_length=max_len, padding='max_length', truncation=True))
 
-def tokenize_data(data, tokenizer, max_len=512):
-    return tf.convert_to_tensor(tokenizer.encode(data, max_length=max_len, padding='max_length', truncation=True))
+TextDataset = lambda data, tokenizer, neg_samples=5: tf.data.Dataset.from_generator(
+    lambda: ((tokenize_data(data[idx]['input'], tokenizer), 
+             tokenize_data(data[idx]['output'], tokenizer), 
+             tf.stack([tokenize_data(data[random.choice([j for j in range(len(data)) if j != idx])]['input'], tokenizer) for _ in range(neg_samples)])) 
+    for idx in range(len(data))),
+    output_signature=(tf.TensorSpec(shape=(None,), tf.TensorSpec(shape=(None,)), tf.TensorSpec(shape=(None,)))
+)
 
-class TextDataset(tf.keras.utils.Sequence):
-    def __init__(self, data, tokenizer, neg_samples=5):
-        self.data = data
-        self.tokenizer = tokenizer
-        self.neg_samples = neg_samples
+ModelTrainer = lambda model, optimizer, loss_fn: {
+    "model": model,
+    "optimizer": optimizer,
+    "loss_fn": loss_fn,
+    "best_loss": float('inf'),
+    "counter": 0,
+    "train": lambda data_loader, epochs, patience=3: [
+        [tf.GradientTape().__enter__().__exit__(None, None, None) for _ in range(epochs)] and None,
+        [optimizer.apply_gradients(zip(tf.GradientTape().gradient(loss_fn(model(input_ids), labels, neg_samples), model.trainable_variables), model.trainable_variables)) 
+         for input_ids, labels, neg_samples in data_loader] and None,
+        [print("Training halted early.") if early_stopping(loss_fn(model(input_ids), labels, neg_samples).numpy(), patience) else None 
+         for input_ids, labels, neg_samples in data_loader]
+    ],
+    "evaluate": lambda data_loader: print(f"Average Loss on Evaluation: {sum(loss_fn(model(input_ids), labels, neg_samples).numpy() for input_ids, labels, neg_samples in data_loader) / len(data_loader):.4f}"),
+    "early_stopping": lambda current_loss, patience: (current_loss < best_loss and (best_loss := current_loss) and (counter := 0) or (counter := counter + 1) and counter >= patience
+}
 
-    def __len__(self):
-        return len(self.data)
+save_model = lambda model, path: model.save_weights(path)
 
-    def __getitem__(self, idx):
-        input_ids = tokenize_data(self.data[idx]['input'], self.tokenizer)
-        labels = tokenize_data(self.data[idx]['output'], self.tokenizer)
-        neg_samples = tf.stack([tokenize_data(self.data[random.choice([j for j in range(len(self.data)) if j != idx])]['input'], self.tokenizer) for _ in range(self.neg_samples)])
-        return input_ids, labels, neg_samples
+save_history = lambda history, path: json.dump(history, open(path, 'w'))
 
-class ModelTrainer:
-    def __init__(self, model, optimizer, loss_fn):
-        self.model = model
-        self.optimizer = optimizer
-        self.loss_fn = loss_fn
-        self.best_loss = float('inf')
-        self.counter = 0
+initialize_environment = lambda: (
+    SETTINGS,
+    T5Tokenizer.from_pretrained("t5-base"),
+    LanguageModel(30522, 128),
+    optimizers.Adam(learning_rate=0.001)
+)
 
-    def train(self, data_loader, epochs, patience=3):
-        for epoch in range(epochs):
-            for input_ids, labels, neg_samples in data_loader:
-                with tf.GradientTape() as tape:
-                    output = self.model(input_ids)
-                    loss = self.loss_fn(output, labels, neg_samples)
-                gradients = tape.gradient(loss, self.model.trainable_variables)
-                self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
-            if self.early_stopping(loss.numpy(), patience):
-                print("Training halted early.")
-                break
-
-    def evaluate(self, data_loader):
-        total_loss = 0
-        for input_ids, labels, neg_samples in data_loader:
-            output = self.model(input_ids)
-            loss = self.loss_fn(output, labels, neg_samples)
-            total_loss += loss.numpy()
-        print(f"Average Loss on Evaluation: {total_loss / len(data_loader):.4f}")
-
-    def early_stopping(self, current_loss, patience):
-        if current_loss < self.best_loss:
-            self.best_loss = current_loss
-            self.counter = 0
-        else:
-            self.counter += 1
-        return self.counter >= patience
-
-def save_model(model, path):
-    model.save_weights(path)
-
-def save_history(history, path):
-    json.dump(history, open(path, 'w'))
-
-def initialize_environment():
-    tokenizer = T5Tokenizer.from_pretrained("t5-base")
-    model = LanguageModel(30522, 128)
-    optimizer = optimizers.Adam(learning_rate=0.001)
-    return SETTINGS, tokenizer, model, optimizer
-
-def execute_pipeline():
-    settings, tokenizer, model, optimizer = initialize_environment()
-    train_data = load_data("train.json")
-    test_data = load_data("test.json")
-    train_dataset = TextDataset(train_data, tokenizer, settings["negative_samples_per_batch"])
-    test_dataset = TextDataset(test_data, tokenizer, settings["negative_samples_per_batch"])
-    train_loader = tf.data.Dataset.from_generator(lambda: train_dataset, output_signature=(
-        tf.TensorSpec(shape=(None,), tf.TensorSpec(shape=(None,)), tf.TensorSpec(shape=(None,))))
-    test_loader = tf.data.Dataset.from_generator(lambda: test_dataset, output_signature=(
-        tf.TensorSpec(shape=(None,), tf.TensorSpec(shape=(None,)), tf.TensorSpec(shape=(None,))))
-    trainer = ModelTrainer(model, optimizer, tf.keras.losses.TripletSemiHardLoss())
-    trainer.train(train_loader, settings["epochs"])
-    trainer.evaluate(test_loader)
+execute_pipeline = lambda: (
+    (settings, tokenizer, model, optimizer) := initialize_environment(),
+    (train_data, test_data) := (load_data("train.json"), load_data("test.json")),
+    (train_dataset, test_dataset) := (TextDataset(train_data, tokenizer, settings["negative_samples_per_batch"]), TextDataset(test_data, tokenizer, settings["negative_samples_per_batch"])),
+    (train_loader, test_loader) := (tf.data.Dataset.from_generator(lambda: train_dataset, output_signature=(tf.TensorSpec(shape=(None,), tf.TensorSpec(shape=(None,)), tf.TensorSpec(shape=(None,))))),
+                                   tf.data.Dataset.from_generator(lambda: test_dataset, output_signature=(tf.TensorSpec(shape=(None,), tf.TensorSpec(shape=(None,)), tf.TensorSpec(shape=(None,)))))),
+    (trainer := ModelTrainer(model, optimizer, tf.keras.losses.TripletSemiHardLoss())),
+    trainer.train(train_loader, settings["epochs"]),
+    trainer.evaluate(test_loader),
     save_model(model, os.path.join(settings["results_dir"], "triplet_model.h5"))
+)
 
-def add_scheduler(optimizer, initial_lr, decay_steps, decay_rate):
-    scheduler = optimizers.schedules.ExponentialDecay(initial_lr, decay_steps, decay_rate)
-    return scheduler
+add_scheduler = lambda optimizer, initial_lr, decay_steps, decay_rate: optimizers.schedules.ExponentialDecay(initial_lr, decay_steps, decay_rate)
 
-def add_checkpoint(model, optimizer, checkpoint_dir, max_to_keep=2):
-    checkpoint = tf.train.Checkpoint(model=model, optimizer=optimizer)
-    checkpoint.save(os.path.join(checkpoint_dir, f"checkpoint_{len(os.listdir(checkpoint_dir))}.ckpt"))
+add_checkpoint = lambda model, optimizer, checkpoint_dir, max_to_keep=2: tf.train.Checkpoint(model=model, optimizer=optimizer).save(os.path.join(checkpoint_dir, f"checkpoint_{len(os.listdir(checkpoint_dir))}.ckpt"))
 
 if __name__ == "__main__":
     execute_pipeline()
