@@ -20,7 +20,7 @@ retry_command = lambda agent, cmd, attempt, max_attempts: (logger.error("Max ret
 
 execute_with_retries = lambda cmd, max_attempts: retry_command(create_agent(tools=initialize_tools()), cmd, 0, max_attempts)
 
-measure_execution_time = lambda func: wraps(func)(lambda *args, **kwargs: (start := time.time(), result := func(*args, **kwargs), logger.info(f"Time taken: {time.time() - start:.2f} seconds"), result)[-1])
+measure_execution_time = lambda func: wraps(func)(lambda *args, **kwargs: (start := time.time(), result := func(*args, **kwargs), logger.info(f"Time taken: {time.time() - start:.2f} seconds"), result)[-1]
 
 initiate_process = measure_execution_time(lambda cmd, max_attempts: (logger.info("Process initiated..."), execute_with_retries(cmd, max_attempts)))
 
@@ -38,9 +38,12 @@ check_disk_usage = lambda: logger.info(f"Disk usage:\n{run(['df', '-h'], text=Tr
 
 check_network_connection = lambda: logger.success("Network connection is active.") if run(["ping", "-c", "1", "google.com"], text=True, capture_output=True).returncode == 0 else logger.error("Network connection is down.")
 
+check_cpu_usage = lambda: logger.info(f"CPU usage:\n{run(['top', '-bn1'], text=True, capture_output=True).stdout}")
+
 if __name__ == "__main__":
     typer.run(execute_with_config)
     create_log_backup()
     send_notification("Script execution completed!")
     check_disk_usage()
     check_network_connection()
+    check_cpu_usage()
