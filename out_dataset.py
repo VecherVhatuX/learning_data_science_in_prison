@@ -8,38 +8,24 @@ from sklearn.preprocessing import LabelEncoder
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
-class TextProcessor:
-    def __init__(self, data):
-        texts = [text for item in data for text in (item['anchor'], item['positive'], item['negative'])]
-        self.encoder = LabelEncoder().fit(texts)
-    
-    def encode_text(self, text):
-        return tf.convert_to_tensor(self.encoder.transform([text])[0], dtype=tf.int32)
+def create_text_processor(data):
+    texts = [text for item in data for text in (item['anchor'], item['positive'], item['negative'])]
+    encoder = LabelEncoder().fit(texts)
+    return lambda text: tf.convert_to_tensor(encoder.transform([text])[0], dtype=tf.int32)
 
-class DatasetManager:
-    def __init__(self, data):
-        self.data = data
-        self.text_processor = TextProcessor(data)
-    
-    def fetch_data(self):
-        return self.data
+def create_dataset_manager(data):
+    text_processor = create_text_processor(data)
+    return lambda: data, text_processor
 
-class TripletDataset(tf.keras.utils.Sequence):
-    def __init__(self, data):
-        self.dataset_manager = DatasetManager(data)
-    
-    def __len__(self):
-        return len(self.dataset_manager.fetch_data())
-    
-    def __getitem__(self, idx):
-        sample = self.dataset_manager.fetch_data()[idx]
-        return {
-            'anchor': self.dataset_manager.text_processor.encode_text(sample['anchor']),
-            'positive': self.dataset_manager.text_processor.encode_text(sample['positive']),
-            'negative': self.dataset_manager.text_processor.encode_text(sample['negative'])
-        }
+def create_triplet_dataset(data):
+    dataset_manager = create_dataset_manager(data)
+    return lambda idx: {
+        'anchor': dataset_manager[1](data[idx]['anchor']),
+        'positive': dataset_manager[1](data[idx]['positive']),
+        'negative': dataset_manager[1](data[idx]['negative'])
+    }
 
-def EmbeddingModel(vocab_size, embed_dim):
+def create_embedding_model(vocab_size, embed_dim):
     inputs = tf.keras.Input(shape=(1,), dtype=tf.int32)
     embedding = layers.Embedding(vocab_size, embed_dim)(inputs)
     x = layers.Dense(128, activation='relu')(embedding)
@@ -49,7 +35,7 @@ def EmbeddingModel(vocab_size, embed_dim):
     return tf.keras.Model(inputs, outputs)
 
 def calculate_triplet_loss(anchor, positive, negative):
-    return tf.reduce_mean(tf.maximum(0.2 + tf.norm(anchor - positive, axis=1) - tf.norm(anchor - negative, axis=1), 0)
+    return tf.reduce_mean(tf.maximum(0.2 + tf.norm(anchor - positive, axis=1) - tf.norm(anchor - negative, axis=1), 0))
 
 def train_model(model, train_loader, valid_loader, epochs):
     optimizer = optimizers.Adam(learning_rate=0.001)
@@ -122,11 +108,7 @@ def load_dataset(file_path, root_dir):
     return mapping, snippet_files
 
 def generate_triplets(mapping, snippet_files):
-    triplets = []
-    for dir, path in snippet_files:
-        bug_sample, non_bug_samples = json.load(open(path))
-        triplets.append({'anchor': mapping[os.path.basename(dir)], 'positive': bug_sample, 'negative': random.choice(non_bug_samples)})
-    return triplets
+    return [{'anchor': mapping[os.path.basename(dir)], 'positive': bug_sample, 'negative': random.choice(non_bug_samples)} for dir, path in snippet_files for bug_sample, non_bug_samples in [json.load(open(path))]]
 
 def run_pipeline():
     dataset_path = 'datasets/SWE-bench_oracle.npy'
@@ -136,7 +118,7 @@ def run_pipeline():
     train_data, valid_data = np.array_split(np.array(data), 2)
     train_loader = tf.data.Dataset.from_tensor_slices(train_data.tolist()).batch(32).shuffle(len(train_data))
     valid_loader = tf.data.Dataset.from_tensor_slices(valid_data.tolist()).batch(32)
-    model = EmbeddingModel(vocab_size=len(train_loader.element_spec['anchor'].shape[0]) + 1, embed_dim=128)
+    model = create_embedding_model(vocab_size=len(train_loader.element_spec['anchor'].shape[0]) + 1, embed_dim=128)
     history = train_model(model, train_loader, valid_loader, epochs=5)
     plot_training_history(history)
     save_trained_model(model, 'model.h5')
